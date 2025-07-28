@@ -106,14 +106,14 @@ You need to set your environment variables in Heroku. You can do this in two way
 ```bash
 # Set each variable individually
 heroku config:set NODE_ENV=production
-heroku config:set SUPABASE_URL=your_supabase_url
-heroku config:set SUPABASE_ANON_KEY=your_supabase_anon_key
-heroku config:set SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
+heroku config:set SUPABASE_URL=https://xwqdfnggfamvfiqzpdft.supabase.co --app school-app-backend
+heroku config:set SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh3cWRmbmdnZmFtdmZpcXpwZGZ0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTMzNDI0MTEsImV4cCI6MjA2ODkxODQxMX0.PnS7dK_Tokczruhus5ZW3qaZ7HV4C3hFsL0RtbtZ3ZM --app school-app-backend
+heroku config:set SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh3cWRmbmdnZmFtdmZpcXpwZGZ0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MzM0MjQxMSwiZXhwIjoyMDY4OTE4NDExfQ.stGCj_zB_SVk7IRt3sB1IJNPUNrvM7lP2kum3zoK1Zs --app school-app-backend
 heroku config:set JWT_SECRET=your_jwt_secret
-heroku config:set JWT_EXPIRES_IN=24h
-heroku config:set MAX_FILE_SIZE=10485760
-heroku config:set UPLOAD_PATH=uploads/
-heroku config:set LOG_LEVEL=info
+heroku config:set JWT_EXPIRES_IN=24h --app school-app-backend
+heroku config:set MAX_FILE_SIZE=10485760 --app school-app-backend
+heroku config:set UPLOAD_PATH=uploads/ --app school-app-backend
+heroku config:set LOG_LEVEL=info --app school-app-backend
 ```
 
 #### Option B: Using the Deployment Script
