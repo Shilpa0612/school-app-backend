@@ -1,0 +1,34 @@
+{
+    "name": "school-app-backend",
+    "description": "Backend for School App with Supabase integration",
+    "repository": "https://github.com/yourusername/school-app-backend",
+    "logo": "https://node-js-sample.herokuapp.com/node.png",
+    "keywords": [
+        "node",
+        "express",
+        "school",
+        "education",
+        "supabase"
+    ],
+    "env": {
+        "NODE_ENV": {
+            "description": "Environment setting",
+            "value": "production"
+        },
+        "PORT": {
+            "description": "Port for the application",
+            "value": "3000"
+        }
+    },
+    "formation": {
+        "web": {
+            "quantity": 1,
+            "size": "basic"
+        }
+    },
+    "buildpacks": [
+        {
+            "url": "heroku/nodejs"
+        }
+    ]
+}
