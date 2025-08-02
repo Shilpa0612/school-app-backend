@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { WebSocketServer } from 'ws';
+import { adminSupabase } from '../config/supabase.js';
 import { logger } from '../utils/logger.js';
 import realtimeService from './realtimeService.js';
 
@@ -132,6 +133,10 @@ class WebSocketService {
                     this.sendMessageToUser(userId, { type: 'pong' });
                     break;
 
+                case 'send_message':
+                    this.handleSendMessage(userId, message);
+                    break;
+
                 default:
                     logger.warn(`Unknown message type from user ${userId}:`, message.type);
             }
@@ -245,6 +250,133 @@ class WebSocketService {
     isUserConnected(userId) {
         const ws = this.clients.get(userId);
         return ws && ws.readyState === 1;
+    }
+
+    /**
+     * Handle sending message through WebSocket
+     */
+    async handleSendMessage(userId, message) {
+        try {
+            const { thread_id, content, message_type = 'text' } = message;
+
+            // Validate required fields
+            if (!thread_id || !content) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Thread ID and content are required'
+                });
+                return;
+            }
+
+            // Validate message type
+            if (!['text', 'image', 'file', 'system'].includes(message_type)) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Invalid message type'
+                });
+                return;
+            }
+
+            // Verify user is participant in thread
+            const { data: participant, error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .select('*')
+                .eq('thread_id', thread_id)
+                .eq('user_id', userId)
+                .single();
+
+            if (participantError || !participant) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Access denied to this thread'
+                });
+                return;
+            }
+
+            // Check if thread is active
+            const { data: thread, error: threadError } = await adminSupabase
+                .from('chat_threads')
+                .select('status')
+                .eq('id', thread_id)
+                .single();
+
+            if (threadError || thread.status !== 'active') {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Thread is not active'
+                });
+                return;
+            }
+
+            // Create message
+            const { data: newMessage, error } = await adminSupabase
+                .from('chat_messages')
+                .insert({
+                    thread_id,
+                    sender_id: userId,
+                    content,
+                    message_type
+                })
+                .select(`
+                    *,
+                    sender:users!chat_messages_sender_id_fkey(full_name, role)
+                `)
+                .single();
+
+            if (error) {
+                logger.error('Error creating message via WebSocket:', error);
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Failed to send message'
+                });
+                return;
+            }
+
+            // Update thread's updated_at timestamp
+            await adminSupabase
+                .from('chat_threads')
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', thread_id);
+
+            // Send success confirmation to sender
+            this.sendMessageToUser(userId, {
+                type: 'message_sent',
+                data: {
+                    id: newMessage.id,
+                    thread_id: newMessage.thread_id,
+                    content: newMessage.content,
+                    message_type: newMessage.message_type,
+                    created_at: newMessage.created_at,
+                    sender: newMessage.sender
+                }
+            });
+
+            // Broadcast to all participants in the thread
+            const { data: participants } = await adminSupabase
+                .from('chat_participants')
+                .select('user_id')
+                .eq('thread_id', thread_id);
+
+            if (participants) {
+                participants.forEach(participant => {
+                    if (participant.user_id !== userId) {
+                        this.sendMessageToUser(participant.user_id, {
+                            type: 'new_message',
+                            data: newMessage
+                        });
+                    }
+                });
+            }
+
+            logger.info(`Message sent via WebSocket by user ${userId} in thread ${thread_id}`);
+
+        } catch (error) {
+            logger.error(`Error handling WebSocket message from user ${userId}:`, error);
+            this.sendMessageToUser(userId, {
+                type: 'error',
+                message: 'Internal server error'
+            });
+        }
     }
 
     /**

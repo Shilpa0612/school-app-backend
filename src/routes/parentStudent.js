@@ -263,4 +263,449 @@ router.put('/mappings/:id',
     }
 );
 
+// ==================== PARENT MANAGEMENT ENDPOINTS ====================
+
+// Get all parents (Admin/Principal only)
+router.get('/parents',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { 
+                page = 1, 
+                limit = 20, 
+                class_id, 
+                search,
+                is_active = true 
+            } = req.query;
+            
+            const offset = (page - 1) * limit;
+
+            // Build query for parents
+            let query = adminSupabase
+                .from('users')
+                .select(`
+                    id,
+                    full_name,
+                    phone_number,
+                    email,
+                    role,
+                    is_active,
+                    created_at,
+                    parent_student_mappings!inner(
+                        student:student_id(
+                            id,
+                            full_name,
+                            admission_number,
+                            class:class_id(
+                                id,
+                                name,
+                                section,
+                                level:class_level_id(name)
+                            )
+                        )
+                    )
+                `)
+                .eq('role', 'parent')
+                .eq('is_active', is_active)
+                .order('full_name', { ascending: true });
+
+            // Apply class filter
+            if (class_id) {
+                query = query.eq('parent_student_mappings.student.class_id', class_id);
+            }
+
+            // Apply search filter
+            if (search) {
+                query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%`);
+            }
+
+            // Get total count
+            const { count, error: countError } = await adminSupabase
+                .from('users')
+                .select('*', { count: 'exact', head: true })
+                .eq('role', 'parent')
+                .eq('is_active', is_active);
+
+            if (countError) {
+                logger.error('Error getting parents count:', countError);
+            }
+
+            // Get paginated results
+            const { data: parents, error } = await query
+                .range(offset, offset + limit - 1);
+
+            if (error) {
+                logger.error('Error fetching parents:', error);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch parents'
+                });
+            }
+
+            // Process and format the data
+            const formattedParents = parents.map(parent => ({
+                id: parent.id,
+                full_name: parent.full_name,
+                phone_number: parent.phone_number,
+                email: parent.email,
+                role: parent.role,
+                is_active: parent.is_active,
+                created_at: parent.created_at,
+                children: parent.parent_student_mappings.map(mapping => ({
+                    id: mapping.student.id,
+                    full_name: mapping.student.full_name,
+                    admission_number: mapping.student.admission_number,
+                    class: mapping.student.class,
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian
+                }))
+            }));
+
+            res.json({
+                status: 'success',
+                data: {
+                    parents: formattedParents,
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: count || 0,
+                        total_pages: Math.ceil((count || 0) / limit)
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get all parents:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Internal server error'
+            });
+        }
+    }
+);
+
+// Get parents by class (Admin/Principal only)
+router.get('/parents/class/:class_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { class_id } = req.params;
+            const { 
+                page = 1, 
+                limit = 20, 
+                search,
+                is_active = true 
+            } = req.query;
+            
+            const offset = (page - 1) * limit;
+
+            // Verify class exists
+            const { data: classData, error: classError } = await adminSupabase
+                .from('class_divisions')
+                .select('id, name, section')
+                .eq('id', class_id)
+                .single();
+
+            if (classError || !classData) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class not found'
+                });
+            }
+
+            // Build query for parents in specific class
+            let query = adminSupabase
+                .from('users')
+                .select(`
+                    id,
+                    full_name,
+                    phone_number,
+                    email,
+                    role,
+                    is_active,
+                    created_at,
+                    parent_student_mappings!inner(
+                        student:student_id(
+                            id,
+                            full_name,
+                            admission_number,
+                            class:class_id(
+                                id,
+                                name,
+                                section,
+                                level:class_level_id(name)
+                            )
+                        )
+                    )
+                `)
+                .eq('role', 'parent')
+                .eq('is_active', is_active)
+                .eq('parent_student_mappings.student.class_id', class_id)
+                .order('full_name', { ascending: true });
+
+            // Apply search filter
+            if (search) {
+                query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%`);
+            }
+
+            // Get total count for this class
+            const { count, error: countError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select('parent_id', { count: 'exact', head: true })
+                .eq('student.class_id', class_id)
+                .eq('parent.role', 'parent')
+                .eq('parent.is_active', is_active);
+
+            if (countError) {
+                logger.error('Error getting parents count for class:', countError);
+            }
+
+            // Get paginated results
+            const { data: parents, error } = await query
+                .range(offset, offset + limit - 1);
+
+            if (error) {
+                logger.error('Error fetching parents by class:', error);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch parents'
+                });
+            }
+
+            // Process and format the data
+            const formattedParents = parents.map(parent => ({
+                id: parent.id,
+                full_name: parent.full_name,
+                phone_number: parent.phone_number,
+                email: parent.email,
+                role: parent.role,
+                is_active: parent.is_active,
+                created_at: parent.created_at,
+                children: parent.parent_student_mappings
+                    .filter(mapping => mapping.student.class.id === class_id)
+                    .map(mapping => ({
+                        id: mapping.student.id,
+                        full_name: mapping.student.full_name,
+                        admission_number: mapping.student.admission_number,
+                        class: mapping.student.class,
+                        relationship: mapping.relationship,
+                        is_primary_guardian: mapping.is_primary_guardian
+                    }))
+            }));
+
+            res.json({
+                status: 'success',
+                data: {
+                    class: classData,
+                    parents: formattedParents,
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: count || 0,
+                        total_pages: Math.ceil((count || 0) / limit)
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get parents by class:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Internal server error'
+            });
+        }
+    }
+);
+
+// Get specific parent details (Admin/Principal only)
+router.get('/parents/:parent_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { parent_id } = req.params;
+
+            const { data: parent, error } = await adminSupabase
+                .from('users')
+                .select(`
+                    id,
+                    full_name,
+                    phone_number,
+                    email,
+                    role,
+                    is_active,
+                    created_at,
+                    parent_student_mappings(
+                        id,
+                        relationship,
+                        is_primary_guardian,
+                        student:student_id(
+                            id,
+                            full_name,
+                            admission_number,
+                            date_of_birth,
+                            gender,
+                            class:class_id(
+                                id,
+                                name,
+                                section,
+                                level:class_level_id(name),
+                                teacher:teacher_id(
+                                    id,
+                                    full_name,
+                                    phone_number
+                                )
+                            )
+                        )
+                    )
+                `)
+                .eq('id', parent_id)
+                .eq('role', 'parent')
+                .single();
+
+            if (error || !parent) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Parent not found'
+                });
+            }
+
+            // Format the response
+            const formattedParent = {
+                id: parent.id,
+                full_name: parent.full_name,
+                phone_number: parent.phone_number,
+                email: parent.email,
+                role: parent.role,
+                is_active: parent.is_active,
+                created_at: parent.created_at,
+                children: parent.parent_student_mappings.map(mapping => ({
+                    id: mapping.student.id,
+                    full_name: mapping.student.full_name,
+                    admission_number: mapping.student.admission_number,
+                    date_of_birth: mapping.student.date_of_birth,
+                    gender: mapping.student.gender,
+                    class: mapping.student.class,
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian
+                }))
+            };
+
+            res.json({
+                status: 'success',
+                data: { parent: formattedParent }
+            });
+
+        } catch (error) {
+            logger.error('Error in get parent details:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Internal server error'
+            });
+        }
+    }
+);
+
+// Update parent details (Admin/Principal only)
+router.put('/parents/:parent_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('full_name').optional().notEmpty().trim().withMessage('Full name cannot be empty'),
+        body('phone_number').optional().matches(/^[0-9]{10}$/).withMessage('Invalid phone number format'),
+        body('email').optional().isEmail().withMessage('Invalid email format'),
+        body('is_active').optional().isBoolean().withMessage('Active status must be boolean')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { parent_id } = req.params;
+            const updateData = req.body;
+
+            // Check if parent exists
+            const { data: existingParent, error: checkError } = await adminSupabase
+                .from('users')
+                .select('id, role')
+                .eq('id', parent_id)
+                .eq('role', 'parent')
+                .single();
+
+            if (checkError || !existingParent) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Parent not found'
+                });
+            }
+
+            // Check for duplicate phone number if updating
+            if (updateData.phone_number) {
+                const { data: duplicatePhone } = await adminSupabase
+                    .from('users')
+                    .select('id')
+                    .eq('phone_number', updateData.phone_number)
+                    .neq('id', parent_id)
+                    .single();
+
+                if (duplicatePhone) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Phone number already exists'
+                    });
+                }
+            }
+
+            // Check for duplicate email if updating
+            if (updateData.email) {
+                const { data: duplicateEmail } = await adminSupabase
+                    .from('users')
+                    .select('id')
+                    .eq('email', updateData.email)
+                    .neq('id', parent_id)
+                    .single();
+
+                if (duplicateEmail) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Email already exists'
+                    });
+                }
+            }
+
+            // Update parent
+            const { data: updatedParent, error } = await adminSupabase
+                .from('users')
+                .update(updateData)
+                .eq('id', parent_id)
+                .select('id, full_name, phone_number, email, role, is_active, updated_at')
+                .single();
+
+            if (error) {
+                logger.error('Error updating parent:', error);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to update parent'
+                });
+            }
+
+            res.json({
+                status: 'success',
+                data: { parent: updatedParent }
+            });
+
+        } catch (error) {
+            logger.error('Error in update parent:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Internal server error'
+            });
+        }
+    }
+);
+
 export default router; 

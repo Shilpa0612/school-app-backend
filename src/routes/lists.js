@@ -717,7 +717,7 @@ router.put('/staff/:id', authenticate, async (req, res) => {
         }
 
         // Filter out fields that don't exist in staff table
-        const allowedFields = ['full_name', 'phone_number', 'role', 'department', 'designation', 'is_active'];
+        const allowedFields = ['full_name', 'phone_number', 'email', 'role', 'subject', 'department', 'designation', 'joining_date', 'address', 'emergency_contact', 'emergency_contact_phone', 'is_active'];
         const filteredData = {};
 
         for (const [key, value] of Object.entries(updateData)) {
