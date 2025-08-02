@@ -572,7 +572,7 @@ router.get('/students/:id',
                 .from('students_master')
                 .select(`
                     *,
-                    academic_records:student_academic_records(
+                    student_academic_records(
                         *,
                         class:class_division_id(
                             *,
@@ -906,4 +906,4 @@ router.put('/update-parent-access/:mapping_id',
     }
 );
 
-export default router; 
+export default router;

@@ -121,7 +121,7 @@ router.get('/',
                         students:students_master (
                             id
                         ),
-                        academic_records:student_academic_records (
+                        student_academic_records (
                             class_division_id
                         )
                     `)
@@ -129,8 +129,8 @@ router.get('/',
 
                 if (childrenClasses && childrenClasses.length > 0) {
                     const classIds = childrenClasses
-                        .filter(mapping => mapping.academic_records && mapping.academic_records.length > 0)
-                        .map(mapping => mapping.academic_records[0].class_division_id);
+                        .filter(mapping => mapping.student_academic_records && mapping.student_academic_records.length > 0)
+                        .map(mapping => mapping.student_academic_records[0].class_division_id);
 
                     if (classIds.length > 0) {
                         query = query.in('class_division_id', classIds);
@@ -178,8 +178,61 @@ router.get('/',
             const limit = parseInt(req.query.limit) || 20;
             const offset = (page - 1) * limit;
 
-            // Get total count for pagination
-            const { count, error: countError } = await query.count();
+            // Get total count for pagination using a separate count query
+            let countQuery = adminSupabase.from('homework').select('*', { count: 'exact', head: true });
+
+            // Apply the same filters to count query
+            if (req.user.role === 'teacher') {
+                countQuery = countQuery.eq('teacher_id', req.user.id);
+            } else if (req.user.role === 'parent') {
+                // For parents, we need to apply the same class filtering logic
+                const { data: childrenClasses } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        students:students_master (
+                            id
+                        ),
+                        student_academic_records (
+                            class_division_id
+                        )
+                    `)
+                    .eq('parent_id', req.user.id);
+
+                if (childrenClasses && childrenClasses.length > 0) {
+                    const classIds = childrenClasses
+                        .filter(mapping => mapping.student_academic_records && mapping.student_academic_records.length > 0)
+                        .map(mapping => mapping.student_academic_records[0].class_division_id);
+
+                    if (classIds.length > 0) {
+                        countQuery = countQuery.in('class_division_id', classIds);
+                    }
+                }
+            }
+
+            // Apply additional filters to count query
+            if (req.query.class_division_id) {
+                countQuery = countQuery.eq('class_division_id', req.query.class_division_id);
+            }
+            if (req.query.subject) {
+                countQuery = countQuery.eq('subject', req.query.subject);
+            }
+            if (req.query.teacher_id && (req.user.role === 'admin' || req.user.role === 'principal')) {
+                countQuery = countQuery.eq('teacher_id', req.query.teacher_id);
+            }
+            if (req.query.academic_year_id) {
+                countQuery = countQuery.eq('class_division.academic_year_id', req.query.academic_year_id);
+            }
+            if (req.query.class_level_id) {
+                countQuery = countQuery.eq('class_division.level.id', req.query.class_level_id);
+            }
+            if (req.query.due_date_from) {
+                countQuery = countQuery.gte('due_date', req.query.due_date_from);
+            }
+            if (req.query.due_date_to) {
+                countQuery = countQuery.lte('due_date', req.query.due_date_to);
+            }
+
+            const { count, error: countError } = await countQuery;
             if (countError) throw countError;
 
             const { data, error } = await query
@@ -378,7 +431,7 @@ router.get('/filters',
                 const { data: childrenClasses, error: childrenClassesError } = await adminSupabase
                     .from('parent_student_mappings')
                     .select(`
-                        academic_records:student_academic_records (
+                        student_academic_records (
                             class_division:class_division_id (
                                 id,
                                 division,
@@ -390,8 +443,8 @@ router.get('/filters',
 
                 if (!childrenClassesError && childrenClasses) {
                     const classDivisions = childrenClasses
-                        .filter(mapping => mapping.academic_records && mapping.academic_records.length > 0)
-                        .map(mapping => mapping.academic_records[0].class_division)
+                        .filter(mapping => mapping.student_academic_records && mapping.student_academic_records.length > 0)
+                        .map(mapping => mapping.student_academic_records[0].class_division)
                         .filter((value, index, self) =>
                             index === self.findIndex(t => t.id === value.id)
                         );

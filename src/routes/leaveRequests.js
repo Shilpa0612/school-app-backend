@@ -1,6 +1,6 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
-import { supabase } from '../config/supabase.js';
+import { adminSupabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -8,7 +8,7 @@ const router = express.Router();
 // Create leave request
 router.post('/',
     authenticate,
-    authorize('parent'),
+    authorize(['parent', 'student', 'teacher', 'admin', 'principal']),
     [
         body('student_id').isUUID(),
         body('start_date').isISO8601().toDate(),
@@ -24,26 +24,67 @@ router.post('/',
 
             const { student_id, start_date, end_date, reason } = req.body;
 
-            // Verify parent has access to this student
-            const { data: mapping, error: mappingError } = await supabase
-                .from('parent_student_mappings')
-                .select('id')
-                .eq('parent_id', req.user.id)
-                .eq('student_id', student_id)
-                .single();
+            // Verify user has access to this student based on role
+            let hasAccess = false;
 
-            if (mappingError || !mapping) {
+            if (req.user.role === 'parent') {
+                // Check if parent has access to this student using adminSupabase to bypass RLS
+                const { data: mapping, error: mappingError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select('id')
+                    .eq('parent_id', req.user.id)
+                    .eq('student_id', student_id)
+                    .single();
+
+                console.log('Parent authorization debug:', {
+                    parent_id: req.user.id,
+                    student_id: student_id,
+                    mapping: mapping,
+                    mappingError: mappingError,
+                    hasMapping: !mappingError && mapping
+                });
+
+                hasAccess = !mappingError && mapping;
+            } else if (req.user.role === 'student') {
+                // Students can only create leave requests for themselves
+                hasAccess = req.user.id === student_id;
+            } else if (['teacher', 'admin', 'principal'].includes(req.user.role)) {
+                // Teachers, admins, and principals can create leave requests for any student
+                hasAccess = true;
+            }
+
+            console.log('Final authorization check:', {
+                user_role: req.user.role,
+                user_id: req.user.id,
+                student_id: student_id,
+                hasAccess: hasAccess
+            });
+
+            if (!hasAccess) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'Not authorized to create leave request for this student'
+                    message: `Not authorized to create leave request for this student. User role: ${req.user.role}, Student ID: ${student_id}`
                 });
             }
 
-            const { data, error } = await supabase
+            // Verify the student exists in students_master table
+            const { data: student, error: studentError } = await adminSupabase
+                .from('students_master')
+                .select('id, full_name, admission_number')
+                .eq('id', student_id)
+                .single();
+
+            if (studentError || !student) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
+            }
+
+            const { data, error } = await adminSupabase
                 .from('leave_requests')
                 .insert([{
                     student_id,
-                    requested_by: req.user.id,
                     start_date,
                     end_date,
                     reason,
@@ -69,43 +110,55 @@ router.get('/',
     authenticate,
     async (req, res, next) => {
         try {
-            let query = supabase
+            let query = adminSupabase
                 .from('leave_requests')
                 .select(`
                     *,
                     student:student_id (
                         id,
                         full_name,
-                        class:class_id (
-                            id,
-                            name,
-                            section,
-                            teacher:teacher_id (id, full_name)
-                        )
-                    ),
-                    requester:requested_by (id, full_name, role),
-                    approver:approved_by (id, full_name, role)
+                        admission_number
+                    )
                 `);
+
+            // Debug: Log user role and initial query
+            console.log('Leave requests debug:', {
+                user_role: req.user.role,
+                user_id: req.user.id
+            });
 
             // Filter based on user role
             if (req.user.role === 'parent') {
-                // Get leave requests for parent's children
-                const { data: children } = await supabase
+                // Get leave requests for parent's children using adminSupabase
+                const { data: children, error: childrenError } = await adminSupabase
                     .from('parent_student_mappings')
                     .select('student_id')
                     .eq('parent_id', req.user.id);
 
-                const studentIds = children.map(child => child.student_id);
-                query = query.in('student_id', studentIds);
-            } else if (req.user.role === 'teacher') {
-                // Get leave requests for teacher's class students
-                const { data: classStudents } = await supabase
-                    .from('classes')
-                    .select('students!inner (id)')
-                    .eq('teacher_id', req.user.id);
+                console.log('Parent children debug:', {
+                    children: children,
+                    children_error: childrenError
+                });
 
-                const studentIds = classStudents.map(student => student.id);
-                query = query.in('student_id', studentIds);
+                const studentIds = children?.map(child => child.student_id) || [];
+                console.log('Student IDs for filtering:', studentIds);
+
+                if (studentIds.length > 0) {
+                    query = query.in('student_id', studentIds);
+                } else {
+                    // If no children, return empty result
+                    return res.json({
+                        status: 'success',
+                        data: { leave_requests: [] }
+                    });
+                }
+            } else if (req.user.role === 'teacher') {
+                // Teachers can see all leave requests (they can approve/reject)
+                // No filtering needed for teachers
+                console.log('Teacher role - no filtering applied');
+            } else if (req.user.role === 'admin' || req.user.role === 'principal') {
+                // Admins and principals can see all leave requests
+                console.log('Admin/Principal role - no filtering applied');
             }
 
             // Apply status filter if provided
@@ -113,8 +166,25 @@ router.get('/',
                 query = query.eq('status', req.query.status);
             }
 
+            // First, let's check if there are any leave requests at all
+            const { data: allRequests, error: allError } = await adminSupabase
+                .from('leave_requests')
+                .select('*');
+
+            console.log('All leave requests check:', {
+                all_requests: allRequests,
+                all_error: allError,
+                all_count: allRequests?.length || 0
+            });
+
             const { data, error } = await query
                 .order('created_at', { ascending: false });
+
+            console.log('Final query result:', {
+                data: data,
+                error: error,
+                data_length: data?.length || 0
+            });
 
             if (error) throw error;
 
@@ -131,7 +201,7 @@ router.get('/',
 // Update leave request status
 router.put('/:id/status',
     authenticate,
-    authorize('teacher', 'principal'),
+    authorize(['teacher', 'principal', 'admin']),
     [
         body('status').isIn(['approved', 'rejected'])
     ],
@@ -145,31 +215,34 @@ router.put('/:id/status',
             const { id } = req.params;
             const { status } = req.body;
 
-            // If teacher, verify they are assigned to student's class
-            if (req.user.role === 'teacher') {
-                const { data: leaveRequest, error: leaveError } = await supabase
-                    .from('leave_requests')
-                    .select(`
-                        student:student_id (
-                            class:class_id (teacher_id)
-                        )
-                    `)
-                    .eq('id', id)
-                    .single();
+            // For teachers, principals, and admins - all can approve/reject leave requests
+            // No additional authorization needed since they're already authorized by role
 
-                if (leaveError || !leaveRequest || leaveRequest.student.class.teacher_id !== req.user.id) {
-                    return res.status(403).json({
-                        status: 'error',
-                        message: 'Not authorized to update this leave request'
-                    });
-                }
+            // First check if the leave request exists
+            const { data: existingRequest, error: checkError } = await adminSupabase
+                .from('leave_requests')
+                .select('*')
+                .eq('id', id)
+                .single();
+
+            console.log('Status update debug:', {
+                leave_request_id: id,
+                existing_request: existingRequest,
+                check_error: checkError
+            });
+
+            if (checkError || !existingRequest) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Leave request not found'
+                });
             }
 
-            const { data, error } = await supabase
+            const { data, error } = await adminSupabase
                 .from('leave_requests')
                 .update({
                     status,
-                    approved_by: req.user.id
+                    reviewed_by: req.user.id
                 })
                 .eq('id', id)
                 .select()
@@ -183,6 +256,56 @@ router.put('/:id/status',
             });
         } catch (error) {
             next(error);
+        }
+    }
+);
+
+// Temporary debug endpoint to check table structure
+router.get('/debug/table-structure',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            // Try to get table info
+            const { data, error } = await adminSupabase
+                .from('leave_requests')
+                .select('*')
+                .limit(1);
+
+            // Try to insert a test record to see what columns are available
+            const { data: insertData, error: insertError } = await adminSupabase
+                .from('leave_requests')
+                .insert([{
+                    student_id: 'd2e4585e-830c-40ba-b29c-cc62ff146607',
+                    start_date: '2025-07-31',
+                    end_date: '2025-08-01',
+                    reason: 'Test',
+                    status: 'pending'
+                }])
+                .select()
+                .single();
+
+            // Get all leave requests
+            const { data: allRequests, error: allError } = await adminSupabase
+                .from('leave_requests')
+                .select('*');
+
+            res.json({
+                status: 'success',
+                data: {
+                    select_error: error,
+                    select_data: data,
+                    insert_error: insertError,
+                    insert_data: insertData,
+                    all_requests: allRequests,
+                    all_error: allError,
+                    message: 'Debugging table structure'
+                }
+            });
+        } catch (error) {
+            res.json({
+                status: 'error',
+                message: error.message
+            });
         }
     }
 );

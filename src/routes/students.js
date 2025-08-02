@@ -96,6 +96,289 @@ router.post('/',
     }
 );
 
+// Get students by class division
+router.get('/class/:class_division_id',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { class_division_id } = req.params;
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 20;
+            const offset = (page - 1) * limit;
+
+            // Verify class division exists
+            const { data: classDivision, error: divisionError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    level:class_level_id (
+                        name,
+                        sequence_number
+                    ),
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    )
+                `)
+                .eq('id', class_division_id)
+                .single();
+
+            if (divisionError || !classDivision) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class division not found'
+                });
+            }
+
+            // Check if teacher is authorized to access this class
+            if (req.user.role === 'teacher' && classDivision.teacher?.id !== req.user.id) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Not authorized to access this class division'
+                });
+            }
+
+            // Get students in this class division
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    admission_number,
+                    date_of_birth,
+                    status,
+                    student_academic_records!inner (
+                        id,
+                        roll_number,
+                        status,
+                        class_division_id
+                    )
+                `)
+                .eq('status', 'active')
+                .eq('student_academic_records.class_division_id', class_division_id)
+                .order('full_name');
+
+            if (studentsError) {
+                logger.error('Error fetching students:', studentsError);
+                throw studentsError;
+            }
+
+            // Sort students by roll number
+            const sortedStudents = students.sort((a, b) => {
+                const rollA = parseInt(a.student_academic_records[0]?.roll_number) || 0;
+                const rollB = parseInt(b.student_academic_records[0]?.roll_number) || 0;
+                return rollA - rollB;
+            });
+
+            // Apply pagination
+            const totalCount = sortedStudents.length;
+            const paginatedStudents = sortedStudents.slice(offset, offset + limit);
+
+            res.json({
+                status: 'success',
+                data: {
+                    class_division: classDivision,
+                    students: paginatedStudents,
+                    count: paginatedStudents.length,
+                    total_count: totalCount,
+                    pagination: {
+                        page,
+                        limit,
+                        total: totalCount,
+                        total_pages: Math.ceil(totalCount / limit),
+                        has_next: page < Math.ceil(totalCount / limit),
+                        has_prev: page > 1
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Get students by class level (e.g., all Grade 1 students)
+router.get('/level/:class_level_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { class_level_id } = req.params;
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 20;
+            const offset = (page - 1) * limit;
+
+            // Verify class level exists
+            const { data: classLevel, error: levelError } = await adminSupabase
+                .from('class_levels')
+                .select('id, name, sequence_number')
+                .eq('id', class_level_id)
+                .single();
+
+            if (levelError || !classLevel) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class level not found'
+                });
+            }
+
+            // Get all class divisions for this level
+            const { data: classDivisions, error: divisionsError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    )
+                `)
+                .eq('class_level_id', class_level_id);
+
+            if (divisionsError) {
+                logger.error('Error fetching class divisions:', divisionsError);
+                throw divisionsError;
+            }
+
+            // Get students from all divisions of this level
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    admission_number,
+                    date_of_birth,
+                    status,
+                    student_academic_records!inner (
+                        id,
+                        roll_number,
+                        status,
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            teacher:teacher_id (
+                                id,
+                                full_name
+                            )
+                        )
+                    )
+                `)
+                .eq('status', 'active')
+                .in('student_academic_records.class_division_id', classDivisions.map(cd => cd.id))
+                .order('full_name');
+
+            if (studentsError) {
+                logger.error('Error fetching students:', studentsError);
+                throw studentsError;
+            }
+
+            // Sort students by division and roll number
+            const sortedStudents = students.sort((a, b) => {
+                const divisionA = a.student_academic_records[0]?.class_division?.division || '';
+                const divisionB = b.student_academic_records[0]?.class_division?.division || '';
+
+                // First sort by division
+                if (divisionA !== divisionB) {
+                    return divisionA.localeCompare(divisionB);
+                }
+
+                // Then sort by roll number within division
+                const rollA = parseInt(a.student_academic_records[0]?.roll_number) || 0;
+                const rollB = parseInt(b.student_academic_records[0]?.roll_number) || 0;
+                return rollA - rollB;
+            });
+
+            // Apply pagination
+            const totalCount = sortedStudents.length;
+            const paginatedStudents = sortedStudents.slice(offset, offset + limit);
+
+            res.json({
+                status: 'success',
+                data: {
+                    class_level: classLevel,
+                    class_divisions: classDivisions,
+                    students: paginatedStudents,
+                    count: paginatedStudents.length,
+                    total_count: totalCount,
+                    pagination: {
+                        page,
+                        limit,
+                        total: totalCount,
+                        total_pages: Math.ceil(totalCount / limit),
+                        has_next: page < Math.ceil(totalCount / limit),
+                        has_prev: page > 1
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Get all class divisions with student counts
+router.get('/divisions/summary',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            // Get all class divisions with student counts
+            const { data: divisions, error: divisionsError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    level:class_level_id (
+                        id,
+                        name,
+                        sequence_number
+                    ),
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    ),
+                    student_academic_records (
+                        id
+                    )
+                `);
+
+            if (divisionsError) {
+                logger.error('Error fetching divisions:', divisionsError);
+                throw divisionsError;
+            }
+
+            // Process the data to get student counts and sort by level sequence and division
+            const divisionsWithCounts = divisions.map(division => ({
+                id: division.id,
+                division: division.division,
+                level: division.level,
+                teacher: division.teacher,
+                student_count: division.student_academic_records?.length || 0
+            })).sort((a, b) => {
+                // First sort by level sequence
+                if (a.level.sequence_number !== b.level.sequence_number) {
+                    return a.level.sequence_number - b.level.sequence_number;
+                }
+                // Then sort by division within the same level
+                return a.division.localeCompare(b.division);
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    divisions: divisionsWithCounts,
+                    total_divisions: divisionsWithCounts.length,
+                    total_students: divisionsWithCounts.reduce((sum, div) => sum + div.student_count, 0)
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Link student to parent
 router.post('/:student_id/link-parent',
     authenticate,
@@ -207,39 +490,50 @@ router.get('/:student_id',
             const { data: student, error } = await adminSupabase
                 .from('students_master')
                 .select(`
-                    *,
-                    academic_records:student_academic_records(
+                    id,
+                    full_name,
+                    admission_number,
+                    date_of_birth,
+                    admission_date,
+                    status,
+                    student_academic_records (
                         id,
-                        class_division:class_division_id(
+                        roll_number,
+                        status,
+                        class_division:class_division_id (
                             id,
                             division,
-                            class_level:class_level_id(
+                            level:class_level_id (
+                                id,
                                 name,
                                 sequence_number
+                            ),
+                            teacher:teacher_id (
+                                id,
+                                full_name
                             )
-                        ),
-                        roll_number,
-                        status
+                        )
                     ),
-                    guardians:parent_student_mappings(
+                    parent_mappings:parent_student_mappings (
                         id,
                         relationship,
                         is_primary_guardian,
                         access_level,
-                        parent:parent_id(
+                        parent:parent_id (
                             id,
                             full_name,
-                            phone_number,
-                            email
+                            phone_number
                         )
                     )
                 `)
                 .eq('id', student_id)
                 .single();
 
-            if (error) {
-                logger.error('Error fetching student details:', error);
-                throw error;
+            if (error || !student) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
             }
 
             res.json({
@@ -252,173 +546,148 @@ router.get('/:student_id',
     }
 );
 
-// Helper function to check student access
-async function checkStudentAccess(userId, userRole, studentId) {
-    console.log('Checking access for:', { userId, userRole, studentId });
-
-    if (['admin', 'principal'].includes(userRole)) {
-        console.log('Admin/Principal access granted');
-        return true;
-    }
-
-    if (userRole === 'teacher') {
-        // Check if teacher is assigned to student's class
-        const { data, error } = await adminSupabase
-            .from('student_academic_records')
-            .select(`
-                class_division:class_division_id(
-                    id,
-                    teacher_id
-                )
-            `)
-            .eq('student_id', studentId)
-            .eq('status', 'ongoing')
-            .limit(1);
-
-        console.log('Teacher access check result:', { data, error });
-
-        if (error) {
-            console.error('Error checking teacher access:', error);
-            return false;
-        }
-
-        const hasAccess = data && data.length > 0 && data[0]?.class_division?.teacher_id === userId;
-        console.log('Teacher access details:', {
-            dataLength: data?.length,
-            classDivision: data?.[0]?.class_division,
-            teacherId: data?.[0]?.class_division?.teacher_id,
-            userId: userId,
-            teacherIdType: typeof data?.[0]?.class_division?.teacher_id,
-            userIdType: typeof userId,
-            hasAccess: hasAccess
-        });
-        return hasAccess;
-    }
-
-    if (userRole === 'parent') {
-        // Check if parent is linked to student
-        const { data, error } = await adminSupabase
-            .from('parent_student_mappings')
-            .select('id')
-            .eq('parent_id', userId)
-            .eq('student_id', studentId)
-            .limit(1);
-
-        console.log('Parent access check result:', { data, error });
-
-        if (error) {
-            console.error('Error checking parent access:', error);
-            return false;
-        }
-
-        const hasAccess = data && data.length > 0;
-        console.log('Parent has access:', hasAccess);
-        return hasAccess;
-    }
-
-    console.log('No access - unknown role');
-    return false;
-}
-
-// Debug endpoint to check class assignments
-router.get('/debug/class-assignment/:student_id',
+// Update student details
+router.put('/:student_id',
     authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('full_name').optional().notEmpty().withMessage('Full name cannot be empty'),
+        body('date_of_birth').optional().isDate().withMessage('Valid date of birth is required'),
+        body('status').optional().isIn(['active', 'inactive', 'transferred']).withMessage('Invalid status')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { student_id } = req.params;
+            const updateData = req.body;
+
+            // Check if student exists
+            const { data: existingStudent, error: checkError } = await adminSupabase
+                .from('students_master')
+                .select('id')
+                .eq('id', student_id)
+                .single();
+
+            if (checkError || !existingStudent) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
+            }
+
+            // Update student
+            const { data: updatedStudent, error: updateError } = await adminSupabase
+                .from('students_master')
+                .update(updateData)
+                .eq('id', student_id)
+                .select()
+                .single();
+
+            if (updateError) {
+                logger.error('Error updating student:', updateError);
+                throw updateError;
+            }
+
+            res.json({
+                status: 'success',
+                data: { student: updatedStudent }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Delete student (soft delete)
+router.delete('/:student_id',
+    authenticate,
+    authorize(['admin', 'principal']),
     async (req, res, next) => {
         try {
             const { student_id } = req.params;
 
-            // Get student's academic record
-            const { data: academicRecord, error: academicError } = await adminSupabase
-                .from('student_academic_records')
+            // Check if student exists
+            const { data: existingStudent, error: checkError } = await adminSupabase
+                .from('students_master')
+                .select('id')
+                .eq('id', student_id)
+                .single();
+
+            if (checkError || !existingStudent) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
+            }
+
+            // Soft delete by setting status to inactive
+            const { error: deleteError } = await adminSupabase
+                .from('students_master')
+                .update({ status: 'inactive' })
+                .eq('id', student_id);
+
+            if (deleteError) {
+                logger.error('Error deleting student:', deleteError);
+                throw deleteError;
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Student deleted successfully'
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Helper function to check if user can access student
+async function checkStudentAccess(userId, userRole, studentId) {
+    try {
+        // Admin and principal can access all students
+        if (userRole === 'admin' || userRole === 'principal') {
+            return true;
+        }
+
+        // Teachers can access students in their assigned classes
+        if (userRole === 'teacher') {
+            const { data: student, error } = await adminSupabase
+                .from('students_master')
                 .select(`
-                    id,
-                    student_id,
-                    class_division_id,
-                    status,
-                    class_division:class_division_id (
-                        id,
-                        division,
-                        teacher_id,
-                        level:class_level_id (
-                            name,
-                            sequence_number
+                    student_academic_records!inner (
+                        class_division:class_division_id (
+                            teacher_id
                         )
                     )
                 `)
-                .eq('student_id', student_id)
-                .eq('status', 'ongoing')
+                .eq('id', studentId)
+                .eq('student_academic_records.class_division.teacher_id', userId)
                 .single();
 
-            if (academicError) {
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Error fetching academic record',
-                    error: academicError
-                });
-            }
-
-            res.json({
-                status: 'success',
-                data: {
-                    academic_record: academicRecord,
-                    authenticated_user: {
-                        id: req.user.id,
-                        name: req.user.full_name,
-                        role: req.user.role
-                    }
-                }
-            });
-        } catch (error) {
-            next(error);
+            return !error && student;
         }
-    }
-);
 
-// Debug endpoint to check all class divisions
-router.get('/debug/class-divisions',
-    authenticate,
-    async (req, res, next) => {
-        try {
-            const { data: classDivisions, error } = await adminSupabase
-                .from('class_divisions')
-                .select(`
-                    id,
-                    division,
-                    teacher_id,
-                    teacher:teacher_id (
-                        id,
-                        full_name,
-                        role
-                    ),
-                    level:class_level_id (
-                        name,
-                        sequence_number
-                    )
-                `);
+        // Parents can access their linked students
+        if (userRole === 'parent') {
+            const { data: mapping, error } = await adminSupabase
+                .from('parent_student_mappings')
+                .select('id')
+                .eq('student_id', studentId)
+                .eq('parent_id', userId)
+                .single();
 
-            if (error) {
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Error fetching class divisions',
-                    error: error
-                });
-            }
-
-            res.json({
-                status: 'success',
-                data: {
-                    class_divisions: classDivisions,
-                    authenticated_user: {
-                        id: req.user.id,
-                        name: req.user.full_name,
-                        role: req.user.role
-                    }
-                }
-            });
-        } catch (error) {
-            next(error);
+            return !error && mapping;
         }
+
+        return false;
+    } catch (error) {
+        logger.error('Error checking student access:', error);
+        return false;
     }
-);
+}
 
 export default router; 

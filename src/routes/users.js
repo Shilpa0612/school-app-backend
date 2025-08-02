@@ -766,4 +766,164 @@ router.delete('/clear-all-mappings',
     }
 );
 
+// Add this new endpoint after the existing endpoints
+router.post('/sync-teacher-to-staff/:user_id', authenticate, async (req, res, next) => {
+    try {
+        const { user_id } = req.params;
+
+        // Check if user is admin/principal
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Only admin and principal can sync teachers to staff'
+            });
+        }
+
+        // Get user details
+        const user = await supabase
+            .from('users')
+            .select('*')
+            .eq('id', user_id)
+            .eq('role', 'teacher')
+            .single();
+
+        if (!user.data) {
+            return res.status(404).json({
+                status: 'error',
+                message: 'Teacher not found'
+            });
+        }
+
+        // Check if already exists in staff table
+        const existingStaff = await supabase
+            .from('staff')
+            .select('*')
+            .eq('user_id', user_id)
+            .single();
+
+        if (existingStaff.data) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Teacher already exists in staff table'
+            });
+        }
+
+        // Create staff record
+        const staffData = {
+            user_id: user_id,
+            full_name: user.data.full_name,
+            phone_number: user.data.phone_number,
+            email: user.data.email,
+            role: 'teacher',
+            is_active: true,
+            created_by: req.user.id
+        };
+
+        const { data: staff, error } = await supabase
+            .from('staff')
+            .insert(staffData)
+            .select()
+            .single();
+
+        if (error) {
+            console.error('Error creating staff record:', error);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to create staff record'
+            });
+        }
+
+        res.json({
+            status: 'success',
+            data: {
+                message: 'Teacher synced to staff table successfully',
+                staff: staff
+            }
+        });
+
+    } catch (error) {
+        console.error('Error syncing teacher to staff:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Add endpoint to sync all teachers to staff
+router.post('/sync-all-teachers', authenticate, async (req, res, next) => {
+    try {
+        // Check if user is admin/principal
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Only admin and principal can sync all teachers'
+            });
+        }
+
+        // Get all teachers
+        const { data: teachers, error: teachersError } = await supabase
+            .from('users')
+            .select('*')
+            .eq('role', 'teacher');
+
+        if (teachersError) {
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch teachers'
+            });
+        }
+
+        let syncedCount = 0;
+        let skippedCount = 0;
+
+        for (const teacher of teachers) {
+            // Check if already exists in staff table
+            const existingStaff = await supabase
+                .from('staff')
+                .select('*')
+                .eq('user_id', teacher.id)
+                .single();
+
+            if (!existingStaff.data) {
+                // Create staff record
+                const staffData = {
+                    user_id: teacher.id,
+                    full_name: teacher.full_name,
+                    phone_number: teacher.phone_number,
+                    email: teacher.email,
+                    role: 'teacher',
+                    is_active: true,
+                    created_by: req.user.id
+                };
+
+                await supabase
+                    .from('staff')
+                    .insert(staffData);
+
+                syncedCount++;
+            } else {
+                skippedCount++;
+            }
+        }
+
+        res.json({
+            status: 'success',
+            data: {
+                message: 'Teachers sync completed',
+                synced: syncedCount,
+                skipped: skippedCount,
+                total: teachers.length
+            }
+        });
+
+    } catch (error) {
+        console.error('Error syncing all teachers:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
 export default router; 
