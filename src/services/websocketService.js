@@ -148,29 +148,91 @@ class WebSocketService {
     /**
      * Subscribe user to a specific thread
      */
-    subscribeToThread(userId, threadId) {
-        const userSubs = this.userSubscriptions.get(userId);
-        if (userSubs) {
-            userSubs.add(threadId);
+    async subscribeToThread(userId, threadId) {
+        try {
+            // Check if user is participant in thread
+            const { data: participant, error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .select('*')
+                .eq('thread_id', threadId)
+                .eq('user_id', userId)
+                .single();
 
-            // Subscribe to real-time updates for this thread
-            realtimeService.subscribeToThread(
-                threadId,
-                userId,
-                (message) => {
+            if (participantError || !participant) {
+                // Check if thread exists
+                const { data: thread, error: threadError } = await adminSupabase
+                    .from('chat_threads')
+                    .select('id, created_by')
+                    .eq('id', threadId)
+                    .single();
+
+                if (threadError || !thread) {
                     this.sendMessageToUser(userId, {
-                        type: 'new_message',
-                        data: message
+                        type: 'error',
+                        message: 'Thread not found'
                     });
-                },
-                (error) => {
-                    logger.error(`Thread subscription error for user ${userId}:`, error);
+                    return;
                 }
-            );
 
+                // Try to add user as participant
+                try {
+                    const { error: addParticipantError } = await adminSupabase
+                        .from('chat_participants')
+                        .insert({
+                            thread_id: threadId,
+                            user_id: userId,
+                            role: userId === thread.created_by ? 'admin' : 'member'
+                        });
+
+                    if (addParticipantError) {
+                        logger.error('Error adding user as participant for subscription:', addParticipantError);
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Access denied to this thread'
+                        });
+                        return;
+                    }
+
+                    logger.info(`Added user ${userId} as participant to thread ${threadId} for subscription`);
+                } catch (error) {
+                    logger.error('Error adding participant for subscription:', error);
+                    this.sendMessageToUser(userId, {
+                        type: 'error',
+                        message: 'Access denied to this thread'
+                    });
+                    return;
+                }
+            }
+
+            const userSubs = this.userSubscriptions.get(userId);
+            if (userSubs) {
+                userSubs.add(threadId);
+
+                // Subscribe to real-time updates for this thread
+                realtimeService.subscribeToThread(
+                    threadId,
+                    userId,
+                    (message) => {
+                        this.sendMessageToUser(userId, {
+                            type: 'new_message',
+                            data: message
+                        });
+                    },
+                    (error) => {
+                        logger.error(`Thread subscription error for user ${userId}:`, error);
+                    }
+                );
+
+                this.sendMessageToUser(userId, {
+                    type: 'thread_subscribed',
+                    thread_id: threadId
+                });
+            }
+        } catch (error) {
+            logger.error(`Error in subscribeToThread for user ${userId}:`, error);
             this.sendMessageToUser(userId, {
-                type: 'thread_subscribed',
-                thread_id: threadId
+                type: 'error',
+                message: 'Failed to subscribe to thread'
             });
         }
     }
@@ -286,11 +348,49 @@ class WebSocketService {
                 .single();
 
             if (participantError || !participant) {
-                this.sendMessageToUser(userId, {
-                    type: 'error',
-                    message: 'Access denied to this thread'
-                });
-                return;
+                // Check if thread exists
+                const { data: thread, error: threadError } = await adminSupabase
+                    .from('chat_threads')
+                    .select('id, created_by')
+                    .eq('id', thread_id)
+                    .single();
+
+                if (threadError || !thread) {
+                    this.sendMessageToUser(userId, {
+                        type: 'error',
+                        message: 'Thread not found'
+                    });
+                    return;
+                }
+
+                // Try to add user as participant (for direct chats or if user is thread creator)
+                try {
+                    const { error: addParticipantError } = await adminSupabase
+                        .from('chat_participants')
+                        .insert({
+                            thread_id: thread_id,
+                            user_id: userId,
+                            role: userId === thread.created_by ? 'admin' : 'member'
+                        });
+
+                    if (addParticipantError) {
+                        logger.error('Error adding user as participant:', addParticipantError);
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Access denied to this thread'
+                        });
+                        return;
+                    }
+
+                    logger.info(`Added user ${userId} as participant to thread ${thread_id}`);
+                } catch (error) {
+                    logger.error('Error adding participant:', error);
+                    this.sendMessageToUser(userId, {
+                        type: 'error',
+                        message: 'Access denied to this thread'
+                    });
+                    return;
+                }
             }
 
             // Check if thread is active
