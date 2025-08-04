@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
-import { supabase } from '../config/supabase.js';
+import { adminSupabase, supabase } from '../config/supabase.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -53,7 +53,9 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
 
         // Verify all students exist
         const admissionNumbers = student_details.map(detail => detail.admission_number);
-        const { data: students, error: studentsError } = await supabase
+        logger.info('Looking for students with admission numbers:', admissionNumbers);
+
+        const { data: students, error: studentsError } = await adminSupabase
             .from('students_master')
             .select('id, admission_number, full_name')
             .in('admission_number', admissionNumbers);
@@ -63,9 +65,12 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
             throw studentsError;
         }
 
+        logger.info('Found students:', students);
+
         if (students.length !== admissionNumbers.length) {
             const foundNumbers = students.map(s => s.admission_number);
             const missingNumbers = admissionNumbers.filter(num => !foundNumbers.includes(num));
+            logger.error('Missing students:', missingNumbers);
             return res.status(400).json({
                 status: 'error',
                 message: `Students not found: ${missingNumbers.join(', ')}`
@@ -82,7 +87,7 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
         }
 
         // Create parent record (without password - they'll register themselves)
-        const { data: newParent, error: parentError } = await supabase
+        const { data: newParent, error: parentError } = await adminSupabase
             .from('users')
             .insert([
                 {
@@ -127,7 +132,7 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
 
         if (!linkStudentsResponse.ok) {
             // If linking fails, delete the parent record
-            await supabase
+            await adminSupabase
                 .from('users')
                 .delete()
                 .eq('id', newParent.id);
