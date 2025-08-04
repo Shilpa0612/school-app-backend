@@ -95,7 +95,8 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
                     full_name,
                     email,
                     role: 'parent',
-                    is_registered: false // Flag to indicate they haven't registered yet
+                    is_registered: false, // Flag to indicate they haven't registered yet
+                    password_hash: null // Explicitly set to null for unregistered parents
                 }
             ])
             .select()
@@ -179,7 +180,12 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
         });
 
     } catch (error) {
-        next(error);
+        logger.error('Error in create-parent endpoint:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error',
+            details: error.message
+        });
     }
 });
 
