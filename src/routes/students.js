@@ -6,6 +6,157 @@ import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
+// Get all students with pagination and filters (Admin/Principal only)
+router.get('/',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const {
+                page = 1,
+                limit = 20,
+                search,
+                class_division_id,
+                class_level_id,
+                academic_year_id,
+                status = 'active',
+                unlinked_only = false
+            } = req.query;
+
+            // Build query
+            let query = adminSupabase
+                .from('students_master')
+                .select(`
+                    *,
+                    student_academic_records(
+                        *,
+                        class_division:class_division_id(
+                            *,
+                            level:class_level_id(*),
+                            teacher:teacher_id(id, full_name),
+                            academic_year:academic_year_id(*)
+                        )
+                    ),
+                    parent_student_mappings(
+                        *,
+                        parent:parent_id(
+                            id,
+                            full_name,
+                            phone_number,
+                            email
+                        )
+                    )
+                `);
+
+            // Apply filters
+            if (search) {
+                query = query.or(`full_name.ilike.%${search}%,admission_number.ilike.%${search}%`);
+            }
+
+            if (status) {
+                query = query.eq('status', status);
+            }
+
+            if (class_division_id) {
+                query = query.eq('student_academic_records.class_division_id', class_division_id);
+            }
+
+            if (class_level_id) {
+                query = query.eq('student_academic_records.class_division.level.id', class_level_id);
+            }
+
+            if (academic_year_id) {
+                query = query.eq('student_academic_records.class_division.academic_year_id', academic_year_id);
+            }
+
+            // Get all students first for filtering
+            const { data: allStudents, error } = await query;
+
+            if (error) {
+                logger.error('Error fetching students:', error);
+                throw error;
+            }
+
+            // Filter by unlinked only if requested
+            let filteredStudents = allStudents;
+            if (unlinked_only === 'true') {
+                filteredStudents = allStudents.filter(student =>
+                    !student.parent_student_mappings || student.parent_student_mappings.length === 0
+                );
+            }
+
+            // Apply pagination
+            const totalCount = filteredStudents.length;
+            const offset = (page - 1) * limit;
+            const paginatedStudents = filteredStudents.slice(offset, offset + limit);
+
+            // Get available filters for response
+            const { data: academicYears } = await adminSupabase
+                .from('academic_years')
+                .select('id, year_name')
+                .order('year_name', { ascending: false });
+
+            const { data: classLevels } = await adminSupabase
+                .from('class_levels')
+                .select('id, name, sequence_number')
+                .order('sequence_number');
+
+            const { data: classDivisions } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    level:class_level_id(id, name),
+                    teacher:teacher_id(id, full_name),
+                    academic_year:academic_year_id(id, year_name)
+                `)
+                .order('level.sequence_number')
+                .order('division');
+
+            res.json({
+                status: 'success',
+                data: {
+                    students: paginatedStudents.map(student => ({
+                        id: student.id,
+                        full_name: student.full_name,
+                        admission_number: student.admission_number,
+                        date_of_birth: student.date_of_birth,
+                        admission_date: student.admission_date,
+                        status: student.status,
+                        student_academic_records: student.student_academic_records,
+                        parent_student_mappings: student.parent_student_mappings
+                    })),
+                    count: paginatedStudents.length,
+                    total_count: totalCount,
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: totalCount,
+                        total_pages: Math.ceil(totalCount / limit),
+                        has_next: page < Math.ceil(totalCount / limit),
+                        has_prev: page > 1
+                    },
+                    filters: {
+                        search: search || null,
+                        class_division_id: class_division_id || null,
+                        class_level_id: class_level_id || null,
+                        academic_year_id: academic_year_id || null,
+                        status: status || 'active',
+                        unlinked_only: unlinked_only === 'true'
+                    },
+                    available_filters: {
+                        academic_years: academicYears,
+                        class_levels: classLevels,
+                        class_divisions: classDivisions
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Create new student (Admin/Principal only)
 router.post('/',
     authenticate,

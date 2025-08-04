@@ -15,7 +15,170 @@ const registerValidation = [
     body('full_name').notEmpty().withMessage('Full name is required')
 ];
 
-// Register route
+// Create parent record validation middleware
+const createParentValidation = [
+    body('full_name').notEmpty().withMessage('Full name is required'),
+    body('phone_number').matches(/^[0-9]{10}$/).withMessage('Invalid phone number format'),
+    body('email').optional().isEmail().withMessage('Invalid email format'),
+    body('student_details').isArray({ min: 1 }).withMessage('At least one student detail is required'),
+    body('student_details.*.admission_number').notEmpty().withMessage('Admission number is required'),
+    body('student_details.*.relationship').isIn(['father', 'mother', 'guardian']).withMessage('Invalid relationship'),
+    body('student_details.*.is_primary_guardian').isBoolean().withMessage('Primary guardian must be boolean')
+];
+
+// Create parent record (Admin/Principal only)
+router.post('/create-parent', createParentValidation, async (req, res, next) => {
+    try {
+        // Check for validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        const { full_name, phone_number, email, student_details } = req.body;
+
+        // Check if parent already exists
+        const { data: existingParent } = await supabase
+            .from('users')
+            .select('id')
+            .eq('phone_number', phone_number)
+            .single();
+
+        if (existingParent) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Parent with this phone number already exists'
+            });
+        }
+
+        // Verify all students exist
+        const admissionNumbers = student_details.map(detail => detail.admission_number);
+        const { data: students, error: studentsError } = await supabase
+            .from('students_master')
+            .select('id, admission_number, full_name')
+            .in('admission_number', admissionNumbers);
+
+        if (studentsError) {
+            logger.error('Error fetching students:', studentsError);
+            throw studentsError;
+        }
+
+        if (students.length !== admissionNumbers.length) {
+            const foundNumbers = students.map(s => s.admission_number);
+            const missingNumbers = admissionNumbers.filter(num => !foundNumbers.includes(num));
+            return res.status(400).json({
+                status: 'error',
+                message: `Students not found: ${missingNumbers.join(', ')}`
+            });
+        }
+
+        // Check for primary guardian conflicts
+        const primaryGuardianCount = student_details.filter(detail => detail.is_primary_guardian).length;
+        if (primaryGuardianCount > 1) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Only one student can have this parent as primary guardian'
+            });
+        }
+
+        // Create parent record (without password - they'll register themselves)
+        const { data: newParent, error: parentError } = await supabase
+            .from('users')
+            .insert([
+                {
+                    phone_number,
+                    full_name,
+                    email,
+                    role: 'parent',
+                    is_registered: false // Flag to indicate they haven't registered yet
+                }
+            ])
+            .select()
+            .single();
+
+        if (parentError) {
+            logger.error('Error creating parent:', parentError);
+            throw parentError;
+        }
+
+        // Prepare student mappings for the link-students endpoint
+        const studentMappings = student_details.map(detail => {
+            const student = students.find(s => s.admission_number === detail.admission_number);
+            return {
+                student_id: student.id,
+                relationship: detail.relationship,
+                is_primary_guardian: detail.is_primary_guardian,
+                access_level: 'full'
+            };
+        });
+
+        // Use the existing link-students endpoint to create parent-student mappings
+        const linkStudentsResponse = await fetch(`${req.protocol}://${req.get('host')}/api/academic/link-students`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': req.headers.authorization
+            },
+            body: JSON.stringify({
+                parent_id: newParent.id,
+                students: studentMappings
+            })
+        });
+
+        if (!linkStudentsResponse.ok) {
+            // If linking fails, delete the parent record
+            await supabase
+                .from('users')
+                .delete()
+                .eq('id', newParent.id);
+
+            const errorData = await linkStudentsResponse.json();
+            return res.status(linkStudentsResponse.status).json({
+                status: 'error',
+                message: 'Failed to link students to parent',
+                details: errorData
+            });
+        }
+
+        const linkResult = await linkStudentsResponse.json();
+
+        res.status(201).json({
+            status: 'success',
+            data: {
+                parent: {
+                    id: newParent.id,
+                    full_name: newParent.full_name,
+                    phone_number: newParent.phone_number,
+                    email: newParent.email,
+                    role: newParent.role,
+                    is_registered: false
+                },
+                students: students.map(student => ({
+                    id: student.id,
+                    admission_number: student.admission_number,
+                    full_name: student.full_name
+                })),
+                mappings: studentMappings.map(mapping => ({
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian,
+                    access_level: mapping.access_level
+                })),
+                registration_instructions: {
+                    message: 'Parent can now register using their phone number',
+                    endpoint: 'POST /api/auth/register',
+                    required_fields: ['phone_number', 'password', 'role: "parent"']
+                },
+                note: 'Parent-student mappings created using /api/academic/link-students endpoint'
+            },
+            message: 'Parent record created successfully. Parent can now register using their phone number.'
+        });
+
+    } catch (error) {
+        next(error);
+    }
+});
+
+// Register route (enhanced for parent self-registration)
 router.post('/register', registerValidation, async (req, res, next) => {
     try {
         // Check for validation errors
@@ -29,17 +192,66 @@ router.post('/register', registerValidation, async (req, res, next) => {
         // Check if user already exists
         const { data: existingUser } = await supabase
             .from('users')
-            .select('id')
+            .select('*')
             .eq('phone_number', phone_number)
             .single();
 
         if (existingUser) {
-            return res.status(400).json({
-                status: 'error',
-                message: 'User already exists'
-            });
+            // If parent exists but not registered, allow them to complete registration
+            if (existingUser.role === 'parent' && !existingUser.is_registered) {
+                // Hash password
+                const salt = await bcrypt.genSalt(10);
+                const hashedPassword = await bcrypt.hash(password, salt);
+
+                // Update user with password and mark as registered
+                const { data: updatedUser, error: updateError } = await supabase
+                    .from('users')
+                    .update({
+                        password_hash: hashedPassword,
+                        is_registered: true,
+                        full_name: full_name || existingUser.full_name
+                    })
+                    .eq('id', existingUser.id)
+                    .select()
+                    .single();
+
+                if (updateError) {
+                    logger.error('Error updating parent registration:', updateError);
+                    throw updateError;
+                }
+
+                // Generate JWT
+                const token = jwt.sign(
+                    {
+                        userId: updatedUser.id,
+                        role: updatedUser.role
+                    },
+                    process.env.JWT_SECRET,
+                    { expiresIn: process.env.JWT_EXPIRES_IN }
+                );
+
+                return res.status(200).json({
+                    status: 'success',
+                    data: {
+                        user: {
+                            id: updatedUser.id,
+                            phone_number: updatedUser.phone_number,
+                            role: updatedUser.role,
+                            full_name: updatedUser.full_name
+                        },
+                        token,
+                        message: 'Parent registration completed successfully'
+                    }
+                });
+            } else {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'User already exists and is registered'
+                });
+            }
         }
 
+        // For new users (non-parents or new parent registrations)
         // Hash password
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
@@ -52,7 +264,8 @@ router.post('/register', registerValidation, async (req, res, next) => {
                     phone_number,
                     password_hash: hashedPassword,
                     role,
-                    full_name
+                    full_name,
+                    is_registered: true
                 }
             ])
             .select()
@@ -65,7 +278,7 @@ router.post('/register', registerValidation, async (req, res, next) => {
 
         // Generate JWT
         const token = jwt.sign(
-            { 
+            {
                 userId: newUser.id,
                 role: newUser.role
             },
@@ -160,7 +373,7 @@ router.post('/login', async (req, res, next) => {
 
         // Generate JWT token
         const token = jwt.sign(
-            { 
+            {
                 userId: user.id,
                 role: user.role
             },

@@ -271,18 +271,17 @@ router.get('/parents',
     authorize(['admin', 'principal']),
     async (req, res, next) => {
         try {
-            const { 
-                page = 1, 
-                limit = 20, 
-                class_id, 
-                search,
-                is_active = true 
+            const {
+                page = 1,
+                limit = 20,
+                class_id,
+                search
             } = req.query;
-            
+
             const offset = (page - 1) * limit;
 
             // Build query for parents
-            let query = adminSupabase
+            let query = supabase
                 .from('users')
                 .select(`
                     id,
@@ -290,30 +289,11 @@ router.get('/parents',
                     phone_number,
                     email,
                     role,
-                    is_active,
                     created_at,
-                    parent_student_mappings!inner(
-                        student:student_id(
-                            id,
-                            full_name,
-                            admission_number,
-                            class:class_id(
-                                id,
-                                name,
-                                section,
-                                level:class_level_id(name)
-                            )
-                        )
-                    )
+                    is_registered
                 `)
                 .eq('role', 'parent')
-                .eq('is_active', is_active)
                 .order('full_name', { ascending: true });
-
-            // Apply class filter
-            if (class_id) {
-                query = query.eq('parent_student_mappings.student.class_id', class_id);
-            }
 
             // Apply search filter
             if (search) {
@@ -321,11 +301,10 @@ router.get('/parents',
             }
 
             // Get total count
-            const { count, error: countError } = await adminSupabase
+            const { count, error: countError } = await supabase
                 .from('users')
                 .select('*', { count: 'exact', head: true })
-                .eq('role', 'parent')
-                .eq('is_active', is_active);
+                .eq('role', 'parent');
 
             if (countError) {
                 logger.error('Error getting parents count:', countError);
@@ -339,7 +318,46 @@ router.get('/parents',
                 logger.error('Error fetching parents:', error);
                 return res.status(500).json({
                     status: 'error',
-                    message: 'Failed to fetch parents'
+                    message: 'Failed to fetch parents',
+                    details: error.message
+                });
+            }
+
+            // Get parent-student mappings separately for better performance
+            const parentIds = parents.map(p => p.id);
+            const { data: mappings, error: mappingsError } = await supabase
+                .from('parent_student_mappings')
+                .select(`
+                    parent_id,
+                    relationship,
+                    is_primary_guardian,
+                    student:student_id(
+                        id,
+                        full_name,
+                        admission_number
+                    )
+                `)
+                .in('parent_id', parentIds);
+
+            if (mappingsError) {
+                logger.error('Error fetching parent mappings:', mappingsError);
+                // Continue without mappings rather than failing completely
+            }
+
+            // Group mappings by parent
+            const mappingsByParent = {};
+            if (mappings) {
+                mappings.forEach(mapping => {
+                    if (!mappingsByParent[mapping.parent_id]) {
+                        mappingsByParent[mapping.parent_id] = [];
+                    }
+                    mappingsByParent[mapping.parent_id].push({
+                        id: mapping.student.id,
+                        full_name: mapping.student.full_name,
+                        admission_number: mapping.student.admission_number,
+                        relationship: mapping.relationship,
+                        is_primary_guardian: mapping.is_primary_guardian
+                    });
                 });
             }
 
@@ -350,16 +368,9 @@ router.get('/parents',
                 phone_number: parent.phone_number,
                 email: parent.email,
                 role: parent.role,
-                is_active: parent.is_active,
+                is_registered: parent.is_registered,
                 created_at: parent.created_at,
-                children: parent.parent_student_mappings.map(mapping => ({
-                    id: mapping.student.id,
-                    full_name: mapping.student.full_name,
-                    admission_number: mapping.student.admission_number,
-                    class: mapping.student.class,
-                    relationship: mapping.relationship,
-                    is_primary_guardian: mapping.is_primary_guardian
-                }))
+                children: mappingsByParent[parent.id] || []
             }));
 
             res.json({
@@ -376,10 +387,11 @@ router.get('/parents',
             });
 
         } catch (error) {
-            logger.error('Error in get all parents:', error);
+            logger.error('Unexpected error in parents endpoint:', error);
             res.status(500).json({
                 status: 'error',
-                message: 'Internal server error'
+                message: 'Internal server error',
+                details: error.message
             });
         }
     }
@@ -392,13 +404,13 @@ router.get('/parents/class/:class_id',
     async (req, res, next) => {
         try {
             const { class_id } = req.params;
-            const { 
-                page = 1, 
-                limit = 20, 
+            const {
+                page = 1,
+                limit = 20,
                 search,
-                is_active = true 
+                is_active = true
             } = req.query;
-            
+
             const offset = (page - 1) * limit;
 
             // Verify class exists
@@ -415,6 +427,38 @@ router.get('/parents/class/:class_id',
                 });
             }
 
+            // Get parent IDs that have children in this class (simplified)
+            const { data: parentIds, error: parentIdsError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select('parent_id');
+
+            if (parentIdsError) {
+                logger.error('Error getting parent IDs for class:', parentIdsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch parents'
+                });
+            }
+
+            const uniqueParentIds = [...new Set(parentIds.map(p => p.parent_id))];
+            if (uniqueParentIds.length === 0) {
+                // No parents found for this class
+                res.json({
+                    status: 'success',
+                    data: {
+                        class: classData,
+                        parents: [],
+                        pagination: {
+                            page: parseInt(page),
+                            limit: parseInt(limit),
+                            total: 0,
+                            total_pages: 0
+                        }
+                    }
+                });
+                return;
+            }
+
             // Build query for parents in specific class
             let query = adminSupabase
                 .from('users')
@@ -426,7 +470,7 @@ router.get('/parents/class/:class_id',
                     role,
                     is_active,
                     created_at,
-                    parent_student_mappings!inner(
+                    parent_student_mappings(
                         student:student_id(
                             id,
                             full_name,
@@ -442,7 +486,7 @@ router.get('/parents/class/:class_id',
                 `)
                 .eq('role', 'parent')
                 .eq('is_active', is_active)
-                .eq('parent_student_mappings.student.class_id', class_id)
+                .in('id', uniqueParentIds)
                 .order('full_name', { ascending: true });
 
             // Apply search filter
@@ -450,13 +494,10 @@ router.get('/parents/class/:class_id',
                 query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%`);
             }
 
-            // Get total count for this class
+            // Get total count for this class (simplified)
             const { count, error: countError } = await adminSupabase
                 .from('parent_student_mappings')
-                .select('parent_id', { count: 'exact', head: true })
-                .eq('student.class_id', class_id)
-                .eq('parent.role', 'parent')
-                .eq('parent.is_active', is_active);
+                .select('parent_id', { count: 'exact', head: true });
 
             if (countError) {
                 logger.error('Error getting parents count for class:', countError);
@@ -481,18 +522,14 @@ router.get('/parents/class/:class_id',
                 phone_number: parent.phone_number,
                 email: parent.email,
                 role: parent.role,
-                is_active: parent.is_active,
                 created_at: parent.created_at,
-                children: parent.parent_student_mappings
-                    .filter(mapping => mapping.student.class.id === class_id)
-                    .map(mapping => ({
-                        id: mapping.student.id,
-                        full_name: mapping.student.full_name,
-                        admission_number: mapping.student.admission_number,
-                        class: mapping.student.class,
-                        relationship: mapping.relationship,
-                        is_primary_guardian: mapping.is_primary_guardian
-                    }))
+                children: parent.parent_student_mappings ? parent.parent_student_mappings.map(mapping => ({
+                    id: mapping.student.id,
+                    full_name: mapping.student.full_name,
+                    admission_number: mapping.student.admission_number,
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian
+                })) : []
             }));
 
             res.json({
@@ -535,7 +572,6 @@ router.get('/parents/:parent_id',
                     phone_number,
                     email,
                     role,
-                    is_active,
                     created_at,
                     parent_student_mappings(
                         id,
@@ -546,18 +582,7 @@ router.get('/parents/:parent_id',
                             full_name,
                             admission_number,
                             date_of_birth,
-                            gender,
-                            class:class_id(
-                                id,
-                                name,
-                                section,
-                                level:class_level_id(name),
-                                teacher:teacher_id(
-                                    id,
-                                    full_name,
-                                    phone_number
-                                )
-                            )
+                            gender
                         )
                     )
                 `)
@@ -579,7 +604,6 @@ router.get('/parents/:parent_id',
                 phone_number: parent.phone_number,
                 email: parent.email,
                 role: parent.role,
-                is_active: parent.is_active,
                 created_at: parent.created_at,
                 children: parent.parent_student_mappings.map(mapping => ({
                     id: mapping.student.id,
@@ -587,7 +611,6 @@ router.get('/parents/:parent_id',
                     admission_number: mapping.student.admission_number,
                     date_of_birth: mapping.student.date_of_birth,
                     gender: mapping.student.gender,
-                    class: mapping.student.class,
                     relationship: mapping.relationship,
                     is_primary_guardian: mapping.is_primary_guardian
                 }))
@@ -615,8 +638,7 @@ router.put('/parents/:parent_id',
     [
         body('full_name').optional().notEmpty().trim().withMessage('Full name cannot be empty'),
         body('phone_number').optional().matches(/^[0-9]{10}$/).withMessage('Invalid phone number format'),
-        body('email').optional().isEmail().withMessage('Invalid email format'),
-        body('is_active').optional().isBoolean().withMessage('Active status must be boolean')
+        body('email').optional().isEmail().withMessage('Invalid email format')
     ],
     async (req, res, next) => {
         try {
