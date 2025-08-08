@@ -5,6 +5,64 @@ import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// List all users (Admin/Principal only) with pagination, optional role and search filters
+router.get('/',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 20;
+            const offset = (page - 1) * limit;
+            const { role, search } = req.query;
+
+            // Base query
+            let query = adminSupabase
+                .from('users')
+                .select('id, full_name, role, phone_number, email, preferred_language, last_login, created_at');
+
+            // Filters
+            if (role) {
+                query = query.eq('role', role);
+            }
+            if (search) {
+                // Search by name, phone, or email
+                query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%,email.ilike.%${search}%`);
+            }
+
+            // Count total with same filters
+            let countQuery = adminSupabase.from('users').select('*', { count: 'exact', head: true });
+            if (role) countQuery = countQuery.eq('role', role);
+            if (search) countQuery = countQuery.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%,email.ilike.%${search}%`);
+            const { count, error: countError } = await countQuery;
+            if (countError) throw countError;
+
+            const { data, error } = await query
+                .order('created_at', { ascending: false })
+                .range(offset, offset + limit - 1);
+
+            if (error) throw error;
+
+            res.json({
+                status: 'success',
+                data: {
+                    users: data,
+                    pagination: {
+                        page,
+                        limit,
+                        total: count || 0,
+                        total_pages: Math.ceil((count || 0) / limit),
+                        has_next: page < Math.ceil((count || 0) / limit),
+                        has_prev: page > 1
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Get user profile
 router.get('/profile', authenticate, async (req, res, next) => {
     try {
@@ -60,6 +118,96 @@ router.put('/profile',
                 status: 'success',
                 data: { user: data }
             });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Update any user (Admin/Principal only)
+router.put('/:user_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('full_name').optional().notEmpty().trim(),
+        body('email').optional().isEmail(),
+        body('phone_number').optional().isString().trim(),
+        body('preferred_language').optional().isIn(['english', 'hindi', 'marathi']),
+        body('role').optional().isIn(['admin', 'principal', 'teacher', 'parent'])
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { user_id } = req.params;
+            const updates = req.body;
+
+            // Prevent changing own role accidentally without intent
+            if (updates.role && !['admin', 'principal', 'teacher', 'parent'].includes(updates.role)) {
+                return res.status(400).json({ status: 'error', message: 'Invalid role' });
+            }
+
+            const { data: updated, error } = await adminSupabase
+                .from('users')
+                .update(updates)
+                .eq('id', user_id)
+                .select('id, full_name, role, phone_number, email, preferred_language, last_login')
+                .single();
+
+            if (error) throw error;
+
+            res.json({ status: 'success', data: { user: updated } });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Update parent details (Admin/Principal only) – ensures the user is a parent
+router.put('/parents/:parent_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('full_name').optional().notEmpty().trim(),
+        body('email').optional().isEmail(),
+        body('phone_number').optional().isString().trim(),
+        body('preferred_language').optional().isIn(['english', 'hindi', 'marathi'])
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { parent_id } = req.params;
+
+            // Verify target user is a parent
+            const { data: target, error: fetchError } = await adminSupabase
+                .from('users')
+                .select('id, role')
+                .eq('id', parent_id)
+                .single();
+            if (fetchError || !target) {
+                return res.status(404).json({ status: 'error', message: 'User not found' });
+            }
+            if (target.role !== 'parent') {
+                return res.status(400).json({ status: 'error', message: 'User is not a parent' });
+            }
+
+            const { data: updated, error } = await adminSupabase
+                .from('users')
+                .update(req.body)
+                .eq('id', parent_id)
+                .select('id, full_name, role, phone_number, email, preferred_language, last_login')
+                .single();
+
+            if (error) throw error;
+
+            res.json({ status: 'success', data: { parent: updated } });
         } catch (error) {
             next(error);
         }

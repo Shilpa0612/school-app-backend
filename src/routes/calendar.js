@@ -1,6 +1,6 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
-import { supabase } from '../config/supabase.js';
+import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -86,7 +86,7 @@ router.post('/events',
                 utcEventDate = new Date(utcEventDate.getTime() - istOffset);
             }
 
-            const { data, error } = await supabase
+            const { data, error } = await adminSupabase
                 .from('calendar_events')
                 .insert([{
                     title,
@@ -400,7 +400,7 @@ router.put('/events/:id',
                 updateData.event_date = utcEventDate.toISOString();
             }
 
-            const { data, error } = await supabase
+            const { data, error } = await adminSupabase
                 .from('calendar_events')
                 .update(updateData)
                 .eq('id', id)
@@ -434,7 +434,7 @@ router.delete('/events/:id',
             const { id } = req.params;
 
             // First check if user has permission to delete this event
-            const { data: event, error: fetchError } = await supabase
+            const { data: event, error: fetchError } = await adminSupabase
                 .from('calendar_events')
                 .select('event_type, class_division_id, created_by')
                 .eq('id', id)
@@ -455,7 +455,7 @@ router.delete('/events/:id',
                 });
             }
 
-            const { error } = await supabase
+            const { error } = await adminSupabase
                 .from('calendar_events')
                 .delete()
                 .eq('id', id);
