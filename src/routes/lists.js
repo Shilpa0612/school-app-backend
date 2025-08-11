@@ -1034,7 +1034,8 @@ router.post('/staff/with-user', authenticate, async (req, res) => {
                 department,
                 designation,
                 is_active: true,
-                created_by: req.user.id
+                created_by: req.user.id,
+                user_id: user.id
             })
             .select()
             .single();

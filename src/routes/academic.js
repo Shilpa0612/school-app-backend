@@ -327,6 +327,8 @@ router.post('/class-divisions',
 
             // If teacher_id provided, verify teacher exists
             if (teacher_id) {
+                // Try direct user match
+                let userIdToAssign = null;
                 const { data: teacher, error: teacherError } = await adminSupabase
                     .from('users')
                     .select('id')
@@ -334,49 +336,62 @@ router.post('/class-divisions',
                     .eq('role', 'teacher')
                     .single();
 
-                if (teacherError || !teacher) {
-                    // Try to find teacher in staff table and sync
-                    const { data: staffMember, error: staffError } = await adminSupabase
+                if (!teacherError && teacher) {
+                    userIdToAssign = teacher.id;
+                }
+
+                if (!userIdToAssign) {
+                    // Try staff by id
+                    const { data: staffById } = await adminSupabase
                         .from('staff')
-                        .select('*')
+                        .select('id, user_id, phone_number, role')
                         .eq('id', teacher_id)
                         .eq('role', 'teacher')
                         .single();
 
-                    if (staffMember && !staffError) {
-                        // Find corresponding user by phone number
-                        const { data: user, error: userError } = await adminSupabase
-                            .from('users')
-                            .select('id, role')
-                            .eq('phone_number', staffMember.phone_number)
-                            .eq('role', 'teacher')
-                            .single();
-
-                        if (user && !userError) {
-                            // Update staff record to use user ID
-                            await adminSupabase
-                                .from('staff')
-                                .update({ id: user.id })
-                                .eq('id', teacher_id);
-
-                            // Update teacher_id to use the user ID
-                            updateData.teacher_id = user.id;
-
-                            // Log the auto-sync
-                            logger.info(`Auto-synced staff ID ${teacher_id} to user ID ${user.id} for ${staffMember.full_name}`);
+                    if (staffById) {
+                        if (staffById.user_id) {
+                            userIdToAssign = staffById.user_id;
                         } else {
-                            return res.status(404).json({
-                                status: 'error',
-                                message: 'Teacher found in staff but no corresponding user account exists'
-                            });
+                            // Fallback: find user by phone_number
+                            const { data: userByPhone } = await adminSupabase
+                                .from('users')
+                                .select('id')
+                                .eq('phone_number', staffById.phone_number)
+                                .eq('role', 'teacher')
+                                .single();
+                            if (userByPhone) {
+                                userIdToAssign = userByPhone.id;
+                                // Update staff.user_id for future
+                                await adminSupabase
+                                    .from('staff')
+                                    .update({ user_id: userByPhone.id })
+                                    .eq('id', staffById.id);
+                            }
                         }
-                    } else {
-                        return res.status(404).json({
-                            status: 'error',
-                            message: 'Teacher not found in staff or users table'
-                        });
                     }
                 }
+
+                if (!userIdToAssign) {
+                    // Try staff by user_id match (allow passing user id in teacher_id)
+                    const { data: staffByUserId } = await adminSupabase
+                        .from('staff')
+                        .select('user_id')
+                        .eq('user_id', teacher_id)
+                        .single();
+                    if (staffByUserId && staffByUserId.user_id) {
+                        userIdToAssign = staffByUserId.user_id;
+                    }
+                }
+
+                if (!userIdToAssign) {
+                    return res.status(404).json({
+                        status: 'error',
+                        message: 'Teacher not found in users or staff'
+                    });
+                }
+
+                updateData.teacher_id = userIdToAssign;
             }
 
             const { data, error } = await adminSupabase
