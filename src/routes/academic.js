@@ -457,6 +457,10 @@ router.put('/class-divisions/:id',
             const { id } = req.params;
             const { teacher_id, division } = req.body;
 
+            // Initialize updateData
+            const updateData = {};
+            if (division) updateData.division = division;
+
             // If teacher_id provided, verify teacher exists
             if (teacher_id) {
                 const { data: teacher, error: teacherError } = await adminSupabase
@@ -486,10 +490,18 @@ router.put('/class-divisions/:id',
 
                         if (user && !userError) {
                             // Update staff record to use user ID
-                            await adminSupabase
+                            const { error: updateStaffError } = await adminSupabase
                                 .from('staff')
                                 .update({ id: user.id })
                                 .eq('id', teacher_id);
+
+                            if (updateStaffError) {
+                                logger.error('Error updating staff ID:', updateStaffError);
+                                return res.status(500).json({
+                                    status: 'error',
+                                    message: 'Failed to sync staff ID'
+                                });
+                            }
 
                             // Update teacher_id to use the user ID
                             updateData.teacher_id = user.id;
@@ -508,12 +520,11 @@ router.put('/class-divisions/:id',
                             message: 'Teacher not found in staff or users table'
                         });
                     }
+                } else {
+                    // Teacher found in users table, use the original teacher_id
+                    updateData.teacher_id = teacher_id;
                 }
             }
-
-            const updateData = {};
-            if (teacher_id) updateData.teacher_id = teacher_id;
-            if (division) updateData.division = division;
 
             const { data, error } = await adminSupabase
                 .from('class_divisions')
@@ -522,13 +533,17 @@ router.put('/class-divisions/:id',
                 .select()
                 .single();
 
-            if (error) throw error;
+            if (error) {
+                logger.error('Error updating class division:', error);
+                throw error;
+            }
 
             res.json({
                 status: 'success',
                 data: { class_division: data }
             });
         } catch (error) {
+            logger.error('Error in class division update:', error);
             next(error);
         }
     }
