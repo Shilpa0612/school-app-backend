@@ -1073,4 +1073,72 @@ router.post('/staff/with-user', authenticate, async (req, res) => {
     }
 });
 
+// Sync existing staff records to use same ID as user records (fix for existing data)
+router.post('/staff/sync-ids', authenticate, async (req, res, next) => {
+    try {
+        // Check permissions
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Only admins and principals can sync staff IDs'
+            });
+        }
+
+        // Get all staff records
+        const { data: allStaff, error: staffError } = await adminSupabase
+            .from('staff')
+            .select('*');
+
+        if (staffError) throw staffError;
+
+        let syncedCount = 0;
+        let errors = [];
+
+        for (const staff of allStaff) {
+            try {
+                // Find user with same phone number
+                const { data: user, error: userError } = await adminSupabase
+                    .from('users')
+                    .select('id, role')
+                    .eq('phone_number', staff.phone_number)
+                    .eq('role', 'teacher')
+                    .single();
+
+                if (user && user.id !== staff.id) {
+                    // Update staff record to use user ID
+                    const { error: updateError } = await adminSupabase
+                        .from('staff')
+                        .update({ id: user.id })
+                        .eq('id', staff.id);
+
+                    if (!updateError) {
+                        syncedCount++;
+                    } else {
+                        errors.push(`Failed to update staff ${staff.full_name}: ${updateError.message}`);
+                    }
+                }
+            } catch (error) {
+                errors.push(`Error processing staff ${staff.full_name}: ${error.message}`);
+            }
+        }
+
+        res.json({
+            status: 'success',
+            message: 'Staff ID sync completed',
+            data: {
+                total_staff: allStaff.length,
+                synced_count: syncedCount,
+                errors: errors.length > 0 ? errors : null
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in staff ID sync:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
 export default router; 

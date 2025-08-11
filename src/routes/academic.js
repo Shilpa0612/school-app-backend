@@ -335,10 +335,47 @@ router.post('/class-divisions',
                     .single();
 
                 if (teacherError || !teacher) {
-                    return res.status(404).json({
-                        status: 'error',
-                        message: 'Teacher not found or user is not a teacher'
-                    });
+                    // Try to find teacher in staff table and sync
+                    const { data: staffMember, error: staffError } = await adminSupabase
+                        .from('staff')
+                        .select('*')
+                        .eq('id', teacher_id)
+                        .eq('role', 'teacher')
+                        .single();
+
+                    if (staffMember && !staffError) {
+                        // Find corresponding user by phone number
+                        const { data: user, error: userError } = await adminSupabase
+                            .from('users')
+                            .select('id, role')
+                            .eq('phone_number', staffMember.phone_number)
+                            .eq('role', 'teacher')
+                            .single();
+
+                        if (user && !userError) {
+                            // Update staff record to use user ID
+                            await adminSupabase
+                                .from('staff')
+                                .update({ id: user.id })
+                                .eq('id', teacher_id);
+
+                            // Update teacher_id to use the user ID
+                            updateData.teacher_id = user.id;
+
+                            // Log the auto-sync
+                            logger.info(`Auto-synced staff ID ${teacher_id} to user ID ${user.id} for ${staffMember.full_name}`);
+                        } else {
+                            return res.status(404).json({
+                                status: 'error',
+                                message: 'Teacher found in staff but no corresponding user account exists'
+                            });
+                        }
+                    } else {
+                        return res.status(404).json({
+                            status: 'error',
+                            message: 'Teacher not found in staff or users table'
+                        });
+                    }
                 }
             }
 
@@ -430,10 +467,47 @@ router.put('/class-divisions/:id',
                     .single();
 
                 if (teacherError || !teacher) {
-                    return res.status(404).json({
-                        status: 'error',
-                        message: 'Teacher not found or user is not a teacher'
-                    });
+                    // Try to find teacher in staff table and sync
+                    const { data: staffMember, error: staffError } = await adminSupabase
+                        .from('staff')
+                        .select('*')
+                        .eq('id', teacher_id)
+                        .eq('role', 'teacher')
+                        .single();
+
+                    if (staffMember && !staffError) {
+                        // Find corresponding user by phone number
+                        const { data: user, error: userError } = await adminSupabase
+                            .from('users')
+                            .select('id, role')
+                            .eq('phone_number', staffMember.phone_number)
+                            .eq('role', 'teacher')
+                            .single();
+
+                        if (user && !userError) {
+                            // Update staff record to use user ID
+                            await adminSupabase
+                                .from('staff')
+                                .update({ id: user.id })
+                                .eq('id', teacher_id);
+
+                            // Update teacher_id to use the user ID
+                            updateData.teacher_id = user.id;
+
+                            // Log the auto-sync
+                            logger.info(`Auto-synced staff ID ${teacher_id} to user ID ${user.id} for ${staffMember.full_name}`);
+                        } else {
+                            return res.status(404).json({
+                                status: 'error',
+                                message: 'Teacher found in staff but no corresponding user account exists'
+                            });
+                        }
+                    } else {
+                        return res.status(404).json({
+                            status: 'error',
+                            message: 'Teacher not found in staff or users table'
+                        });
+                    }
                 }
             }
 
