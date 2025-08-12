@@ -6,6 +6,134 @@ import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
+// Debug: Resolve teacher identifier (users.id, staff.id, or staff.user_id) without mutating data
+router.get('/debug/resolve-teacher/:id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const inputId = req.params.id;
+            const result = {
+                input_id: inputId,
+                user_by_id: null,
+                staff_by_id: null,
+                user_by_phone: null,
+                staff_by_user_id: null,
+                resolved_user_id: null,
+                resolution_path: []
+            };
+
+            // Try direct users.id (role teacher)
+            const { data: userById, error: userByIdError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, phone_number, role')
+                .eq('id', inputId)
+                .eq('role', 'teacher')
+                .single();
+            if (userById && !userByIdError) {
+                result.user_by_id = userById;
+                result.resolved_user_id = userById.id;
+                result.resolution_path.push('users.id');
+            }
+
+            // Try staff by id if not resolved
+            if (!result.resolved_user_id) {
+                const { data: staffById } = await adminSupabase
+                    .from('staff')
+                    .select('id, user_id, phone_number, role, full_name')
+                    .eq('id', inputId)
+                    .eq('role', 'teacher')
+                    .single();
+                if (staffById) {
+                    result.staff_by_id = staffById;
+                    if (staffById.user_id) {
+                        result.resolved_user_id = staffById.user_id;
+                        result.resolution_path.push('staff.id -> staff.user_id');
+                    } else if (staffById.phone_number) {
+                        // Fallback: user by phone
+                        const { data: userByPhone } = await adminSupabase
+                            .from('users')
+                            .select('id, full_name, phone_number, role')
+                            .eq('phone_number', staffById.phone_number)
+                            .eq('role', 'teacher')
+                            .single();
+                        if (userByPhone) {
+                            result.user_by_phone = userByPhone;
+                            result.resolved_user_id = userByPhone.id;
+                            result.resolution_path.push('staff.id -> phone_number -> users');
+                        }
+                    }
+                }
+            }
+
+            // Try staff by user_id if still not resolved (i.e., input is actually a users.id)
+            if (!result.resolved_user_id) {
+                const { data: staffByUserId } = await adminSupabase
+                    .from('staff')
+                    .select('id, user_id, phone_number, role, full_name')
+                    .eq('user_id', inputId)
+                    .single();
+                if (staffByUserId) {
+                    result.staff_by_user_id = staffByUserId;
+                    result.resolved_user_id = staffByUserId.user_id;
+                    result.resolution_path.push('staff.user_id');
+                }
+            }
+
+            return res.json({ status: 'success', data: result });
+        } catch (error) {
+            logger.error('Error resolving teacher identifier:', error);
+            return res.status(500).json({ status: 'error', message: 'Failed to resolve teacher identifier' });
+        }
+    }
+);
+
+// Get current user's teacher ID for self-assignment (teachers only)
+router.get('/my-teacher-id',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            // Check if user is a teacher
+            if (req.user.role !== 'teacher') {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Only teachers can access this endpoint'
+                });
+            }
+
+            // Get staff record for this teacher
+            const { data: staffRecord } = await adminSupabase
+                .from('staff')
+                .select('id, user_id, full_name, department, designation')
+                .eq('user_id', req.user.id)
+                .single();
+
+            res.json({
+                status: 'success',
+                data: {
+                    user_id: req.user.id,
+                    staff_id: staffRecord?.id || null,
+                    full_name: req.user.full_name,
+                    staff_info: staffRecord ? {
+                        id: staffRecord.id,
+                        department: staffRecord.department,
+                        designation: staffRecord.designation
+                    } : null,
+                    assignment_ids: {
+                        // Use this user_id for class division assignment
+                        teacher_id: req.user.id,
+                        // Alternative: use staff_id (will be resolved by backend)
+                        staff_id: staffRecord?.id || null
+                    }
+                }
+            });
+        } catch (error) {
+            logger.error('Error getting teacher ID:', error);
+            next(error);
+        }
+    }
+);
+
 // Create academic year
 router.post('/years',
     authenticate,
@@ -325,22 +453,22 @@ router.post('/class-divisions',
                 });
             }
 
-            // If teacher_id provided, verify teacher exists
+            // If teacher_id provided, verify/resolve teacher exists (accept users.id or staff.id)
             if (teacher_id) {
-                // Try direct user match
-                let userIdToAssign = null;
-                const { data: teacher, error: teacherError } = await adminSupabase
+                let resolvedTeacherId = null;
+
+                // Try direct users.id
+                const { data: userById } = await adminSupabase
                     .from('users')
                     .select('id')
                     .eq('id', teacher_id)
                     .eq('role', 'teacher')
                     .single();
-
-                if (!teacherError && teacher) {
-                    userIdToAssign = teacher.id;
+                if (userById) {
+                    resolvedTeacherId = userById.id;
                 }
 
-                if (!userIdToAssign) {
+                if (!resolvedTeacherId) {
                     // Try staff by id
                     const { data: staffById } = await adminSupabase
                         .from('staff')
@@ -351,7 +479,7 @@ router.post('/class-divisions',
 
                     if (staffById) {
                         if (staffById.user_id) {
-                            userIdToAssign = staffById.user_id;
+                            resolvedTeacherId = staffById.user_id;
                         } else {
                             // Fallback: find user by phone_number
                             const { data: userByPhone } = await adminSupabase
@@ -361,8 +489,8 @@ router.post('/class-divisions',
                                 .eq('role', 'teacher')
                                 .single();
                             if (userByPhone) {
-                                userIdToAssign = userByPhone.id;
-                                // Update staff.user_id for future
+                                resolvedTeacherId = userByPhone.id;
+                                // Backfill staff.user_id for future consistency
                                 await adminSupabase
                                     .from('staff')
                                     .update({ user_id: userByPhone.id })
@@ -372,26 +500,27 @@ router.post('/class-divisions',
                     }
                 }
 
-                if (!userIdToAssign) {
-                    // Try staff by user_id match (allow passing user id in teacher_id)
+                if (!resolvedTeacherId) {
+                    // Also allow passing staff.user_id directly as teacher_id
                     const { data: staffByUserId } = await adminSupabase
                         .from('staff')
                         .select('user_id')
                         .eq('user_id', teacher_id)
                         .single();
                     if (staffByUserId && staffByUserId.user_id) {
-                        userIdToAssign = staffByUserId.user_id;
+                        resolvedTeacherId = staffByUserId.user_id;
                     }
                 }
 
-                if (!userIdToAssign) {
+                if (!resolvedTeacherId) {
                     return res.status(404).json({
                         status: 'error',
                         message: 'Teacher not found in users or staff'
                     });
                 }
 
-                updateData.teacher_id = userIdToAssign;
+                // Overwrite teacher_id with resolved users.id
+                req.body.teacher_id = resolvedTeacherId;
             }
 
             const { data, error } = await adminSupabase
