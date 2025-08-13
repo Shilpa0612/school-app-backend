@@ -197,44 +197,59 @@ router.get('/teachers',
     authorize(['admin', 'principal', 'teacher']),
     async (req, res, next) => {
         try {
-            // Get all active teachers with their staff and user information
-            const { data: teachersData, error } = await adminSupabase
+            // First get all teachers from users table
+            const { data: usersData, error: usersError } = await adminSupabase
                 .from('users')
-                .select(`
-                    id,
-                    full_name,
-                    phone_number,
-                    email,
-                    staff!inner(
-                        id,
-                        department,
-                        designation,
-                        is_active
-                    )
-                `)
-                .eq('role', 'teacher')
-                .eq('staff.is_active', true);
+                .select('id, full_name, phone_number, email')
+                .eq('role', 'teacher');
 
-            if (error) {
-                logger.error('Error fetching teachers:', error);
+            if (usersError) {
+                logger.error('Error fetching teacher users:', usersError);
                 return res.status(500).json({
                     status: 'error',
-                    message: 'Failed to fetch teachers'
+                    message: 'Failed to fetch teachers from users table'
                 });
             }
 
-            // Format the response for easy use
-            const teachers = teachersData.map(teacher => ({
-                teacher_id: teacher.id, // Use this for class assignments
-                user_id: teacher.id,
-                staff_id: teacher.staff[0]?.id || null,
-                full_name: teacher.full_name,
-                phone_number: teacher.phone_number,
-                email: teacher.email,
-                department: teacher.staff[0]?.department || null,
-                designation: teacher.staff[0]?.designation || null,
-                is_active: teacher.staff[0]?.is_active || false
-            }));
+            if (!usersData || usersData.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        teachers: [],
+                        total: 0,
+                        message: 'No teachers found'
+                    }
+                });
+            }
+
+            // Get their staff information
+            const userIds = usersData.map(user => user.id);
+            const { data: staffData, error: staffError } = await adminSupabase
+                .from('staff')
+                .select('id, user_id, department, designation, is_active')
+                .in('user_id', userIds)
+                .eq('is_active', true);
+
+            if (staffError) {
+                logger.error('Error fetching staff data:', staffError);
+                // Continue without staff data if error
+            }
+
+            // Combine the data
+            const teachers = usersData.map(user => {
+                const staffInfo = staffData?.find(staff => staff.user_id === user.id);
+                return {
+                    teacher_id: user.id, // Use this for class assignments
+                    user_id: user.id,
+                    staff_id: staffInfo?.id || null,
+                    full_name: user.full_name,
+                    phone_number: user.phone_number,
+                    email: user.email,
+                    department: staffInfo?.department || null,
+                    designation: staffInfo?.designation || null,
+                    is_active: staffInfo?.is_active || true
+                };
+            });
 
             res.json({
                 status: 'success',
@@ -260,32 +275,21 @@ router.get('/class-divisions/:id/teacher',
         try {
             const { id } = req.params;
 
-            // Get class division with teacher information
-            const { data: classDivision, error } = await adminSupabase
+            // First get the class division basic info
+            const { data: classDivision, error: divisionError } = await adminSupabase
                 .from('class_divisions')
                 .select(`
                     id,
                     division,
                     teacher_id,
-                    academic_year:academic_years(year_name),
-                    class_level:class_levels(name, sequence_number),
-                    teacher:users!teacher_id(
-                        id,
-                        full_name,
-                        phone_number,
-                        email,
-                        staff(
-                            id,
-                            department,
-                            designation
-                        )
-                    )
+                    academic_year_id,
+                    class_level_id
                 `)
                 .eq('id', id)
                 .single();
 
-            if (error) {
-                logger.error('Error fetching class division teacher:', error);
+            if (divisionError) {
+                logger.error('Error fetching class division:', divisionError);
                 return res.status(500).json({
                     status: 'error',
                     message: 'Failed to fetch class division'
@@ -299,25 +303,68 @@ router.get('/class-divisions/:id/teacher',
                 });
             }
 
+            // Get academic year info
+            let academicYear = null;
+            if (classDivision.academic_year_id) {
+                const { data: yearData } = await adminSupabase
+                    .from('academic_years')
+                    .select('year_name')
+                    .eq('id', classDivision.academic_year_id)
+                    .single();
+                academicYear = yearData;
+            }
+
+            // Get class level info
+            let classLevel = null;
+            if (classDivision.class_level_id) {
+                const { data: levelData } = await adminSupabase
+                    .from('class_levels')
+                    .select('name, sequence_number')
+                    .eq('id', classDivision.class_level_id)
+                    .single();
+                classLevel = levelData;
+            }
+
+            // Get teacher info if assigned
+            let teacher = null;
+            if (classDivision.teacher_id) {
+                const { data: teacherData } = await adminSupabase
+                    .from('users')
+                    .select('id, full_name, phone_number, email')
+                    .eq('id', classDivision.teacher_id)
+                    .single();
+
+                if (teacherData) {
+                    // Get staff info for teacher
+                    const { data: staffData } = await adminSupabase
+                        .from('staff')
+                        .select('id, department, designation')
+                        .eq('user_id', teacherData.id)
+                        .single();
+
+                    teacher = {
+                        teacher_id: teacherData.id,
+                        user_id: teacherData.id,
+                        staff_id: staffData?.id || null,
+                        full_name: teacherData.full_name,
+                        phone_number: teacherData.phone_number,
+                        email: teacherData.email,
+                        department: staffData?.department || null,
+                        designation: staffData?.designation || null
+                    };
+                }
+            }
+
             // Format the response
             const response = {
                 class_division: {
                     id: classDivision.id,
                     division: classDivision.division,
-                    class_name: `${classDivision.class_level?.name || 'Unknown'} ${classDivision.division}`,
-                    academic_year: classDivision.academic_year?.year_name || 'Unknown',
-                    sequence_number: classDivision.class_level?.sequence_number || 0
+                    class_name: `${classLevel?.name || 'Unknown'} ${classDivision.division}`,
+                    academic_year: academicYear?.year_name || 'Unknown',
+                    sequence_number: classLevel?.sequence_number || 0
                 },
-                teacher: classDivision.teacher ? {
-                    teacher_id: classDivision.teacher.id,
-                    user_id: classDivision.teacher.id,
-                    staff_id: classDivision.teacher.staff?.[0]?.id || null,
-                    full_name: classDivision.teacher.full_name,
-                    phone_number: classDivision.teacher.phone_number,
-                    email: classDivision.teacher.email,
-                    department: classDivision.teacher.staff?.[0]?.department || null,
-                    designation: classDivision.teacher.staff?.[0]?.designation || null
-                } : null,
+                teacher: teacher,
                 is_assigned: !!classDivision.teacher_id
             };
 
