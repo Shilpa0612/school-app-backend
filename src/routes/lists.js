@@ -1142,4 +1142,98 @@ router.post('/staff/sync-ids', authenticate, async (req, res, next) => {
     }
 });
 
+// Backfill staff.user_id for existing staff (optionally create missing users)
+router.post('/staff/backfill-user-ids', authenticate, async (req, res) => {
+    try {
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({ status: 'error', message: 'Forbidden' });
+        }
+
+        const createMissing = (req.query.create_missing === 'true');
+        const defaultPassword = req.body?.default_password || 'Staff@123';
+
+        // Get all staff with null user_id
+        const { data: staffList, error: staffError } = await adminSupabase
+            .from('staff')
+            .select('*')
+            .is('user_id', null);
+
+        if (staffError) {
+            logger.error('Error fetching staff without user_id:', staffError);
+            return res.status(500).json({ status: 'error', message: 'Failed to fetch staff' });
+        }
+
+        let linked = 0;
+        let created = 0;
+        const failures = [];
+
+        for (const staff of (staffList || [])) {
+            try {
+                // Try to find existing user by phone_number and role
+                const { data: user, error: userError } = await adminSupabase
+                    .from('users')
+                    .select('id')
+                    .eq('phone_number', staff.phone_number)
+                    .eq('role', staff.role)
+                    .single();
+
+                if (user && !userError) {
+                    const { error: linkError } = await adminSupabase
+                        .from('staff')
+                        .update({ user_id: user.id })
+                        .eq('id', staff.id);
+                    if (linkError) throw linkError;
+                    linked++;
+                    continue;
+                }
+
+                if (!createMissing) {
+                    failures.push({ staff_id: staff.id, reason: 'No matching user; set create_missing=true to auto-create' });
+                    continue;
+                }
+
+                // Create user account for the staff
+                const bcrypt = (await import('bcrypt')).default;
+                const passwordHash = await bcrypt.hash(defaultPassword, 10);
+
+                const { data: newUser, error: createUserError } = await adminSupabase
+                    .from('users')
+                    .insert({
+                        full_name: staff.full_name,
+                        phone_number: staff.phone_number,
+                        role: staff.role,
+                        password_hash: passwordHash
+                    })
+                    .select('id')
+                    .single();
+
+                if (createUserError || !newUser) throw createUserError || new Error('User create failed');
+
+                const { error: linkNewError } = await adminSupabase
+                    .from('staff')
+                    .update({ user_id: newUser.id })
+                    .eq('id', staff.id);
+                if (linkNewError) throw linkNewError;
+
+                created++;
+            } catch (e) {
+                failures.push({ staff_id: staff.id, reason: e?.message || 'unknown' });
+            }
+        }
+
+        res.json({
+            status: 'success',
+            data: {
+                processed: staffList?.length || 0,
+                linked,
+                created,
+                failures
+            }
+        });
+    } catch (error) {
+        logger.error('Error in backfill-user-ids:', error);
+        res.status(500).json({ status: 'error', message: 'Internal server error' });
+    }
+});
+
 export default router; 
