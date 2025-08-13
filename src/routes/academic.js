@@ -145,7 +145,7 @@ router.get('/debug/database-structure',
     }
 );
 
-// Get current user's teacher ID for self-assignment (teachers only)
+// Get current user's teacher ID and assigned class divisions (teachers only)
 router.get('/my-teacher-id',
     authenticate,
     async (req, res, next) => {
@@ -165,6 +165,50 @@ router.get('/my-teacher-id',
                 .eq('user_id', req.user.id)
                 .single();
 
+            // Get class divisions assigned to this teacher
+            const { data: assignedClasses, error: classError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    academic_year_id,
+                    class_level_id
+                `)
+                .eq('teacher_id', req.user.id);
+
+            if (classError) {
+                logger.error('Error fetching assigned classes:', classError);
+            }
+
+            // Get additional info for assigned classes
+            let classesWithDetails = [];
+            if (assignedClasses && assignedClasses.length > 0) {
+                for (const classDiv of assignedClasses) {
+                    // Get academic year
+                    const { data: academicYear } = await adminSupabase
+                        .from('academic_years')
+                        .select('year_name')
+                        .eq('id', classDiv.academic_year_id)
+                        .single();
+
+                    // Get class level
+                    const { data: classLevel } = await adminSupabase
+                        .from('class_levels')
+                        .select('name, sequence_number')
+                        .eq('id', classDiv.class_level_id)
+                        .single();
+
+                    classesWithDetails.push({
+                        class_division_id: classDiv.id,
+                        division: classDiv.division,
+                        class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
+                        class_level: classLevel?.name || 'Unknown',
+                        sequence_number: classLevel?.sequence_number || 0,
+                        academic_year: academicYear?.year_name || 'Unknown'
+                    });
+                }
+            }
+
             res.json({
                 status: 'success',
                 data: {
@@ -181,11 +225,14 @@ router.get('/my-teacher-id',
                         teacher_id: req.user.id,
                         // Alternative: use staff_id (will be resolved by backend)
                         staff_id: staffRecord?.id || null
-                    }
+                    },
+                    assigned_classes: classesWithDetails,
+                    total_assigned_classes: classesWithDetails.length,
+                    has_assignments: classesWithDetails.length > 0
                 }
             });
         } catch (error) {
-            logger.error('Error getting teacher ID:', error);
+            logger.error('Error getting teacher information:', error);
             next(error);
         }
     }
