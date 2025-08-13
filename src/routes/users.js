@@ -66,7 +66,7 @@ router.get('/',
 // Get user profile
 router.get('/profile', authenticate, async (req, res, next) => {
     try {
-        const { data, error } = await supabase
+        const { data: user, error } = await supabase
             .from('users')
             .select('id, phone_number, role, full_name, email, preferred_language, last_login')
             .eq('id', req.user.id)
@@ -74,9 +74,41 @@ router.get('/profile', authenticate, async (req, res, next) => {
 
         if (error) throw error;
 
+        // Check if user has a staff record
+        let staffInfo = null;
+        if (['admin', 'principal', 'teacher'].includes(user.role)) {
+            const { data: staff, error: staffError } = await adminSupabase
+                .from('staff')
+                .select('id, department, designation, joining_date, is_active')
+                .eq('user_id', req.user.id)
+                .single();
+
+            if (!staffError && staff) {
+                staffInfo = {
+                    staff_id: staff.id,
+                    department: staff.department,
+                    designation: staff.designation,
+                    joining_date: staff.joining_date,
+                    is_active: staff.is_active
+                };
+            }
+        }
+
+        const profileData = {
+            user,
+            staff: staffInfo,
+            // Include IDs for easy reference
+            ids: {
+                user_id: user.id,
+                staff_id: staffInfo?.staff_id || null,
+                // For teachers, this is the ID to use for class assignments
+                teacher_id: user.role === 'teacher' ? user.id : null
+            }
+        };
+
         res.json({
             status: 'success',
-            data: { user: data }
+            data: profileData
         });
     } catch (error) {
         next(error);

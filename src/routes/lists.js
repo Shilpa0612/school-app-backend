@@ -1142,6 +1142,74 @@ router.post('/staff/sync-ids', authenticate, async (req, res, next) => {
     }
 });
 
+// Get teachers with staff and user information for assignment purposes
+router.get('/teachers-for-assignment', authenticate, async (req, res) => {
+    try {
+        // Check permissions - only admin, principal, and teachers can view this
+        if (!['admin', 'principal', 'teacher'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied'
+            });
+        }
+
+        // Get all teachers with their staff and user information
+        const { data: teachersData, error } = await adminSupabase
+            .from('staff')
+            .select(`
+                id,
+                user_id,
+                full_name,
+                phone_number,
+                department,
+                designation,
+                is_active,
+                users!inner(id, full_name, role)
+            `)
+            .eq('role', 'teacher')
+            .eq('is_active', true)
+            .eq('users.role', 'teacher');
+
+        if (error) {
+            logger.error('Error fetching teachers for assignment:', error);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch teachers'
+            });
+        }
+
+        // Format the response for easy use in frontend
+        const teachers = teachersData.map(teacher => ({
+            staff_id: teacher.id,
+            user_id: teacher.user_id || teacher.users.id,
+            teacher_id: teacher.user_id || teacher.users.id, // Use this for class assignment
+            full_name: teacher.full_name,
+            staff_name: teacher.full_name,
+            user_name: teacher.users.full_name,
+            phone_number: teacher.phone_number,
+            department: teacher.department,
+            designation: teacher.designation,
+            role: teacher.users.role
+        }));
+
+        res.json({
+            status: 'success',
+            data: {
+                teachers,
+                total: teachers.length,
+                message: 'Use teacher_id field for class division assignments'
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in teachers-for-assignment endpoint:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
 // Backfill staff.user_id for existing staff (optionally create missing users)
 router.post('/staff/backfill-user-ids', authenticate, async (req, res) => {
     try {
