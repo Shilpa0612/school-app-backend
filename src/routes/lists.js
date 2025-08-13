@@ -1152,6 +1152,29 @@ router.post('/staff/backfill-user-ids', authenticate, async (req, res) => {
         const createMissing = (req.query.create_missing === 'true');
         const defaultPassword = req.body?.default_password || 'Staff@123';
 
+        // First, check if user_id column exists in staff table
+        const { data: columnCheck, error: columnError } = await adminSupabase
+            .from('information_schema.columns')
+            .select('column_name')
+            .eq('table_name', 'staff')
+            .eq('column_name', 'user_id')
+            .single();
+
+        if (columnError || !columnCheck) {
+            // user_id column doesn't exist, create it
+            const { error: alterError } = await adminSupabase.rpc('exec_sql', {
+                sql: 'ALTER TABLE public.staff ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES public.users(id) ON DELETE CASCADE'
+            });
+
+            if (alterError) {
+                logger.error('Error adding user_id column:', alterError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to add user_id column to staff table. Please run this SQL manually: ALTER TABLE public.staff ADD COLUMN IF NOT EXISTS user_id uuid REFERENCES public.users(id) ON DELETE CASCADE'
+                });
+            }
+        }
+
         // Get all staff with null user_id
         const { data: staffList, error: staffError } = await adminSupabase
             .from('staff')

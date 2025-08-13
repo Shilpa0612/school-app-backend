@@ -88,6 +88,63 @@ router.get('/debug/resolve-teacher/:id',
     }
 );
 
+// Debug: Check database structure and tables
+router.get('/debug/database-structure',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const result = {
+                tables_exist: {},
+                table_columns: {},
+                sample_data: {}
+            };
+
+            // Check if tables exist
+            const tables = ['users', 'staff', 'class_divisions'];
+
+            for (const table of tables) {
+                try {
+                    const { data, error } = await adminSupabase
+                        .from(table)
+                        .select('*')
+                        .limit(1);
+
+                    result.tables_exist[table] = !error;
+
+                    if (!error) {
+                        // Get column info
+                        const { data: columns, error: colError } = await adminSupabase.rpc('get_table_columns', { table_name: table });
+                        if (!colError) {
+                            result.table_columns[table] = columns;
+                        }
+
+                        // Get sample data count
+                        const { count, error: countError } = await adminSupabase
+                            .from(table)
+                            .select('*', { count: 'exact', head: true });
+
+                        if (!countError) {
+                            result.sample_data[table] = { count };
+                        }
+                    }
+                } catch (e) {
+                    result.tables_exist[table] = false;
+                    result.sample_data[table] = { error: e.message };
+                }
+            }
+
+            return res.json({
+                status: 'success',
+                data: result
+            });
+        } catch (error) {
+            logger.error('Error checking database structure:', error);
+            return res.status(500).json({ status: 'error', message: 'Failed to check database structure' });
+        }
+    }
+);
+
 // Get current user's teacher ID for self-assignment (teachers only)
 router.get('/my-teacher-id',
     authenticate,
