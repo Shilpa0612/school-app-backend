@@ -350,6 +350,186 @@ router.get('/class/:class_division_id',
     }
 );
 
+// Get students for a class division with teacher assignments and principal info
+router.get('/class/:class_division_id/details',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { class_division_id } = req.params;
+
+            // Verify class division and fetch context
+            const { data: classDivision, error: divisionError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+					id,
+					division,
+					academic_year_id,
+					class_level_id,
+					teacher:teacher_id(id, full_name)
+				`)
+                .eq('id', class_division_id)
+                .single();
+
+            if (divisionError || !classDivision) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class division not found'
+                });
+            }
+
+            // Additional authorization for teachers: allow if assigned via new junction table or legacy teacher_id
+            if (req.user.role === 'teacher') {
+                let isAssigned = false;
+
+                // Check legacy assignment
+                if (classDivision.teacher?.id === req.user.id) {
+                    isAssigned = true;
+                } else {
+                    // Check many-to-many assignments
+                    const { data: mmAssign } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id')
+                        .eq('class_division_id', class_division_id)
+                        .eq('teacher_id', req.user.id)
+                        .eq('is_active', true)
+                        .limit(1)
+                        .maybeSingle();
+                    isAssigned = !!mmAssign;
+                }
+
+                if (!isAssigned) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'Not authorized to access this class division'
+                    });
+                }
+            }
+
+            // Get academic year and class level info
+            let academicYear = null;
+            if (classDivision.academic_year_id) {
+                const { data } = await adminSupabase
+                    .from('academic_years')
+                    .select('id, year_name')
+                    .eq('id', classDivision.academic_year_id)
+                    .single();
+                academicYear = data || null;
+            }
+
+            let classLevel = null;
+            if (classDivision.class_level_id) {
+                const { data } = await adminSupabase
+                    .from('class_levels')
+                    .select('id, name, sequence_number')
+                    .eq('id', classDivision.class_level_id)
+                    .single();
+                classLevel = data || null;
+            }
+
+            // Get students in this class division
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select(`
+					id,
+					full_name,
+					admission_number,
+					date_of_birth,
+					status,
+					student_academic_records!inner (
+						id,
+						roll_number,
+						status,
+						class_division_id
+					)
+				`)
+                .eq('status', 'active')
+                .eq('student_academic_records.class_division_id', class_division_id)
+                .order('full_name');
+
+            if (studentsError) {
+                logger.error('Error fetching students:', studentsError);
+                throw studentsError;
+            }
+
+            // Get assigned teachers (many-to-many) with contact + subject
+            const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+					id,
+					teacher_id,
+					assignment_type,
+					subject,
+					is_primary,
+					assigned_date,
+					is_active,
+					teacher:teacher_id (
+						id,
+						full_name,
+						phone_number,
+						email
+					)
+				`)
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false })
+                .order('assigned_date', { ascending: true });
+
+            if (assignmentError) {
+                logger.error('Error fetching teacher assignments:', assignmentError);
+            }
+
+            const teachers = (teacherAssignments || []).map(a => ({
+                assignment_id: a.id,
+                teacher_id: a.teacher_id,
+                assignment_type: a.assignment_type,
+                subject: a.subject || null,
+                is_primary: a.is_primary,
+                assigned_date: a.assigned_date,
+                is_active: a.is_active,
+                teacher_info: {
+                    id: a.teacher?.id || a.teacher_id,
+                    full_name: a.teacher?.full_name || null,
+                    phone_number: a.teacher?.phone_number || null,
+                    email: a.teacher?.email || null
+                }
+            }));
+
+            // Get principal info (first principal user)
+            const { data: principalUser } = await adminSupabase
+                .from('users')
+                .select('id, full_name')
+                .eq('role', 'principal')
+                .limit(1)
+                .maybeSingle();
+
+            // Sort students by roll number
+            const sortedStudents = students.sort((a, b) => {
+                const rollA = parseInt(a.student_academic_records[0]?.roll_number) || 0;
+                const rollB = parseInt(b.student_academic_records[0]?.roll_number) || 0;
+                return rollA - rollB;
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    class_division: {
+                        id: classDivision.id,
+                        division: classDivision.division,
+                        class_level: classLevel,
+                        academic_year: academicYear
+                    },
+                    principal: principalUser ? { id: principalUser.id, full_name: principalUser.full_name } : null,
+                    teachers,
+                    students: sortedStudents
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Get students by class level (e.g., all Grade 1 students)
 router.get('/level/:class_level_id',
     authenticate,

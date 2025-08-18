@@ -203,11 +203,11 @@ router.get('/my-teacher-id',
                 const { data: assignedClasses, error: classError } = await adminSupabase
                     .from('class_divisions')
                     .select(`
-                        id,
-                        division,
-                        academic_year_id,
-                        class_level_id
-                    `)
+                    id,
+                    division,
+                    academic_year_id,
+                    class_level_id
+                `)
                     .eq('teacher_id', req.user.id);
 
                 if (classError) {

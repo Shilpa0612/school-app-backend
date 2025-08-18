@@ -395,6 +395,131 @@ router.get('/children',
     }
 );
 
+// Get teachers for the classes of the authenticated parent's children
+router.get('/children/teachers',
+    authenticate,
+    authorize('parent'),
+    async (req, res, next) => {
+        try {
+            // Fetch the parent's child mappings
+            const { data: mappings, error: mappingError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select('student_id')
+                .eq('parent_id', req.user.id);
+
+            if (mappingError) throw mappingError;
+
+            const studentIds = (mappings || []).map(m => m.student_id);
+            if (studentIds.length === 0) {
+                return res.json({ status: 'success', data: { teachers_by_child: [], principal: null } });
+            }
+
+            // Get ongoing academic records for these students
+            const { data: records, error: recError } = await adminSupabase
+                .from('student_academic_records')
+                .select('student_id, class_division_id')
+                .in('student_id', studentIds)
+                .eq('status', 'ongoing');
+
+            if (recError) throw recError;
+
+            const classIds = Array.from(new Set((records || []).map(r => r.class_division_id).filter(Boolean)));
+            if (classIds.length === 0) {
+                return res.json({ status: 'success', data: { teachers_by_child: [], principal: null } });
+            }
+
+            // Fetch teacher assignments for these classes
+            const { data: assignments, error: aErr } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    class_division_id,
+                    teacher_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    teacher:teacher_id(id, full_name, phone_number, email)
+                `)
+                .in('class_division_id', classIds)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false });
+
+            if (aErr) throw aErr;
+
+            // Build map class_division_id -> teachers
+            const classToTeachers = new Map();
+            for (const a of assignments || []) {
+                const arr = classToTeachers.get(a.class_division_id) || [];
+                arr.push({
+                    assignment_id: a.id,
+                    teacher_id: a.teacher_id,
+                    full_name: a.teacher?.full_name || null,
+                    phone_number: a.teacher?.phone_number || null,
+                    email: a.teacher?.email || null,
+                    assignment_type: a.assignment_type,
+                    subject: a.subject || null,
+                    is_primary: a.is_primary
+                });
+                classToTeachers.set(a.class_division_id, arr);
+            }
+
+            // Optionally include legacy teacher_id if no assignments exist
+            if ((assignments || []).length === 0) {
+                const { data: legacyClasses } = await adminSupabase
+                    .from('class_divisions')
+                    .select('id, teacher:teacher_id(id, full_name, phone_number, email)')
+                    .in('id', classIds);
+
+                for (const lc of legacyClasses || []) {
+                    if (lc.teacher) {
+                        classToTeachers.set(lc.id, [{
+                            assignment_id: `legacy-${lc.id}`,
+                            teacher_id: lc.teacher.id,
+                            full_name: lc.teacher.full_name,
+                            phone_number: lc.teacher.phone_number,
+                            email: lc.teacher.email,
+                            assignment_type: 'class_teacher',
+                            subject: null,
+                            is_primary: true
+                        }]);
+                    }
+                }
+            }
+
+            // Principal info
+            const { data: principal } = await adminSupabase
+                .from('users')
+                .select('id, full_name')
+                .eq('role', 'principal')
+                .limit(1)
+                .maybeSingle();
+
+            // Assemble response by child
+            const teachersByChild = [];
+            for (const studentId of studentIds) {
+                const rec = (records || []).find(r => r.student_id === studentId);
+                const classId = rec?.class_division_id || null;
+                const teachers = classId ? (classToTeachers.get(classId) || []) : [];
+                teachersByChild.push({
+                    student_id: studentId,
+                    class_division_id: classId,
+                    teachers
+                });
+            }
+
+            res.json({
+                status: 'success',
+                data: {
+                    principal: principal ? { id: principal.id, full_name: principal.full_name } : null,
+                    teachers_by_child: teachersByChild
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Debug endpoint to check parent-student mappings (temporary)
 router.get('/debug/mappings',
     authenticate,

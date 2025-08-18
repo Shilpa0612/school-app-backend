@@ -1598,6 +1598,78 @@ PUT /api/academic/class-divisions/:id
 
 **Response:** Updated class division object
 
+#### Teacher-Class Assignments (Many-to-Many)
+
+```http
+GET /api/academic/class-divisions/:id/teachers
+```
+
+- Returns all teachers assigned to a class division
+
+```http
+POST /api/academic/class-divisions/:id/assign-teacher
+```
+
+Body:
+
+```json
+{
+  "teacher_id": "uuid",
+  "assignment_type": "class_teacher | subject_teacher | assistant_teacher | substitute_teacher",
+  "is_primary": false
+}
+```
+
+```http
+DELETE /api/academic/class-divisions/:id/remove-teacher/:teacher_id?assignment_type=subject_teacher
+```
+
+- Removes/deactivates a teacher's assignment from a class (optionally by assignment_type)
+
+```http
+PUT /api/academic/class-divisions/:id/teacher-assignment/:assignment_id
+```
+
+Body:
+
+```json
+{
+  "assignment_type": "class_teacher | subject_teacher | assistant_teacher | substitute_teacher",
+  "is_primary": true
+}
+```
+
+```http
+GET /api/academic/teachers/:teacher_id/classes
+```
+
+- Returns all classes a teacher is assigned to (with assignment details)
+
+```http
+POST /api/academic/bulk-assign-teachers
+```
+
+Body:
+
+```json
+{
+  "assignments": [
+    {
+      "class_division_id": "uuid",
+      "teacher_id": "uuid",
+      "assignment_type": "class_teacher",
+      "is_primary": true
+    }
+  ]
+}
+```
+
+Notes:
+
+- All new endpoints are under the `academic` router prefix: use `/api/academic/...`
+- Only one primary teacher is allowed per class; attempting to create another will return an error
+- Removing an assignment is a soft delete (`is_active = false`)
+
 ### Student Management
 
 #### Get All Students (Admin/Principal Only)
