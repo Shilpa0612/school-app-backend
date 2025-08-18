@@ -145,7 +145,7 @@ router.get('/debug/database-structure',
     }
 );
 
-// Get current user's teacher ID and assigned class divisions (teachers only)
+// Get current user's teacher ID and assigned class divisions (teachers only) - Updated for many-to-many
 router.get('/my-teacher-id',
     authenticate,
     async (req, res, next) => {
@@ -165,49 +165,102 @@ router.get('/my-teacher-id',
                 .eq('user_id', req.user.id)
                 .single();
 
-            // Get class divisions assigned to this teacher
-            const { data: assignedClasses, error: classError } = await adminSupabase
-                .from('class_divisions')
+            // Try to get assignments from new junction table first
+            const { data: newAssignments, error: newAssignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
                 .select(`
                     id,
-                    division,
-                    academic_year_id,
-                    class_level_id
+                    assignment_type,
+                    is_primary,
+                    assigned_date,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        academic_year_id,
+                        class_level_id,
+                        academic_year:academic_year_id (
+                            year_name
+                        ),
+                        class_level:class_level_id (
+                            name,
+                            sequence_number
+                        )
+                    )
                 `)
-                .eq('teacher_id', req.user.id);
+                .eq('teacher_id', req.user.id)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false })
+                .order('assigned_date', { ascending: true });
 
-            if (classError) {
-                logger.error('Error fetching assigned classes:', classError);
-            }
-
-            // Get additional info for assigned classes
             let classesWithDetails = [];
-            if (assignedClasses && assignedClasses.length > 0) {
-                for (const classDiv of assignedClasses) {
-                    // Get academic year
-                    const { data: academicYear } = await adminSupabase
-                        .from('academic_years')
-                        .select('year_name')
-                        .eq('id', classDiv.academic_year_id)
-                        .single();
+            let usingLegacyData = false;
 
-                    // Get class level
-                    const { data: classLevel } = await adminSupabase
-                        .from('class_levels')
-                        .select('name, sequence_number')
-                        .eq('id', classDiv.class_level_id)
-                        .single();
+            if (newAssignmentError) {
+                // Fallback to legacy method if junction table doesn't exist
+                logger.info('Using legacy class assignment method for teacher:', req.user.id);
+                usingLegacyData = true;
 
-                    classesWithDetails.push({
-                        class_division_id: classDiv.id,
-                        division: classDiv.division,
-                        class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
-                        class_level: classLevel?.name || 'Unknown',
-                        sequence_number: classLevel?.sequence_number || 0,
-                        academic_year: academicYear?.year_name || 'Unknown'
-                    });
+                const { data: assignedClasses, error: classError } = await adminSupabase
+                    .from('class_divisions')
+                    .select(`
+                        id,
+                        division,
+                        academic_year_id,
+                        class_level_id
+                    `)
+                    .eq('teacher_id', req.user.id);
+
+                if (classError) {
+                    logger.error('Error fetching assigned classes (legacy):', classError);
+                } else if (assignedClasses && assignedClasses.length > 0) {
+                    for (const classDiv of assignedClasses) {
+                        // Get academic year
+                        const { data: academicYear } = await adminSupabase
+                            .from('academic_years')
+                            .select('year_name')
+                            .eq('id', classDiv.academic_year_id)
+                            .single();
+
+                        // Get class level
+                        const { data: classLevel } = await adminSupabase
+                            .from('class_levels')
+                            .select('name, sequence_number')
+                            .eq('id', classDiv.class_level_id)
+                            .single();
+
+                        classesWithDetails.push({
+                            assignment_id: `legacy-${classDiv.id}`,
+                            class_division_id: classDiv.id,
+                            division: classDiv.division,
+                            class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
+                            class_level: classLevel?.name || 'Unknown',
+                            sequence_number: classLevel?.sequence_number || 0,
+                            academic_year: academicYear?.year_name || 'Unknown',
+                            assignment_type: 'class_teacher',
+                            is_primary: true,
+                            assigned_date: null
+                        });
+                    }
                 }
+            } else {
+                // Use new many-to-many assignments
+                classesWithDetails = newAssignments.map(assignment => ({
+                    assignment_id: assignment.id,
+                    class_division_id: assignment.class_division.id,
+                    division: assignment.class_division.division,
+                    class_name: `${assignment.class_division.class_level?.name || 'Unknown'} ${assignment.class_division.division}`,
+                    class_level: assignment.class_division.class_level?.name || 'Unknown',
+                    sequence_number: assignment.class_division.class_level?.sequence_number || 0,
+                    academic_year: assignment.class_division.academic_year?.year_name || 'Unknown',
+                    assignment_type: assignment.assignment_type,
+                    is_primary: assignment.is_primary,
+                    assigned_date: assignment.assigned_date
+                }));
             }
+
+            // Separate primary and non-primary classes
+            const primaryClasses = classesWithDetails.filter(c => c.is_primary);
+            const secondaryClasses = classesWithDetails.filter(c => !c.is_primary);
 
             res.json({
                 status: 'success',
@@ -227,8 +280,19 @@ router.get('/my-teacher-id',
                         staff_id: staffRecord?.id || null
                     },
                     assigned_classes: classesWithDetails,
+                    primary_classes: primaryClasses,
+                    secondary_classes: secondaryClasses,
                     total_assigned_classes: classesWithDetails.length,
-                    has_assignments: classesWithDetails.length > 0
+                    total_primary_classes: primaryClasses.length,
+                    total_secondary_classes: secondaryClasses.length,
+                    has_assignments: classesWithDetails.length > 0,
+                    using_legacy_data: usingLegacyData,
+                    assignment_summary: {
+                        primary_teacher_for: primaryClasses.length,
+                        subject_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'subject_teacher').length,
+                        assistant_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'assistant_teacher').length,
+                        substitute_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'substitute_teacher').length
+                    }
                 }
             });
         } catch (error) {
@@ -314,10 +378,10 @@ router.get('/teachers',
     }
 );
 
-// Get teacher assigned to a specific class division
-router.get('/class-divisions/:id/teacher',
+// Get teachers assigned to a specific class division (supports multiple teachers)
+router.get('/class-divisions/:id/teachers',
     authenticate,
-    authorize(['admin', 'principal', 'teacher']),
+    authorize(['admin', 'principal', 'teacher', 'parent']),
     async (req, res, next) => {
         try {
             const { id } = req.params;
@@ -328,7 +392,6 @@ router.get('/class-divisions/:id/teacher',
                 .select(`
                     id,
                     division,
-                    teacher_id,
                     academic_year_id,
                     class_level_id
                 `)
@@ -372,34 +435,102 @@ router.get('/class-divisions/:id/teacher',
                 classLevel = levelData;
             }
 
-            // Get teacher info if assigned
-            let teacher = null;
-            if (classDivision.teacher_id) {
-                const { data: teacherData } = await adminSupabase
-                    .from('users')
-                    .select('id, full_name, phone_number, email')
-                    .eq('id', classDivision.teacher_id)
+            // Get all teachers assigned to this class using the new junction table
+            const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    assigned_date,
+                    is_active,
+                    teacher:teacher_id (
+                        id,
+                        full_name,
+                        phone_number,
+                        email
+                    )
+                `)
+                .eq('class_division_id', id)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false })
+                .order('assigned_date', { ascending: true });
+
+            if (assignmentError) {
+                logger.error('Error fetching teacher assignments:', assignmentError);
+                // Fallback to old method if junction table doesn't exist yet
+                const { data: oldTeacher } = await adminSupabase
+                    .from('class_divisions')
+                    .select(`
+                        teacher_id,
+                        teacher:teacher_id (
+                            id,
+                            full_name,
+                            phone_number,
+                            email
+                        )
+                    `)
+                    .eq('id', id)
                     .single();
 
-                if (teacherData) {
-                    // Get staff info for teacher
-                    const { data: staffData } = await adminSupabase
-                        .from('staff')
-                        .select('id, department, designation')
-                        .eq('user_id', teacherData.id)
-                        .single();
+                const teachers = oldTeacher?.teacher ? [{
+                    id: `legacy-${oldTeacher.teacher_id}`,
+                    teacher_id: oldTeacher.teacher_id,
+                    assignment_type: 'class_teacher',
+                    is_primary: true,
+                    assigned_date: new Date().toISOString(),
+                    is_active: true,
+                    teacher: oldTeacher.teacher
+                }] : [];
 
-                    teacher = {
-                        teacher_id: teacherData.id,
-                        user_id: teacherData.id,
+                return res.json({
+                    status: 'success',
+                    data: {
+                        class_division: {
+                            id: classDivision.id,
+                            division: classDivision.division,
+                            class_name: `${classLevel?.name || 'Unknown'} ${classDivision.division}`,
+                            academic_year: academicYear?.year_name || 'Unknown',
+                            sequence_number: classLevel?.sequence_number || 0
+                        },
+                        teachers,
+                        primary_teacher: teachers.find(t => t.is_primary) || null,
+                        total_teachers: teachers.length,
+                        has_teachers: teachers.length > 0,
+                        using_legacy_data: true
+                    }
+                });
+            }
+
+            // Get staff info for each teacher
+            const teachersWithStaffInfo = [];
+            for (const assignment of teacherAssignments) {
+                const { data: staffData } = await adminSupabase
+                    .from('staff')
+                    .select('id, department, designation')
+                    .eq('user_id', assignment.teacher_id)
+                    .single();
+
+                teachersWithStaffInfo.push({
+                    assignment_id: assignment.id,
+                    teacher_id: assignment.teacher_id,
+                    assignment_type: assignment.assignment_type,
+                    subject: assignment.subject || null,
+                    is_primary: assignment.is_primary,
+                    assigned_date: assignment.assigned_date,
+                    is_active: assignment.is_active,
+                    teacher_info: {
+                        id: assignment.teacher.id,
+                        full_name: assignment.teacher.full_name,
+                        phone_number: assignment.teacher.phone_number,
+                        email: assignment.teacher.email,
                         staff_id: staffData?.id || null,
-                        full_name: teacherData.full_name,
-                        phone_number: teacherData.phone_number,
-                        email: teacherData.email,
                         department: staffData?.department || null,
                         designation: staffData?.designation || null
-                    };
-                }
+                    }
+                });
             }
 
             // Format the response
@@ -411,8 +542,11 @@ router.get('/class-divisions/:id/teacher',
                     academic_year: academicYear?.year_name || 'Unknown',
                     sequence_number: classLevel?.sequence_number || 0
                 },
-                teacher: teacher,
-                is_assigned: !!classDivision.teacher_id
+                teachers: teachersWithStaffInfo,
+                primary_teacher: teachersWithStaffInfo.find(t => t.is_primary) || null,
+                total_teachers: teachersWithStaffInfo.length,
+                has_teachers: teachersWithStaffInfo.length > 0,
+                using_legacy_data: false
             };
 
             res.json({
@@ -421,7 +555,592 @@ router.get('/class-divisions/:id/teacher',
             });
 
         } catch (error) {
-            logger.error('Error in get class division teacher endpoint:', error);
+            logger.error('Error in get class division teachers endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Legacy endpoint for backward compatibility - Get single teacher (primary teacher)
+router.get('/class-divisions/:id/teacher',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher', 'parent']),
+    async (req, res, next) => {
+        try {
+            const { id } = req.params;
+
+            // Get the primary teacher using the new multiple teachers endpoint
+            const teachersResponse = await new Promise((resolve, reject) => {
+                req.url = `/class-divisions/${id}/teachers`;
+                router.handle(req, res, (err) => {
+                    if (err) reject(err);
+                    else resolve(res);
+                });
+            });
+
+            // This is a simplified response for backward compatibility
+            // The actual implementation would extract primary teacher from the multiple teachers response
+            // For now, redirect to the new endpoint
+            req.url = `/class-divisions/${id}/teachers`;
+            return router.handle(req, res, next);
+
+        } catch (error) {
+            logger.error('Error in legacy get class division teacher endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Assign teacher to class (supports multiple teachers)
+router.post('/class-divisions/:id/assign-teacher',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('teacher_id').isUUID().withMessage('Valid teacher ID is required'),
+        body('assignment_type').optional().isIn(['class_teacher', 'subject_teacher', 'assistant_teacher', 'substitute_teacher']).withMessage('Valid assignment type required'),
+        body('is_primary').optional().isBoolean().withMessage('is_primary must be boolean'),
+        body('subject').optional().isString().trim().isLength({ min: 1 }).withMessage('subject must be a non-empty string')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { id: class_division_id } = req.params;
+            const { teacher_id, assignment_type = 'class_teacher', is_primary = false } = req.body;
+            const subject = (req.body.subject ?? null);
+
+            // Verify class division exists
+            const { data: classDivision, error: classError } = await adminSupabase
+                .from('class_divisions')
+                .select('id, division')
+                .eq('id', class_division_id)
+                .single();
+
+            if (classError || !classDivision) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class division not found'
+                });
+            }
+
+            // Verify teacher exists and has teacher role
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found or invalid role'
+                });
+            }
+
+            // If subject_teacher, require subject
+            if (assignment_type === 'subject_teacher' && (!subject || String(subject).trim().length === 0)) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Subject is required when assignment_type is subject_teacher'
+                });
+            }
+
+            // Check if assignment already exists
+            let dupQuery = adminSupabase
+                .from('class_teacher_assignments')
+                .select('id')
+                .eq('class_division_id', class_division_id)
+                .eq('teacher_id', teacher_id)
+                .eq('assignment_type', assignment_type)
+                .eq('is_active', true);
+            if (assignment_type === 'subject_teacher' && subject) {
+                dupQuery = dupQuery.eq('subject', subject);
+            }
+            const { data: existingAssignment } = await dupQuery.single();
+
+            if (existingAssignment) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Teacher is already assigned to this class with the same assignment type'
+                });
+            }
+
+            // If assigning as primary, check if primary already exists
+            if (is_primary) {
+                const { data: existingPrimary } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, teacher_id')
+                    .eq('class_division_id', class_division_id)
+                    .eq('is_primary', true)
+                    .eq('is_active', true)
+                    .single();
+
+                if (existingPrimary) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Class already has a primary teacher',
+                        existing_primary_teacher_id: existingPrimary.teacher_id
+                    });
+                }
+            }
+
+            // Create the assignment
+            const { data: assignment, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .insert([{
+                    class_division_id,
+                    teacher_id,
+                    assignment_type,
+                    subject: assignment_type === 'subject_teacher' ? subject : null,
+                    is_primary,
+                    assigned_by: req.user.id,
+                    is_active: true
+                }])
+                .select(`
+                    *,
+                    teacher:teacher_id (
+                        id,
+                        full_name,
+                        phone_number,
+                        email
+                    )
+                `)
+                .single();
+
+            if (assignmentError) {
+                logger.error('Error creating teacher assignment:', assignmentError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to assign teacher to class'
+                });
+            }
+
+            res.status(201).json({
+                status: 'success',
+                data: {
+                    assignment,
+                    message: `Teacher ${teacher.full_name} successfully assigned to class as ${assignment_type}${is_primary ? ' (Primary Teacher)' : ''}`
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in assign teacher endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Remove teacher from class
+router.delete('/class-divisions/:id/remove-teacher/:teacher_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { id: class_division_id, teacher_id } = req.params;
+            const { assignment_type } = req.query;
+
+            // Build the query
+            let query = adminSupabase
+                .from('class_teacher_assignments')
+                .select('*')
+                .eq('class_division_id', class_division_id)
+                .eq('teacher_id', teacher_id)
+                .eq('is_active', true);
+
+            // If assignment_type is specified, filter by it
+            if (assignment_type) {
+                query = query.eq('assignment_type', assignment_type);
+            }
+
+            const { data: assignments, error: fetchError } = await query;
+
+            if (fetchError) {
+                logger.error('Error fetching teacher assignments:', fetchError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch teacher assignments'
+                });
+            }
+
+            if (!assignments || assignments.length === 0) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher assignment not found'
+                });
+            }
+
+            // Deactivate the assignment(s) instead of deleting
+            const assignmentIds = assignments.map(a => a.id);
+            const { error: updateError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .update({
+                    is_active: false,
+                    updated_at: new Date().toISOString()
+                })
+                .in('id', assignmentIds);
+
+            if (updateError) {
+                logger.error('Error removing teacher assignment:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to remove teacher assignment'
+                });
+            }
+
+            res.json({
+                status: 'success',
+                data: {
+                    removed_assignments: assignments.length,
+                    assignment_ids: assignmentIds
+                },
+                message: 'Teacher successfully removed from class'
+            });
+
+        } catch (error) {
+            logger.error('Error in remove teacher endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Update teacher assignment (change assignment type or primary status)
+router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('assignment_type').optional().isIn(['class_teacher', 'subject_teacher', 'assistant_teacher', 'substitute_teacher']),
+        body('is_primary').optional().isBoolean(),
+        body('subject').optional().isString().trim().isLength({ min: 1 }).withMessage('subject must be a non-empty string')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { id: class_division_id, assignment_id } = req.params;
+            const { assignment_type, is_primary } = req.body;
+            const subject = (req.body.subject ?? undefined);
+
+            // Verify assignment exists
+            const { data: existingAssignment, error: fetchError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('*')
+                .eq('id', assignment_id)
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true)
+                .single();
+
+            if (fetchError || !existingAssignment) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher assignment not found'
+                });
+            }
+
+            // If updating to primary, check if another primary exists
+            if (is_primary === true && !existingAssignment.is_primary) {
+                const { data: existingPrimary } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, teacher_id')
+                    .eq('class_division_id', class_division_id)
+                    .eq('is_primary', true)
+                    .eq('is_active', true)
+                    .neq('id', assignment_id)
+                    .single();
+
+                if (existingPrimary) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Class already has a primary teacher',
+                        existing_primary_teacher_id: existingPrimary.teacher_id
+                    });
+                }
+            }
+
+            // Build update object
+            const updateData = {};
+            if (assignment_type !== undefined) updateData.assignment_type = assignment_type;
+            if (is_primary !== undefined) updateData.is_primary = is_primary;
+            if (subject !== undefined) updateData.subject = subject;
+
+            // If resulting type is subject_teacher, ensure subject is present
+            const resultingType = assignment_type !== undefined ? assignment_type : existingAssignment.assignment_type;
+            const resultingSubject = subject !== undefined ? subject : existingAssignment.subject;
+            if (resultingType === 'subject_teacher' && (!resultingSubject || String(resultingSubject).trim().length === 0)) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Subject is required when assignment_type is subject_teacher'
+                });
+            }
+
+            if (Object.keys(updateData).length === 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'No valid fields to update'
+                });
+            }
+
+            // Update the assignment
+            const { data: updatedAssignment, error: updateError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .update(updateData)
+                .eq('id', assignment_id)
+                .select(`
+                    *,
+                    teacher:teacher_id (
+                        id,
+                        full_name,
+                        phone_number,
+                        email
+                    )
+                `)
+                .single();
+
+            if (updateError) {
+                logger.error('Error updating teacher assignment:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to update teacher assignment'
+                });
+            }
+
+            res.json({
+                status: 'success',
+                data: { assignment: updatedAssignment },
+                message: 'Teacher assignment updated successfully'
+            });
+
+        } catch (error) {
+            logger.error('Error in update teacher assignment endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Get all classes for a teacher (with assignment details)
+router.get('/teachers/:teacher_id/classes',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { teacher_id } = req.params;
+
+            // Verify teacher exists
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found'
+                });
+            }
+
+            // Get all class assignments for this teacher
+            const { data: assignments, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    assignment_type,
+                    is_primary,
+                    assigned_date,
+                    is_active,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        academic_year_id,
+                        class_level_id,
+                        academic_year:academic_year_id (
+                            year_name
+                        ),
+                        class_level:class_level_id (
+                            name,
+                            sequence_number
+                        )
+                    )
+                `)
+                .eq('teacher_id', teacher_id)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false })
+                .order('assigned_date', { ascending: true });
+
+            if (assignmentError) {
+                logger.error('Error fetching teacher assignments:', assignmentError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch teacher assignments'
+                });
+            }
+
+            // Format the assignments
+            const formattedAssignments = assignments.map(assignment => ({
+                assignment_id: assignment.id,
+                assignment_type: assignment.assignment_type,
+                is_primary: assignment.is_primary,
+                assigned_date: assignment.assigned_date,
+                class_info: {
+                    class_division_id: assignment.class_division.id,
+                    division: assignment.class_division.division,
+                    class_name: `${assignment.class_division.class_level?.name || 'Unknown'} ${assignment.class_division.division}`,
+                    class_level: assignment.class_division.class_level?.name || 'Unknown',
+                    sequence_number: assignment.class_division.class_level?.sequence_number || 0,
+                    academic_year: assignment.class_division.academic_year?.year_name || 'Unknown'
+                }
+            }));
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher: {
+                        id: teacher.id,
+                        full_name: teacher.full_name
+                    },
+                    assignments: formattedAssignments,
+                    primary_classes: formattedAssignments.filter(a => a.is_primary),
+                    total_assignments: formattedAssignments.length,
+                    has_assignments: formattedAssignments.length > 0
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get teacher classes endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Bulk assign teachers to multiple classes
+router.post('/bulk-assign-teachers',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('assignments').isArray().withMessage('Assignments must be an array'),
+        body('assignments.*.class_division_id').isUUID().withMessage('Valid class division ID required'),
+        body('assignments.*.teacher_id').isUUID().withMessage('Valid teacher ID required'),
+        body('assignments.*.assignment_type').optional().isIn(['class_teacher', 'subject_teacher', 'assistant_teacher', 'substitute_teacher']),
+        body('assignments.*.is_primary').optional().isBoolean(),
+        body('assignments.*.subject').optional().isString().trim().isLength({ min: 1 }).withMessage('subject must be a non-empty string')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { assignments } = req.body;
+            const results = {
+                successful: [],
+                failed: [],
+                total: assignments.length
+            };
+
+            for (const assignment of assignments) {
+                try {
+                    const {
+                        class_division_id,
+                        teacher_id,
+                        assignment_type = 'class_teacher',
+                        is_primary = false
+                    } = assignment;
+                    const subject = (assignment.subject ?? null);
+
+                    // If subject_teacher, require subject
+                    if (assignment_type === 'subject_teacher' && (!subject || String(subject).trim().length === 0)) {
+                        results.failed.push({ assignment, error: 'Subject is required when assignment_type is subject_teacher' });
+                        continue;
+                    }
+
+                    // Check if assignment already exists
+                    let existingQuery = adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id')
+                        .eq('class_division_id', class_division_id)
+                        .eq('teacher_id', teacher_id)
+                        .eq('assignment_type', assignment_type)
+                        .eq('is_active', true);
+                    if (assignment_type === 'subject_teacher' && subject) {
+                        existingQuery = existingQuery.eq('subject', subject);
+                    }
+                    const { data: existing } = await existingQuery.single();
+
+                    if (existing) {
+                        results.failed.push({
+                            assignment,
+                            error: 'Assignment already exists'
+                        });
+                        continue;
+                    }
+
+                    // If primary, check for existing primary teacher
+                    if (is_primary) {
+                        const { data: existingPrimary } = await adminSupabase
+                            .from('class_teacher_assignments')
+                            .select('id')
+                            .eq('class_division_id', class_division_id)
+                            .eq('is_primary', true)
+                            .eq('is_active', true)
+                            .single();
+
+                        if (existingPrimary) {
+                            results.failed.push({
+                                assignment,
+                                error: 'Class already has a primary teacher'
+                            });
+                            continue;
+                        }
+                    }
+
+                    // Create the assignment
+                    const { data: newAssignment, error: createError } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .insert([{
+                            class_division_id,
+                            teacher_id,
+                            assignment_type,
+                            subject: assignment_type === 'subject_teacher' ? subject : null,
+                            is_primary,
+                            assigned_by: req.user.id,
+                            is_active: true
+                        }])
+                        .select()
+                        .single();
+
+                    if (createError) {
+                        results.failed.push({
+                            assignment,
+                            error: createError.message
+                        });
+                    } else {
+                        results.successful.push(newAssignment);
+                    }
+
+                } catch (error) {
+                    results.failed.push({
+                        assignment,
+                        error: error.message
+                    });
+                }
+            }
+
+            res.status(201).json({
+                status: 'success',
+                data: results,
+                message: `Bulk assignment completed: ${results.successful.length} successful, ${results.failed.length} failed`
+            });
+
+        } catch (error) {
+            logger.error('Error in bulk assign teachers endpoint:', error);
             next(error);
         }
     }
