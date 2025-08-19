@@ -1095,7 +1095,19 @@ router.post('/:student_id/profile-photo',
                 .from('students_master')
                 .update({ profile_photo_path: `profile-pictures/${filePath}` })
                 .eq('id', student_id);
-            if (updateError) throw updateError;
+            if (updateError) {
+                logger.error('DB update error for profile_photo_path', {
+                    message: updateError.message,
+                    details: updateError.details,
+                    hint: updateError.hint,
+                    code: updateError.code
+                });
+                return res.status(502).json({
+                    status: 'error',
+                    message: updateError.message || 'Failed to save profile photo path',
+                    code: updateError.code || undefined
+                });
+            }
 
             // Public URL
             const { data: publicUrlData } = supabase.storage
