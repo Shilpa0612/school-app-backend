@@ -1077,7 +1077,18 @@ router.post('/:student_id/profile-photo',
                     upsert: true,
                     contentType: file.mimetype
                 });
-            if (uploadError) throw uploadError;
+            if (uploadError) {
+                logger.error('Supabase Storage upload error', {
+                    message: uploadError.message,
+                    name: uploadError.name,
+                    statusCode: uploadError.statusCode
+                });
+                return res.status(502).json({
+                    status: 'error',
+                    message: uploadError.message || 'Upload failed',
+                    code: uploadError.statusCode || undefined
+                });
+            }
 
             // Save path in DB
             const { error: updateError } = await adminSupabase
