@@ -1,10 +1,12 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
+import multer from 'multer';
 import { adminSupabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
 
 // Get all students with pagination and filters (Admin/Principal only)
 router.get('/',
@@ -300,6 +302,7 @@ router.get('/class/:class_division_id',
                     admission_number,
                     date_of_birth,
                     status,
+                    profile_photo_path,
                     student_academic_records!inner (
                         id,
                         roll_number,
@@ -327,11 +330,22 @@ router.get('/class/:class_division_id',
             const totalCount = sortedStudents.length;
             const paginatedStudents = sortedStudents.slice(offset, offset + limit);
 
+            // Attach profile photo URL
+            const withPhotoUrls = await Promise.all(sortedStudents.map(async (s) => {
+                let profile_photo_url = null;
+                if (s.profile_photo_path) {
+                    const path = s.profile_photo_path.replace('profile-pictures/', '');
+                    const { data } = supabase.storage.from('profile-pictures').getPublicUrl(path);
+                    profile_photo_url = data?.publicUrl || null;
+                }
+                return { ...s, profile_photo_url };
+            }));
+
             res.json({
                 status: 'success',
                 data: {
                     class_division: classDivision,
-                    students: paginatedStudents,
+                    students: withPhotoUrls.slice(offset, offset + limit),
                     count: paginatedStudents.length,
                     total_count: totalCount,
                     pagination: {
@@ -827,6 +841,7 @@ router.get('/:student_id',
                     date_of_birth,
                     admission_date,
                     status,
+                    profile_photo_path,
                     student_academic_records (
                         id,
                         roll_number,
@@ -867,9 +882,16 @@ router.get('/:student_id',
                 });
             }
 
+            let profile_photo_url = null;
+            if (student.profile_photo_path) {
+                const path = student.profile_photo_path.replace('profile-pictures/', '');
+                const { data: publicData } = supabase.storage.from('profile-pictures').getPublicUrl(path);
+                profile_photo_url = publicData?.publicUrl || null;
+            }
+
             res.json({
                 status: 'success',
-                data: { student }
+                data: { student: { ...student, profile_photo_url } }
             });
         } catch (error) {
             next(error);
@@ -1021,4 +1043,64 @@ async function checkStudentAccess(userId, userRole, studentId) {
     }
 }
 
-export default router; 
+export default router;
+
+// Upload student profile photo (Admin/Principal/Teacher)
+router.post('/:student_id/profile-photo',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    upload.single('photo'),
+    async (req, res, next) => {
+        try {
+            const { student_id } = req.params;
+            const file = req.file;
+            if (!file) {
+                return res.status(400).json({ status: 'error', message: 'No file uploaded' });
+            }
+
+            // Verify student exists
+            const { data: student, error: studentError } = await adminSupabase
+                .from('students_master')
+                .select('id')
+                .eq('id', student_id)
+                .single();
+            if (studentError || !student) {
+                return res.status(404).json({ status: 'error', message: 'Student not found' });
+            }
+
+            // Upload to Supabase Storage
+            const filePath = `students/${student_id}/avatar.jpg`;
+            const { error: uploadError } = await supabase.storage
+                .from('profile-pictures')
+                .upload(filePath, file.buffer, {
+                    cacheControl: '3600',
+                    upsert: true,
+                    contentType: file.mimetype
+                });
+            if (uploadError) throw uploadError;
+
+            // Save path in DB
+            const { error: updateError } = await adminSupabase
+                .from('students_master')
+                .update({ profile_photo_path: `profile-pictures/${filePath}` })
+                .eq('id', student_id);
+            if (updateError) throw updateError;
+
+            // Public URL
+            const { data: publicUrlData } = supabase.storage
+                .from('profile-pictures')
+                .getPublicUrl(filePath);
+
+            return res.status(201).json({
+                status: 'success',
+                data: {
+                    student_id,
+                    profile_photo_path: `profile-pictures/${filePath}`,
+                    profile_photo_url: publicUrlData?.publicUrl || null
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);

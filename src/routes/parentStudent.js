@@ -189,6 +189,76 @@ router.get('/mappings',
     }
 );
 
+// Get specific child details (Parents only)
+router.get('/child/:student_id',
+    authenticate,
+    authorize('parent'),
+    async (req, res, next) => {
+        try {
+            const { student_id } = req.params;
+
+            // Verify this parent is linked to the student
+            const { data: mapping, error: mappingError } = await supabase
+                .from('parent_student_mappings')
+                .select('id, relationship, is_primary_guardian')
+                .eq('parent_id', req.user.id)
+                .eq('student_id', student_id)
+                .single();
+
+            if (mappingError || !mapping) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'You do not have permission to view this child'
+                });
+            }
+
+            // Fetch student details with current class context
+            const { data: student, error: studentError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    admission_number,
+                    date_of_birth,
+                    admission_date,
+                    status,
+                    student_academic_records!inner (
+                        id,
+                        roll_number,
+                        status,
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name, sequence_number),
+                            teacher:teacher_id (id, full_name)
+                        )
+                    )
+                `)
+                .eq('id', student_id)
+                .single();
+
+            if (studentError || !student) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
+            }
+
+            res.json({
+                status: 'success',
+                data: {
+                    student,
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Update parent-student relationship
 router.put('/mappings/:id',
     authenticate,

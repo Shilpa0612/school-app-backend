@@ -26,7 +26,7 @@ const createParentValidation = [
     body('student_details.*.is_primary_guardian').isBoolean().withMessage('Primary guardian must be boolean')
 ];
 
-// Create parent record (Admin/Principal only)
+// Create parent record (Admin/Principal/Teacher)
 router.post('/create-parent', createParentValidation, async (req, res, next) => {
     try {
         // Check for validation errors
@@ -36,6 +36,8 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
         }
 
         const { full_name, phone_number, email, student_details } = req.body;
+        // Optional initial plaintext password provided by admin/principal/teacher
+        const initial_password = req.body.initial_password || null;
 
         // Check if parent already exists
         const { data: existingParent } = await supabase
@@ -96,7 +98,9 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
                     email,
                     role: 'parent',
                     is_registered: false, // Flag to indicate they haven't registered yet
-                    password_hash: null // Explicitly set to null for unregistered parents
+                    password_hash: null, // Explicitly set to null for unregistered parents
+                    initial_password: initial_password,
+                    initial_password_set_at: initial_password ? new Date().toISOString() : null
                 }
             ])
             .select()
@@ -174,6 +178,7 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
                     endpoint: 'POST /api/auth/register',
                     required_fields: ['phone_number', 'password', 'role: "parent"']
                 },
+                initial_password: initial_password || null,
                 note: 'Parent-student mappings created using /api/academic/link-students endpoint'
             },
             message: 'Parent record created successfully. Parent can now register using their phone number.'

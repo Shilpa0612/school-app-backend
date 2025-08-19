@@ -31,6 +31,7 @@ POST /auth/create-parent
   "full_name": "Parent Name",
   "phone_number": "1234567890",
   "email": "parent@example.com",
+  "initial_password": "Temp@1234", // Optional: stored in plaintext for onboarding
   "student_details": [
     {
       "admission_number": "ADM123",
@@ -53,6 +54,7 @@ POST /auth/create-parent
 - Uses existing `/api/academic/link-students` endpoint for parent-student mappings
 - Validates students exist in database
 - Parent can then register using their phone number
+- If `initial_password` is provided, it is stored in `users.initial_password` as plaintext (for operational onboarding). The parent can keep it or set a new password during registration. Consider clearing it after first login.
 
 **Response:**
 
@@ -206,6 +208,51 @@ GET /users/children
 ```
 
 **Response:** List of children with their class details
+
+#### Get Child Details (Parents Only)
+
+```http
+GET /api/parent-student/child/:student_id
+```
+
+**Notes:**
+
+- Only accessible to parents linked to the specified `student_id`
+- Returns student details with current class division, level, academic year, teacher, roll number, and the parent's relationship
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student": {
+      "id": "uuid",
+      "full_name": "Student Name",
+      "admission_number": "ADM2024001",
+      "date_of_birth": "2018-01-01",
+      "admission_date": "2024-01-01",
+      "status": "active",
+      "student_academic_records": [
+        {
+          "id": "uuid",
+          "roll_number": "01",
+          "status": "ongoing",
+          "class_division": {
+            "id": "uuid",
+            "division": "A",
+            "academic_year": { "year_name": "2024-2025" },
+            "class_level": { "name": "Grade 1", "sequence_number": 1 },
+            "teacher": { "id": "uuid", "full_name": "Teacher Name" }
+          }
+        }
+      ]
+    },
+    "relationship": "father",
+    "is_primary_guardian": true
+  }
+}
+```
 
 ### Messages
 
@@ -2010,6 +2057,33 @@ GET /api/students/:student_id
         }
       }
     ]
+  }
+}
+```
+
+#### Upload Student Profile Photo (Admin/Principal/Teacher)
+
+```http
+POST /api/students/:student_id/profile-photo
+```
+
+**Body:** form-data with field `photo` (JPEG/PNG, max 2MB)
+
+**Storage:**
+
+- Stored in Supabase Storage bucket `profile-pictures` at `students/{student_id}/avatar.jpg`
+- `students_master.profile_photo_path` records `profile-pictures/students/{student_id}/avatar.jpg`
+- Public URL is returned in response and included in student profile as `profile_photo_url`
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student_id": "uuid",
+    "profile_photo_path": "profile-pictures/students/uuid/avatar.jpg",
+    "profile_photo_url": "https://.../profile-pictures/students/uuid/avatar.jpg"
   }
 }
 ```
