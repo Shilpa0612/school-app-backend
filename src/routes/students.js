@@ -1070,7 +1070,7 @@ router.post('/:student_id/profile-photo',
 
             // Upload to Supabase Storage
             const filePath = `students/${student_id}/avatar.jpg`;
-            const { error: uploadError } = await supabase.storage
+            const { error: uploadError } = await adminSupabase.storage
                 .from('profile-pictures')
                 .upload(filePath, file.buffer, {
                     cacheControl: '3600',
