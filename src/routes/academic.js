@@ -5,6 +5,218 @@ import { authenticate, authorize } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
+// Subjects: CRUD
+router.post('/subjects',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('name').isString().trim().notEmpty(),
+        body('code').optional().isString().trim()
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            const { name, code } = req.body;
+            const { data, error } = await adminSupabase
+                .from('subjects')
+                .insert([{ name, code }])
+                .select()
+                .single();
+            if (error) throw error;
+            res.status(201).json({ status: 'success', data: { subject: data } });
+        } catch (error) { next(error); }
+    }
+);
+
+router.get('/subjects',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const includeInactive = req.query.include_inactive === 'true';
+            let query = adminSupabase.from('subjects').select('*').order('name');
+            if (!includeInactive) query = query.eq('is_active', true);
+            const { data, error } = await query;
+            if (error) throw error;
+            res.json({ status: 'success', data: { subjects: data } });
+        } catch (error) { next(error); }
+    }
+);
+
+router.put('/subjects/:id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('name').optional().isString().trim().notEmpty(),
+        body('code').optional().isString().trim(),
+        body('is_active').optional().isBoolean()
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            const updates = {};
+            const { name, code, is_active } = req.body;
+            if (name !== undefined) updates.name = name;
+            if (code !== undefined) updates.code = code;
+            if (is_active !== undefined) updates.is_active = is_active;
+            if (Object.keys(updates).length === 0) return res.status(400).json({ status: 'error', message: 'No fields to update' });
+            const { data, error } = await adminSupabase
+                .from('subjects')
+                .update(updates)
+                .eq('id', req.params.id)
+                .select()
+                .single();
+            if (error) throw error;
+            res.json({ status: 'success', data: { subject: data } });
+        } catch (error) { next(error); }
+    }
+);
+
+router.delete('/subjects/:id',
+    authenticate,
+    authorize(['admin']),
+    async (req, res, next) => {
+        try {
+            const { error } = await adminSupabase
+                .from('subjects')
+                .update({ is_active: false })
+                .eq('id', req.params.id);
+            if (error) throw error;
+            res.json({ status: 'success', message: 'Subject deactivated' });
+        } catch (error) { next(error); }
+    }
+);
+
+// Class division subjects: assign, list, edit, remove
+router.post('/class-divisions/:id/subjects',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('subject_ids').isArray({ min: 1 }),
+        body('mode').optional().isIn(['replace', 'append'])
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+            const { id: class_division_id } = req.params;
+            const { subject_ids, mode = 'replace' } = req.body;
+
+            // Verify class division exists
+            const { data: classDiv, error: classErr } = await adminSupabase
+                .from('class_divisions')
+                .select('id')
+                .eq('id', class_division_id)
+                .single();
+            if (classErr || !classDiv) return res.status(404).json({ status: 'error', message: 'Class division not found' });
+
+            // Fetch currently active mappings
+            const { data: current } = await adminSupabase
+                .from('class_division_subjects')
+                .select('id, subject_id')
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true);
+
+            const currentIds = new Set((current || []).map(c => c.subject_id));
+            const incomingIds = new Set(subject_ids);
+
+            const toActivate = [...incomingIds].filter(id => !currentIds.has(id));
+            const toDeactivate = mode === 'replace'
+                ? [...currentIds].filter(id => !incomingIds.has(id))
+                : [];
+
+            // Activate new
+            let activated = [];
+            if (toActivate.length) {
+                const { data: ins, error: insErr } = await adminSupabase
+                    .from('class_division_subjects')
+                    .insert(toActivate.map(sid => ({
+                        class_division_id,
+                        subject_id: sid,
+                        is_active: true,
+                        assigned_by: req.user.id
+                    })))
+                    .select();
+                if (insErr) throw insErr;
+                activated = ins || [];
+            }
+
+            // Deactivate removed
+            let deactivatedCount = 0;
+            if (toDeactivate.length) {
+                const { error: deactErr } = await adminSupabase
+                    .from('class_division_subjects')
+                    .update({ is_active: false })
+                    .eq('class_division_id', class_division_id)
+                    .in('subject_id', toDeactivate);
+                if (deactErr) throw deactErr;
+                deactivatedCount = toDeactivate.length;
+            }
+
+            // Return full active list
+            const { data: activeList } = await adminSupabase
+                .from('class_division_subjects')
+                .select('subject:subject_id(id, name, code)')
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true)
+                .order('assigned_at', { ascending: true });
+
+            res.status(201).json({
+                status: 'success',
+                data: {
+                    activated,
+                    deactivated: deactivatedCount,
+                    subjects: (activeList || []).map(r => r.subject)
+                }
+            });
+        } catch (error) { next(error); }
+    }
+);
+
+router.get('/class-divisions/:id/subjects',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { id } = req.params;
+            const { data, error } = await adminSupabase
+                .from('class_division_subjects')
+                .select('subject:subject_id(id, name, code)')
+                .eq('class_division_id', id)
+                .eq('is_active', true)
+                .order('assigned_at');
+            if (error) throw error;
+            res.json({ status: 'success', data: { subjects: (data || []).map(r => r.subject) } });
+        } catch (error) { next(error); }
+    }
+);
+
+router.delete('/class-divisions/:id/subjects/:subject_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { id, subject_id } = req.params;
+            const { error } = await adminSupabase
+                .from('class_division_subjects')
+                .update({ is_active: false })
+                .eq('class_division_id', id)
+                .eq('subject_id', subject_id)
+                .eq('is_active', true);
+            if (error) throw error;
+            res.json({ status: 'success', message: 'Subject removed from class division' });
+        } catch (error) { next(error); }
+    }
+);
+
 
 // Debug: Resolve teacher identifier (users.id, staff.id, or staff.user_id) without mutating data
 router.get('/debug/resolve-teacher/:id',
@@ -200,41 +412,41 @@ router.get('/my-teacher-id',
                 logger.info('Using legacy class assignment method for teacher:', req.user.id);
                 usingLegacyData = true;
 
-            const { data: assignedClasses, error: classError } = await adminSupabase
-                .from('class_divisions')
-                .select(`
+                const { data: assignedClasses, error: classError } = await adminSupabase
+                    .from('class_divisions')
+                    .select(`
                     id,
                     division,
                     academic_year_id,
                     class_level_id
                 `)
-                .eq('teacher_id', req.user.id);
+                    .eq('teacher_id', req.user.id);
 
-            if (classError) {
+                if (classError) {
                     logger.error('Error fetching assigned classes (legacy):', classError);
                 } else if (assignedClasses && assignedClasses.length > 0) {
-                for (const classDiv of assignedClasses) {
-                    // Get academic year
-                    const { data: academicYear } = await adminSupabase
-                        .from('academic_years')
-                        .select('year_name')
-                        .eq('id', classDiv.academic_year_id)
-                        .single();
+                    for (const classDiv of assignedClasses) {
+                        // Get academic year
+                        const { data: academicYear } = await adminSupabase
+                            .from('academic_years')
+                            .select('year_name')
+                            .eq('id', classDiv.academic_year_id)
+                            .single();
 
-                    // Get class level
-                    const { data: classLevel } = await adminSupabase
-                        .from('class_levels')
-                        .select('name, sequence_number')
-                        .eq('id', classDiv.class_level_id)
-                        .single();
+                        // Get class level
+                        const { data: classLevel } = await adminSupabase
+                            .from('class_levels')
+                            .select('name, sequence_number')
+                            .eq('id', classDiv.class_level_id)
+                            .single();
 
-                    classesWithDetails.push({
+                        classesWithDetails.push({
                             assignment_id: `legacy-${classDiv.id}`,
-                        class_division_id: classDiv.id,
-                        division: classDiv.division,
-                        class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
-                        class_level: classLevel?.name || 'Unknown',
-                        sequence_number: classLevel?.sequence_number || 0,
+                            class_division_id: classDiv.id,
+                            division: classDiv.division,
+                            class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
+                            class_level: classLevel?.name || 'Unknown',
+                            sequence_number: classLevel?.sequence_number || 0,
                             academic_year: academicYear?.year_name || 'Unknown',
                             assignment_type: 'class_teacher',
                             is_primary: true,
@@ -507,11 +719,11 @@ router.get('/class-divisions/:id/teachers',
             // Get staff info for each teacher
             const teachersWithStaffInfo = [];
             for (const assignment of teacherAssignments) {
-                    const { data: staffData } = await adminSupabase
-                        .from('staff')
-                        .select('id, department, designation')
+                const { data: staffData } = await adminSupabase
+                    .from('staff')
+                    .select('id, department, designation')
                     .eq('user_id', assignment.teacher_id)
-                        .single();
+                    .single();
 
                 teachersWithStaffInfo.push({
                     assignment_id: assignment.id,
@@ -529,7 +741,7 @@ router.get('/class-divisions/:id/teachers',
                         staff_id: staffData?.id || null,
                         department: staffData?.department || null,
                         designation: staffData?.designation || null
-                }
+                    }
                 });
             }
 
@@ -641,12 +853,30 @@ router.post('/class-divisions/:id/assign-teacher',
                 });
             }
 
-            // If subject_teacher, require subject
+            // If subject_teacher, require subject and validate against class_division_subjects if configured
             if (assignment_type === 'subject_teacher' && (!subject || String(subject).trim().length === 0)) {
                 return res.status(400).json({
                     status: 'error',
                     message: 'Subject is required when assignment_type is subject_teacher'
                 });
+            }
+
+            if (assignment_type === 'subject_teacher' && subject) {
+                // If class has subjects configured, ensure provided subject exists in mapping (by name or code)
+                const { data: mappedSubjects } = await adminSupabase
+                    .from('class_division_subjects')
+                    .select('subject:subject_id(id, name, code)')
+                    .eq('class_division_id', class_division_id)
+                    .eq('is_active', true);
+                if (mappedSubjects && mappedSubjects.length > 0) {
+                    const allowed = mappedSubjects.some(ms => ms.subject?.name === subject || ms.subject?.code === subject);
+                    if (!allowed) {
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Subject not assigned to this class division'
+                        });
+                    }
+                }
             }
 
             // Check if assignment already exists

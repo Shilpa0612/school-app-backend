@@ -166,6 +166,59 @@ router.get('/',
                 query = query.eq('status', req.query.status);
             }
 
+            // Additional filters: by student(s) and class division
+            const { student_id: singleStudentId, student_ids: csvStudentIds, class_division_id } = req.query;
+
+            // Build allowed set based on role
+            let allowedStudentIds = null; // null means all
+            if (req.user.role === 'parent') {
+                const { data: childrenForFilter } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select('student_id')
+                    .eq('parent_id', req.user.id);
+                allowedStudentIds = (childrenForFilter || []).map(c => c.student_id);
+            } else if (req.user.role === 'student') {
+                allowedStudentIds = [req.user.id];
+            }
+
+            // Student filter from query params
+            let requestedStudentIds = [];
+            if (singleStudentId) requestedStudentIds.push(singleStudentId);
+            if (csvStudentIds) {
+                requestedStudentIds.push(...String(csvStudentIds).split(',').map(s => s.trim()).filter(Boolean));
+            }
+
+            // Class division filter -> fetch student ids in that division
+            let classDivisionStudentIds = [];
+            if (class_division_id) {
+                const { data: classStudents, error: classStudentsError } = await adminSupabase
+                    .from('student_academic_records')
+                    .select('student_id')
+                    .eq('class_division_id', class_division_id)
+                    .eq('status', 'ongoing');
+                if (classStudentsError) throw classStudentsError;
+                classDivisionStudentIds = (classStudents || []).map(r => r.student_id);
+            }
+
+            // Compute final student set by intersecting available constraints
+            let finalStudentIds = null; // null => no student filter
+            const intersect = (a, b) => a.filter(x => new Set(b).has(x));
+
+            if (allowedStudentIds !== null) finalStudentIds = allowedStudentIds;
+            if (requestedStudentIds.length > 0) {
+                finalStudentIds = finalStudentIds === null ? requestedStudentIds : intersect(finalStudentIds, requestedStudentIds);
+            }
+            if (classDivisionStudentIds.length > 0) {
+                finalStudentIds = finalStudentIds === null ? classDivisionStudentIds : intersect(finalStudentIds, classDivisionStudentIds);
+            }
+
+            if (finalStudentIds !== null) {
+                if (finalStudentIds.length === 0) {
+                    return res.json({ status: 'success', data: { leave_requests: [] } });
+                }
+                query = query.in('student_id', finalStudentIds);
+            }
+
             // Apply date range overlap filter if provided
             // A leave request overlaps the window [from_date, to_date] if:
             // start_date <= to_date AND end_date >= from_date

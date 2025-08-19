@@ -999,6 +999,68 @@ PUT /leave-requests/:id/status
 
 ### Academic Management
 
+#### Subjects
+
+```http
+POST /api/academic/subjects
+```
+
+Body:
+
+```json
+{ "name": "Mathematics", "code": "MATH" }
+```
+
+```http
+GET /api/academic/subjects
+```
+
+Query:
+
+- `include_inactive`: true/false
+
+```http
+PUT /api/academic/subjects/:id
+```
+
+Body: any of `{ name, code, is_active }`
+
+```http
+DELETE /api/academic/subjects/:id
+```
+
+Soft-deactivate subject.
+
+#### Class Division Subjects
+
+```http
+POST /api/academic/class-divisions/:id/subjects
+```
+
+Body:
+
+```json
+{ "subject_ids": ["uuid1", "uuid2"], "mode": "replace" }
+```
+
+- **mode**: `replace` (default) deactivates subjects not in list; `append` only adds/reactivates provided subjects
+
+```http
+GET /api/academic/class-divisions/:id/subjects
+```
+
+Response: active subjects assigned to the class division
+
+```http
+DELETE /api/academic/class-divisions/:id/subjects/:subject_id
+```
+
+Removes a subject from the class division (deactivates mapping).
+
+Notes:
+
+- When assigning a `subject_teacher` via `POST /api/academic/class-divisions/:id/assign-teacher`, if the class division has subjects configured, the subject must be among the assigned subjects.
+
 #### Get Students Eligible for Promotion
 
 ```http
