@@ -200,41 +200,41 @@ router.get('/my-teacher-id',
                 logger.info('Using legacy class assignment method for teacher:', req.user.id);
                 usingLegacyData = true;
 
-                const { data: assignedClasses, error: classError } = await adminSupabase
-                    .from('class_divisions')
-                    .select(`
+            const { data: assignedClasses, error: classError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
                     id,
                     division,
                     academic_year_id,
                     class_level_id
                 `)
-                    .eq('teacher_id', req.user.id);
+                .eq('teacher_id', req.user.id);
 
-                if (classError) {
+            if (classError) {
                     logger.error('Error fetching assigned classes (legacy):', classError);
                 } else if (assignedClasses && assignedClasses.length > 0) {
-                    for (const classDiv of assignedClasses) {
-                        // Get academic year
-                        const { data: academicYear } = await adminSupabase
-                            .from('academic_years')
-                            .select('year_name')
-                            .eq('id', classDiv.academic_year_id)
-                            .single();
+                for (const classDiv of assignedClasses) {
+                    // Get academic year
+                    const { data: academicYear } = await adminSupabase
+                        .from('academic_years')
+                        .select('year_name')
+                        .eq('id', classDiv.academic_year_id)
+                        .single();
 
-                        // Get class level
-                        const { data: classLevel } = await adminSupabase
-                            .from('class_levels')
-                            .select('name, sequence_number')
-                            .eq('id', classDiv.class_level_id)
-                            .single();
+                    // Get class level
+                    const { data: classLevel } = await adminSupabase
+                        .from('class_levels')
+                        .select('name, sequence_number')
+                        .eq('id', classDiv.class_level_id)
+                        .single();
 
-                        classesWithDetails.push({
+                    classesWithDetails.push({
                             assignment_id: `legacy-${classDiv.id}`,
-                            class_division_id: classDiv.id,
-                            division: classDiv.division,
-                            class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
-                            class_level: classLevel?.name || 'Unknown',
-                            sequence_number: classLevel?.sequence_number || 0,
+                        class_division_id: classDiv.id,
+                        division: classDiv.division,
+                        class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
+                        class_level: classLevel?.name || 'Unknown',
+                        sequence_number: classLevel?.sequence_number || 0,
                             academic_year: academicYear?.year_name || 'Unknown',
                             assignment_type: 'class_teacher',
                             is_primary: true,
@@ -507,11 +507,11 @@ router.get('/class-divisions/:id/teachers',
             // Get staff info for each teacher
             const teachersWithStaffInfo = [];
             for (const assignment of teacherAssignments) {
-                const { data: staffData } = await adminSupabase
-                    .from('staff')
-                    .select('id, department, designation')
+                    const { data: staffData } = await adminSupabase
+                        .from('staff')
+                        .select('id, department, designation')
                     .eq('user_id', assignment.teacher_id)
-                    .single();
+                        .single();
 
                 teachersWithStaffInfo.push({
                     assignment_id: assignment.id,
@@ -529,7 +529,7 @@ router.get('/class-divisions/:id/teachers',
                         staff_id: staffData?.id || null,
                         department: staffData?.department || null,
                         designation: staffData?.designation || null
-                    }
+                }
                 });
             }
 

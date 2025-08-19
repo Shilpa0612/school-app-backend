@@ -966,6 +966,12 @@ GET /leave-requests
 **Query Parameters:**
 
 - `status`: Filter by status (pending, approved, rejected)
+- `from_date`: Start of date window (YYYY-MM-DD). Includes leaves that end on/after this date
+- `to_date`: End of date window (YYYY-MM-DD). Includes leaves that start on/before this date
+
+**Notes:**
+
+- If both `from_date` and `to_date` are provided, results include leave requests that overlap the window: `start_date <= to_date` AND `end_date >= from_date`.
 
 **Response:** List of leave requests
 
@@ -1387,7 +1393,7 @@ GET /api/birthdays/class/:class_division_id
 
 - Available for Teachers only
 - Returns birthdays for students in the teacher's assigned class
-- Verifies teacher is assigned to the specified class
+- Verifies teacher is assigned via either legacy `class_divisions.teacher_id` or any active assignment in `class_teacher_assignments` (class, subject, assistant, substitute)
 
 **Response:**
 
@@ -1426,9 +1432,69 @@ GET /api/birthdays/division/:class_division_id
 
 - Available for Admin, Principal, and Teachers
 - Admin/Principal can access any division
-- Teachers can only access their assigned divisions
+- Teachers can access divisions where they are assigned via either legacy `class_divisions.teacher_id` or any active assignment in `class_teacher_assignments`
 - Can check birthdays for any specific date
 - Includes class division information
+
+#### Get My Classes' Birthdays (Teacher Only)
+
+```http
+GET /api/birthdays/my-classes
+```
+
+**Query Parameters:**
+
+- `date` (optional): Specific date to check (YYYY-MM-DD format, defaults to today)
+- `page` (optional): Page number for pagination (default: 1)
+- `limit` (optional): Number of items per page (default: 20)
+
+**Notes:**
+
+- Returns birthdays across all class divisions where the teacher is assigned (legacy `class_divisions.teacher_id` or any active row in `class_teacher_assignments`)
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "birthdays": [
+      {
+        "id": "uuid",
+        "full_name": "Student Name",
+        "date_of_birth": "2018-01-15",
+        "admission_number": "2024001",
+        "student_academic_records": [
+          {
+            "class_division": {
+              "id": "uuid",
+              "division": "A",
+              "level": {
+                "name": "Grade 1",
+                "sequence_number": 1
+              }
+            },
+            "class_division_id": "uuid",
+            "roll_number": "01"
+          }
+        ]
+      }
+    ],
+    "count": 10,
+    "total_count": 10,
+    "date": "2024-01-15",
+    "class_division_ids": ["uuid1", "uuid2"],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 10,
+      "total_pages": 1,
+      "has_next": false,
+      "has_prev": false
+    }
+  }
+}
+```
 
 **Response:**
 
@@ -1933,7 +1999,16 @@ GET /api/students/class/:class_division_id
         ]
       }
     ],
-    "count": 25
+    "count": 20,
+    "total_count": 25,
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 25,
+      "total_pages": 2,
+      "has_next": true,
+      "has_prev": false
+    }
   }
 }
 ```

@@ -252,14 +252,34 @@ router.get('/class/:class_division_id',
             const month = today.getMonth() + 1;
             const day = today.getDate();
 
-            // Verify teacher is assigned to this class
+            // Verify teacher is assigned to this class (legacy or many-to-many)
             const { data: classData, error: classError } = await adminSupabase
                 .from('class_divisions')
                 .select('teacher_id')
                 .eq('id', class_division_id)
                 .single();
 
-            if (classError || !classData || classData.teacher_id !== req.user.id) {
+            if (classError || !classData) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class division not found'
+                });
+            }
+
+            let isAssigned = classData.teacher_id === req.user.id;
+            if (!isAssigned) {
+                const { data: mmAssign } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id')
+                    .eq('class_division_id', class_division_id)
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true)
+                    .limit(1)
+                    .maybeSingle();
+                isAssigned = !!mmAssign;
+            }
+
+            if (!isAssigned) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Not authorized to access this class'
@@ -340,12 +360,27 @@ router.get('/division/:class_division_id',
                 });
             }
 
-            // Check authorization for teachers
-            if (req.user.role === 'teacher' && classData.teacher_id !== req.user.id) {
-                return res.status(403).json({
-                    status: 'error',
-                    message: 'Not authorized to access this class division'
-                });
+            // Check authorization for teachers (legacy or many-to-many assignments)
+            if (req.user.role === 'teacher') {
+                let isAssigned = classData.teacher_id === req.user.id;
+                if (!isAssigned) {
+                    const { data: mmAssign } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id')
+                        .eq('class_division_id', class_division_id)
+                        .eq('teacher_id', req.user.id)
+                        .eq('is_active', true)
+                        .limit(1)
+                        .maybeSingle();
+                    isAssigned = !!mmAssign;
+                }
+
+                if (!isAssigned) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'Not authorized to access this class division'
+                    });
+                }
             }
 
             // Determine the date to check (today or specified date)
@@ -396,6 +431,120 @@ router.get('/division/:class_division_id',
                     count: paginatedStudents.length,
                     total_count: totalCount,
                     date: checkDate.toISOString().split('T')[0],
+                    pagination: {
+                        page,
+                        limit,
+                        total: totalCount,
+                        total_pages: Math.ceil(totalCount / limit),
+                        has_next: page < Math.ceil(totalCount / limit),
+                        has_prev: page > 1
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Get birthdays across all classes assigned to the teacher (class or subject teacher)
+router.get('/my-classes',
+    authenticate,
+    authorize('teacher'),
+    async (req, res, next) => {
+        try {
+            const { date } = req.query; // Optional date parameter (YYYY-MM-DD)
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 20;
+            const offset = (page - 1) * limit;
+
+            // Collect class divisions where this teacher is assigned (legacy + many-to-many)
+            const [{ data: legacyDivisions }, { data: mmAssignments }] = await Promise.all([
+                adminSupabase
+                    .from('class_divisions')
+                    .select('id')
+                    .eq('teacher_id', req.user.id),
+                adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('class_division_id')
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true)
+            ]);
+
+            const assignedIds = Array.from(new Set([
+                ...(legacyDivisions?.map(d => d.id) || []),
+                ...(mmAssignments?.map(a => a.class_division_id) || [])
+            ]));
+
+            if (assignedIds.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        birthdays: [],
+                        count: 0,
+                        total_count: 0,
+                        date: (date ? new Date(date) : new Date()).toISOString().split('T')[0],
+                        class_division_ids: [],
+                        pagination: {
+                            page,
+                            limit,
+                            total: 0,
+                            total_pages: 0,
+                            has_next: false,
+                            has_prev: false
+                        }
+                    }
+                });
+            }
+
+            // Determine date to check
+            const checkDate = date ? new Date(date) : new Date();
+            const month = checkDate.getMonth();
+            const day = checkDate.getDate();
+
+            // Fetch students for all assigned divisions
+            const { data: students, error } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    date_of_birth,
+                    admission_number,
+                    status,
+                    student_academic_records!inner (
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            level:class_level_id (name, sequence_number)
+                        ),
+                        class_division_id,
+                        roll_number
+                    )
+                `)
+                .eq('status', 'active')
+                .in('student_academic_records.class_division_id', assignedIds)
+                .order('full_name');
+
+            if (error) throw error;
+
+            // Filter students with birthdays on the specified date
+            const birthdayStudents = students.filter(student => {
+                const studentBirthday = new Date(student.date_of_birth);
+                return studentBirthday.getMonth() === month && studentBirthday.getDate() === day;
+            });
+
+            // Apply pagination
+            const totalCount = birthdayStudents.length;
+            const paginatedStudents = birthdayStudents.slice(offset, offset + limit);
+
+            res.json({
+                status: 'success',
+                data: {
+                    birthdays: paginatedStudents,
+                    count: paginatedStudents.length,
+                    total_count: totalCount,
+                    date: checkDate.toISOString().split('T')[0],
+                    class_division_ids: assignedIds,
                     pagination: {
                         page,
                         limit,

@@ -166,6 +166,20 @@ router.get('/',
                 query = query.eq('status', req.query.status);
             }
 
+            // Apply date range overlap filter if provided
+            // A leave request overlaps the window [from_date, to_date] if:
+            // start_date <= to_date AND end_date >= from_date
+            const { from_date, to_date } = req.query;
+            if (from_date && to_date) {
+                query = query.lte('start_date', to_date).gte('end_date', from_date);
+            } else if (from_date) {
+                // Any leave that ends on or after from_date
+                query = query.gte('end_date', from_date);
+            } else if (to_date) {
+                // Any leave that starts on or before to_date
+                query = query.lte('start_date', to_date);
+            }
+
             // First, let's check if there are any leave requests at all
             const { data: allRequests, error: allError } = await adminSupabase
                 .from('leave_requests')
