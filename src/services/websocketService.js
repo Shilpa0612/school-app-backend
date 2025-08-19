@@ -270,7 +270,7 @@ class WebSocketService {
     /**
      * Send message to all users in a thread
      */
-    sendMessageToThread(threadId, message, excludeUserId = null) {
+    sendMessageToThread(threadId, message, _excludeUserId = null) {
         // This would need to be implemented based on your thread participants
         // For now, we'll use the realtime service to handle this
         logger.info(`Sending message to thread ${threadId}:`, message);

@@ -964,6 +964,16 @@ router.post('/staff/with-user', authenticate, async (req, res) => {
             user_role = 'teacher' // Role for the user account
         } = req.body;
 
+        // Normalize and validate user role for account creation
+        const normalizedUserRole = String(user_role || 'teacher').toLowerCase();
+        const allowedUserRoles = ['admin', 'principal', 'teacher', 'parent'];
+        if (!allowedUserRoles.includes(normalizedUserRole)) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Invalid user_role. Allowed: admin, principal, teacher, parent'
+            });
+        }
+
         // Validate required fields
         if (!full_name || !phone_number) {
             return res.status(400).json({
@@ -1010,7 +1020,7 @@ router.post('/staff/with-user', authenticate, async (req, res) => {
             .insert({
                 full_name,
                 phone_number,
-                role: user_role,
+                role: normalizedUserRole,
                 password_hash: passwordHash
             })
             .select('id, full_name, phone_number')

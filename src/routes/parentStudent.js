@@ -56,7 +56,7 @@ router.post('/link',
                     }
 
                     // Check existing mappings
-                    const { data: existingMapping, error: mappingError } = await supabase
+                    const { data: existingMapping } = await supabase
                         .from('parent_student_mappings')
                         .select('id, is_primary_guardian')
                         .eq('student_id', student.id)

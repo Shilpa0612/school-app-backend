@@ -1975,7 +1975,27 @@ router.post('/students',
                 .select()
                 .single();
 
-            if (studentError) throw studentError;
+            if (studentError) {
+                const errPayload = {
+                    code: studentError.code,
+                    message: studentError.message,
+                    details: studentError.details,
+                    hint: studentError.hint
+                };
+                // Duplicate admission number
+                if ((studentError.code === '23505') || /duplicate key/i.test(studentError.message || '')) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Admission number already exists',
+                        error: errPayload
+                    });
+                }
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create student',
+                    error: errPayload
+                });
+            }
 
             // Assign to class
             const { data: record, error: recordError } = await supabase
@@ -1985,7 +2005,26 @@ router.post('/students',
                     p_roll_number: roll_number
                 });
 
-            if (recordError) throw recordError;
+            if (recordError) {
+                const errPayload = {
+                    code: recordError.code,
+                    message: recordError.message,
+                    details: recordError.details,
+                    hint: recordError.hint
+                };
+                if ((recordError.code === '23505') || /duplicate key/i.test(recordError.message || '')) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Roll number already exists for this class',
+                        error: errPayload
+                    });
+                }
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to assign student to class',
+                    error: errPayload
+                });
+            }
 
             res.status(201).json({
                 status: 'success',

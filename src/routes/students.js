@@ -1,12 +1,35 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import multer from 'multer';
-import { adminSupabase } from '../config/supabase.js';
+import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 2 * 1024 * 1024 } });
+
+// Local middleware to surface Multer errors as proper HTTP responses
+const safeUploadPhoto = (req, res, next) => {
+    upload.single('photo')(req, res, (err) => {
+        if (err) {
+            // Multer file size limit
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(413).json({
+                    status: 'error',
+                    message: 'File too large. Maximum allowed size is 2MB',
+                    code: err.code
+                });
+            }
+            // Other Multer or parsing errors
+            return res.status(400).json({
+                status: 'error',
+                message: err.message || 'Invalid upload request',
+                code: err.code || undefined
+            });
+        }
+        next();
+    });
+};
 
 // Get all students with pagination and filters (Admin/Principal only)
 router.get('/',
@@ -216,7 +239,25 @@ router.post('/',
 
             if (studentError) {
                 logger.error('Error creating student:', studentError);
-                throw studentError;
+                const errPayload = {
+                    code: studentError.code,
+                    message: studentError.message,
+                    details: studentError.details,
+                    hint: studentError.hint
+                };
+                // Handle duplicate admission number
+                if ((studentError.code === '23505') || /duplicate key/i.test(studentError.message || '')) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Admission number already exists',
+                        error: errPayload
+                    });
+                }
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create student',
+                    error: errPayload
+                });
             }
 
             // Create academic record
@@ -233,7 +274,28 @@ router.post('/',
 
             if (recordError) {
                 logger.error('Error creating academic record:', recordError);
-                throw recordError;
+                const errPayload = {
+                    code: recordError.code,
+                    message: recordError.message,
+                    details: recordError.details,
+                    hint: recordError.hint
+                };
+                // Handle duplicate roll number per class or existing academic record
+                if ((recordError.code === '23505') || /duplicate key/i.test(recordError.message || '')) {
+                    const friendly = /roll_number/i.test(recordError.message || '')
+                        ? 'Roll number already exists for this class'
+                        : 'Academic record already exists for this student';
+                    return res.status(400).json({
+                        status: 'error',
+                        message: friendly,
+                        error: errPayload
+                    });
+                }
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create academic record',
+                    error: errPayload
+                });
             }
 
             res.status(201).json({
@@ -774,7 +836,7 @@ router.post('/:student_id/link-parent',
             }
 
             // Check if mapping already exists
-            const { data: existingMapping, error: mappingError } = await adminSupabase
+            const { data: existingMapping } = await adminSupabase
                 .from('parent_student_mappings')
                 .select('id')
                 .eq('student_id', student_id)
@@ -1049,7 +1111,7 @@ export default router;
 router.post('/:student_id/profile-photo',
     authenticate,
     authorize(['admin', 'principal', 'teacher']),
-    upload.single('photo'),
+    safeUploadPhoto,
     async (req, res, next) => {
         try {
             const { student_id } = req.params;
