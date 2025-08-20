@@ -739,23 +739,8 @@ router.get('/divisions/summary',
             let currentAcademicYearId = academic_year_id;
             let activeYearName = 'All Years';
 
-            if (!currentAcademicYearId) {
-                const { data: activeYear, error: yearError } = await adminSupabase
-                    .from('academic_years')
-                    .select('id, year_name')
-                    .eq('is_active', true)
-                    .single();
-
-                if (yearError) {
-                    console.error('Error fetching active academic year:', yearError);
-                    // Continue without academic year filter
-                    currentAcademicYearId = null;
-                } else {
-                    currentAcademicYearId = activeYear.id;
-                    activeYearName = activeYear.year_name;
-                    console.log('Using active academic year:', currentAcademicYearId);
-                }
-            } else {
+            // Only apply academic year filter if explicitly requested
+            if (currentAcademicYearId) {
                 // Get the name for the specified academic year
                 const { data: specifiedYear } = await adminSupabase
                     .from('academic_years')
@@ -763,6 +748,11 @@ router.get('/divisions/summary',
                     .eq('id', currentAcademicYearId)
                     .single();
                 activeYearName = specifiedYear?.year_name || 'Unknown';
+                console.log('Using specified academic year:', currentAcademicYearId);
+            } else {
+                // No academic year filter - show all divisions
+                currentAcademicYearId = null;
+                console.log('No academic year filter - showing all divisions');
             }
 
             // Get all class divisions with basic details first
@@ -1004,31 +994,57 @@ router.get('/divisions/teacher/:teacher_id/summary',
 
             // Get current active academic year if not specified
             let currentAcademicYearId = academic_year_id;
-            if (!currentAcademicYearId) {
-                const { data: activeYear, error: yearError } = await adminSupabase
+            let activeYearName = 'All Years';
+
+            // Only apply academic year filter if explicitly requested
+            if (currentAcademicYearId) {
+                // Get the name for the specified academic year
+                const { data: specifiedYear } = await adminSupabase
                     .from('academic_years')
-                    .select('id, year_name')
-                    .eq('is_active', true)
+                    .select('year_name')
+                    .eq('id', currentAcademicYearId)
                     .single();
-
-                if (yearError) {
-                    console.error('Error fetching active academic year:', yearError);
-                    return res.status(500).json({
-                        status: 'error',
-                        message: 'Failed to fetch active academic year',
-                        details: yearError.message
-                    });
-                }
-
-                currentAcademicYearId = activeYear.id;
-                console.log('Using active academic year:', currentAcademicYearId);
+                activeYearName = specifiedYear?.year_name || 'Unknown';
+                console.log('Using specified academic year:', currentAcademicYearId);
+            } else {
+                // No academic year filter - show all divisions
+                currentAcademicYearId = null;
+                console.log('No academic year filter - showing all divisions');
             }
 
             // Get class divisions where this teacher is assigned (both legacy and many-to-many)
-            const [{ data: legacyDivisions, error: legacyError }, { data: mmAssignments, error: mmError }] = await Promise.all([
-                adminSupabase
-                    .from('class_divisions')
-                    .select(`
+            let legacyQuery = adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    level:class_level_id (
+                        id,
+                        name,
+                        sequence_number
+                    ),
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    ),
+                    academic_year:academic_year_id (
+                        id,
+                        year_name,
+                        is_active
+                    )
+                `)
+                .eq('teacher_id', teacher_id);
+
+            let mmQuery = adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    class_division_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    is_active,
+                    class_division:class_division_id (
                         id,
                         division,
                         level:class_level_id (
@@ -1045,40 +1061,20 @@ router.get('/divisions/teacher/:teacher_id/summary',
                             year_name,
                             is_active
                         )
-                    `)
-                    .eq('teacher_id', teacher_id)
-                    .eq('academic_year_id', currentAcademicYearId),
-                adminSupabase
-                    .from('class_teacher_assignments')
-                    .select(`
-                        id,
-                        class_division_id,
-                        assignment_type,
-                        subject,
-                        is_primary,
-                        is_active,
-                        class_division:class_division_id (
-                            id,
-                            division,
-                            level:class_level_id (
-                                id,
-                                name,
-                                sequence_number
-                            ),
-                            teacher:teacher_id (
-                                id,
-                                full_name
-                            ),
-                            academic_year:academic_year_id (
-                                id,
-                                name,
-                                is_active
-                            )
-                        )
-                    `)
-                    .eq('teacher_id', teacher_id)
-                    .eq('is_active', true)
-                    .eq('class_division.academic_year_id', currentAcademicYearId)
+                    )
+                `)
+                .eq('teacher_id', teacher_id)
+                .eq('is_active', true);
+
+            // Apply academic year filter only if specified
+            if (currentAcademicYearId) {
+                legacyQuery = legacyQuery.eq('academic_year_id', currentAcademicYearId);
+                mmQuery = mmQuery.eq('class_division.academic_year_id', currentAcademicYearId);
+            }
+
+            const [{ data: legacyDivisions, error: legacyError }, { data: mmAssignments, error: mmError }] = await Promise.all([
+                legacyQuery,
+                mmQuery
             ]);
 
             if (legacyError) {
@@ -1147,7 +1143,7 @@ router.get('/divisions/teacher/:teacher_id/summary',
                         total_students: 0,
                         academic_year: {
                             id: currentAcademicYearId,
-                            name: 'Unknown'
+                            name: activeYearName
                         },
                         summary: {
                             total_subject_teachers: 0,
@@ -1295,7 +1291,7 @@ router.get('/divisions/teacher/:teacher_id/summary',
                     total_students: totalStudents,
                     academic_year: {
                         id: currentAcademicYearId,
-                        name: allDivisions[0]?.academic_year?.year_name || 'Unknown'
+                        name: activeYearName
                     },
                     summary: {
                         total_subject_teachers: subjectTeachers?.length || 0,
