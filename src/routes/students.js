@@ -731,7 +731,26 @@ router.get('/divisions/summary',
     authorize(['admin', 'principal']),
     async (req, res, next) => {
         try {
-            // Get all class divisions with student counts
+            const { academic_year_id } = req.query;
+
+            // Get current active academic year if not specified
+            let currentAcademicYearId = academic_year_id;
+            if (!currentAcademicYearId) {
+                const { data: activeYear, error: yearError } = await adminSupabase
+                    .from('academic_years')
+                    .select('id, name')
+                    .eq('is_active', true)
+                    .single();
+
+                if (yearError) {
+                    logger.error('Error fetching active academic year:', yearError);
+                    throw yearError;
+                }
+
+                currentAcademicYearId = activeYear.id;
+            }
+
+            // Get all class divisions with enhanced details
             const { data: divisions, error: divisionsError } = await adminSupabase
                 .from('class_divisions')
                 .select(`
@@ -746,24 +765,99 @@ router.get('/divisions/summary',
                         id,
                         full_name
                     ),
+                    academic_year:academic_year_id (
+                        id,
+                        name,
+                        is_active
+                    ),
                     student_academic_records (
                         id
                     )
-                `);
+                `)
+                .eq('academic_year_id', currentAcademicYearId);
 
             if (divisionsError) {
                 logger.error('Error fetching divisions:', divisionsError);
                 throw divisionsError;
             }
 
-            // Process the data to get student counts and sort by level sequence and division
-            const divisionsWithCounts = divisions.map(division => ({
-                id: division.id,
-                division: division.division,
-                level: division.level,
-                teacher: division.teacher,
-                student_count: division.student_academic_records?.length || 0
-            })).sort((a, b) => {
+            // Get subject teachers for all divisions
+            const divisionIds = divisions.map(div => div.id);
+            const { data: subjectTeachers, error: subjectTeachersError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    class_division_id,
+                    teacher_id,
+                    subject,
+                    is_active,
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    )
+                `)
+                .in('class_division_id', divisionIds)
+                .eq('is_active', true);
+
+            if (subjectTeachersError) {
+                logger.error('Error fetching subject teachers:', subjectTeachersError);
+                throw subjectTeachersError;
+            }
+
+            // Get subjects for all divisions
+            const { data: divisionSubjects, error: subjectsError } = await adminSupabase
+                .from('class_division_subjects')
+                .select(`
+                    class_division_id,
+                    subject:subject_id (
+                        id,
+                        name,
+                        code
+                    )
+                `)
+                .in('class_division_id', divisionIds);
+
+            if (subjectsError) {
+                logger.error('Error fetching division subjects:', subjectsError);
+                throw subjectsError;
+            }
+
+            // Process the data to get comprehensive division information
+            const divisionsWithDetails = divisions.map(division => {
+                // Get subject teachers for this division
+                const divisionSubjectTeachers = subjectTeachers
+                    .filter(st => st.class_division_id === division.id)
+                    .map(st => ({
+                        id: st.teacher_id,
+                        name: st.teacher.full_name,
+                        subject: st.subject,
+                        is_class_teacher: division.teacher?.id === st.teacher_id
+                    }));
+
+                // Get subjects for this division
+                const divisionSubjectsList = divisionSubjects
+                    .filter(ds => ds.class_division_id === division.id)
+                    .map(ds => ({
+                        id: ds.subject.id,
+                        name: ds.subject.name,
+                        code: ds.subject.code
+                    }));
+
+                return {
+                    id: division.id,
+                    division: division.division,
+                    level: division.level,
+                    academic_year: division.academic_year,
+                    class_teacher: division.teacher ? {
+                        id: division.teacher.id,
+                        name: division.teacher.full_name,
+                        is_class_teacher: true
+                    } : null,
+                    subject_teachers: divisionSubjectTeachers,
+                    subjects: divisionSubjectsList,
+                    student_count: division.student_academic_records?.length || 0
+                };
+            }).sort((a, b) => {
                 // First sort by level sequence
                 if (a.level.sequence_number !== b.level.sequence_number) {
                     return a.level.sequence_number - b.level.sequence_number;
@@ -775,9 +869,297 @@ router.get('/divisions/summary',
             res.json({
                 status: 'success',
                 data: {
-                    divisions: divisionsWithCounts,
-                    total_divisions: divisionsWithCounts.length,
-                    total_students: divisionsWithCounts.reduce((sum, div) => sum + div.student_count, 0)
+                    divisions: divisionsWithDetails,
+                    total_divisions: divisionsWithDetails.length,
+                    total_students: divisionsWithDetails.reduce((sum, div) => sum + div.student_count, 0),
+                    academic_year: {
+                        id: currentAcademicYearId,
+                        name: divisions[0]?.academic_year?.name || 'Unknown'
+                    },
+                    summary: {
+                        total_subject_teachers: subjectTeachers.length,
+                        total_subjects: divisionSubjects.length,
+                        divisions_with_class_teachers: divisionsWithDetails.filter(d => d.class_teacher).length,
+                        divisions_with_subject_teachers: divisionsWithDetails.filter(d => d.subject_teachers.length > 0).length
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Get divisions summary for a specific teacher (Admin/Principal only)
+router.get('/divisions/teacher/:teacher_id/summary',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { teacher_id } = req.params;
+            const { academic_year_id } = req.query;
+
+            // Validate teacher_id
+            if (!teacher_id) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Teacher ID is required'
+                });
+            }
+
+            // Verify teacher exists
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found'
+                });
+            }
+
+            // Get current active academic year if not specified
+            let currentAcademicYearId = academic_year_id;
+            if (!currentAcademicYearId) {
+                const { data: activeYear, error: yearError } = await adminSupabase
+                    .from('academic_years')
+                    .select('id, name')
+                    .eq('is_active', true)
+                    .single();
+
+                if (yearError) {
+                    logger.error('Error fetching active academic year:', yearError);
+                    throw yearError;
+                }
+
+                currentAcademicYearId = activeYear.id;
+            }
+
+            // Get class divisions where this teacher is assigned (both legacy and many-to-many)
+            const [{ data: legacyDivisions }, { data: mmAssignments }] = await Promise.all([
+                adminSupabase
+                    .from('class_divisions')
+                    .select(`
+                        id,
+                        division,
+                        level:class_level_id (
+                            id,
+                            name,
+                            sequence_number
+                        ),
+                        teacher:teacher_id (
+                            id,
+                            full_name
+                        ),
+                        academic_year:academic_year_id (
+                            id,
+                            name,
+                            is_active
+                        ),
+                        student_academic_records (
+                            id
+                        )
+                    `)
+                    .eq('teacher_id', teacher_id)
+                    .eq('academic_year_id', currentAcademicYearId),
+                adminSupabase
+                    .from('class_teacher_assignments')
+                    .select(`
+                        id,
+                        class_division_id,
+                        assignment_type,
+                        subject,
+                        is_primary,
+                        is_active,
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            level:class_level_id (
+                                id,
+                                name,
+                                sequence_number
+                            ),
+                            teacher:teacher_id (
+                                id,
+                                full_name
+                            ),
+                            academic_year:academic_year_id (
+                                id,
+                                name,
+                                is_active
+                            ),
+                            student_academic_records (
+                                id
+                            )
+                        )
+                    `)
+                    .eq('teacher_id', teacher_id)
+                    .eq('is_active', true)
+                    .eq('class_division.academic_year_id', currentAcademicYearId)
+            ]);
+
+            // Combine and deduplicate divisions
+            const allDivisions = [];
+            const divisionIds = new Set();
+
+            // Add legacy divisions
+            if (legacyDivisions) {
+                legacyDivisions.forEach(div => {
+                    if (!divisionIds.has(div.id)) {
+                        divisionIds.add(div.id);
+                        allDivisions.push({
+                            ...div,
+                            assignment_type: 'class_teacher',
+                            is_primary: true,
+                            subject: null
+                        });
+                    }
+                });
+            }
+
+            // Add many-to-many assignments
+            if (mmAssignments) {
+                mmAssignments.forEach(assignment => {
+                    if (!divisionIds.has(assignment.class_division.id)) {
+                        divisionIds.add(assignment.class_division.id);
+                        allDivisions.push({
+                            ...assignment.class_division,
+                            assignment_type: assignment.assignment_type,
+                            is_primary: assignment.is_primary,
+                            subject: assignment.subject
+                        });
+                    }
+                });
+            }
+
+            // Get subject teachers for all divisions
+            const divisionIdsArray = Array.from(divisionIds);
+            const { data: subjectTeachers, error: subjectTeachersError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    class_division_id,
+                    teacher_id,
+                    subject,
+                    assignment_type,
+                    is_active,
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    )
+                `)
+                .in('class_division_id', divisionIdsArray)
+                .eq('is_active', true);
+
+            if (subjectTeachersError) {
+                logger.error('Error fetching subject teachers:', subjectTeachersError);
+                throw subjectTeachersError;
+            }
+
+            // Get subjects for all divisions
+            const { data: divisionSubjects, error: subjectsError } = await adminSupabase
+                .from('class_division_subjects')
+                .select(`
+                    class_division_id,
+                    subject:subject_id (
+                        id,
+                        name,
+                        code
+                    )
+                `)
+                .in('class_division_id', divisionIdsArray);
+
+            if (subjectsError) {
+                logger.error('Error fetching division subjects:', subjectsError);
+                throw subjectsError;
+            }
+
+            // Process the data to get comprehensive division information
+            const divisionsWithDetails = allDivisions.map(division => {
+                // Get subject teachers for this division
+                const divisionSubjectTeachers = subjectTeachers
+                    .filter(st => st.class_division_id === division.id)
+                    .map(st => ({
+                        id: st.teacher_id,
+                        name: st.teacher.full_name,
+                        subject: st.subject,
+                        assignment_type: st.assignment_type,
+                        is_class_teacher: division.teacher?.id === st.teacher_id
+                    }));
+
+                // Get subjects for this division
+                const divisionSubjectsList = divisionSubjects
+                    .filter(ds => ds.class_division_id === division.id)
+                    .map(ds => ({
+                        id: ds.subject.id,
+                        name: ds.subject.name,
+                        code: ds.subject.code
+                    }));
+
+                return {
+                    id: division.id,
+                    division: division.division,
+                    level: division.level,
+                    academic_year: division.academic_year,
+                    class_teacher: division.teacher ? {
+                        id: division.teacher.id,
+                        name: division.teacher.full_name,
+                        is_class_teacher: true
+                    } : null,
+                    subject_teachers: divisionSubjectTeachers,
+                    subjects: divisionSubjectsList,
+                    student_count: division.student_academic_records?.length || 0,
+                    teacher_assignment: {
+                        type: division.assignment_type,
+                        is_primary: division.is_primary,
+                        subject: division.subject
+                    }
+                };
+            }).sort((a, b) => {
+                // First sort by level sequence
+                if (a.level.sequence_number !== b.level.sequence_number) {
+                    return a.level.sequence_number - b.level.sequence_number;
+                }
+                // Then sort by division within the same level
+                return a.division.localeCompare(b.division);
+            });
+
+            // Separate primary and secondary assignments
+            const primaryAssignments = divisionsWithDetails.filter(d => d.teacher_assignment.is_primary);
+            const secondaryAssignments = divisionsWithDetails.filter(d => !d.teacher_assignment.is_primary);
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher: {
+                        id: teacher.id,
+                        name: teacher.full_name,
+                        role: teacher.role
+                    },
+                    divisions: divisionsWithDetails,
+                    primary_assignments: primaryAssignments,
+                    secondary_assignments: secondaryAssignments,
+                    total_divisions: divisionsWithDetails.length,
+                    total_students: divisionsWithDetails.reduce((sum, div) => sum + div.student_count, 0),
+                    academic_year: {
+                        id: currentAcademicYearId,
+                        name: allDivisions[0]?.academic_year?.name || 'Unknown'
+                    },
+                    summary: {
+                        total_subject_teachers: subjectTeachers.length,
+                        total_subjects: divisionSubjects.length,
+                        divisions_with_class_teachers: divisionsWithDetails.filter(d => d.class_teacher).length,
+                        divisions_with_subject_teachers: divisionsWithDetails.filter(d => d.subject_teachers.length > 0).length,
+                        primary_assignments_count: primaryAssignments.length,
+                        secondary_assignments_count: secondaryAssignments.length,
+                        subjects_taught: [...new Set(divisionsWithDetails
+                            .filter(d => d.teacher_assignment.subject)
+                            .map(d => d.teacher_assignment.subject))]
+                    }
                 }
             });
         } catch (error) {

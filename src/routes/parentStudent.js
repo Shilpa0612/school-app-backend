@@ -345,6 +345,8 @@ router.get('/parents',
                 page = 1,
                 limit = 20,
                 class_id,
+                class_division_id,
+                student_id,
                 search
             } = req.query;
 
@@ -370,11 +372,101 @@ router.get('/parents',
                 query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%`);
             }
 
-            // Get total count
-            const { count, error: countError } = await supabase
+            // Get filtered parent IDs based on class/division/student filters
+            let filteredParentIds = null;
+
+            if (class_id || class_division_id || student_id) {
+                let filterQuery = adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        parent_id,
+                        student:student_id (
+                            id,
+                            student_academic_records (
+                                class_division:class_division_id (
+                                    id,
+                                    level:class_level_id (
+                                        id
+                                    )
+                                )
+                            )
+                        )
+                    `);
+
+                // Apply student filter
+                if (student_id) {
+                    filterQuery = filterQuery.eq('student_id', student_id);
+                }
+
+                // Apply class division filter
+                if (class_division_id) {
+                    filterQuery = filterQuery.eq('student.student_academic_records.class_division_id', class_division_id);
+                }
+
+                // Apply class level filter
+                if (class_id) {
+                    filterQuery = filterQuery.eq('student.student_academic_records.class_division.level.id', class_id);
+                }
+
+                const { data: filteredMappings, error: filterError } = await filterQuery;
+
+                if (filterError) {
+                    logger.error('Error applying filters:', filterError);
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Failed to apply filters',
+                        details: filterError.message
+                    });
+                }
+
+                filteredParentIds = [...new Set(filteredMappings.map(m => m.parent_id))];
+
+                if (filteredParentIds.length === 0) {
+                    // No parents found with the given filters
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            parents: [],
+                            filters: {
+                                class_id: class_id || null,
+                                class_division_id: class_division_id || null,
+                                student_id: student_id || null,
+                                search: search || null
+                            },
+                            summary: {
+                                total_parents: 0,
+                                total_children: 0,
+                                total_primary_guardians: 0,
+                                total_secondary_guardians: 0,
+                                parents_with_children: 0,
+                                parents_without_children: 0,
+                                average_children_per_parent: 0
+                            },
+                            pagination: {
+                                page: parseInt(page),
+                                limit: parseInt(limit),
+                                total: 0,
+                                total_pages: 0
+                            }
+                        }
+                    });
+                }
+
+                // Apply parent ID filter to main query
+                query = query.in('id', filteredParentIds);
+            }
+
+            // Get total count with filters
+            let countQuery = supabase
                 .from('users')
                 .select('*', { count: 'exact', head: true })
                 .eq('role', 'parent');
+
+            if (filteredParentIds) {
+                countQuery = countQuery.in('id', filteredParentIds);
+            }
+
+            const { count, error: countError } = await countQuery;
 
             if (countError) {
                 logger.error('Error getting parents count:', countError);
@@ -432,21 +524,49 @@ router.get('/parents',
             }
 
             // Process and format the data
-            const formattedParents = parents.map(parent => ({
-                id: parent.id,
-                full_name: parent.full_name,
-                phone_number: parent.phone_number,
-                email: parent.email,
-                role: parent.role,
-                is_registered: parent.is_registered,
-                created_at: parent.created_at,
-                children: mappingsByParent[parent.id] || []
-            }));
+            const formattedParents = parents.map(parent => {
+                const parentChildren = mappingsByParent[parent.id] || [];
+                return {
+                    id: parent.id,
+                    full_name: parent.full_name,
+                    phone_number: parent.phone_number,
+                    email: parent.email,
+                    role: parent.role,
+                    is_registered: parent.is_registered,
+                    created_at: parent.created_at,
+                    children: parentChildren,
+                    children_count: parentChildren.length,
+                    primary_guardian_count: parentChildren.filter(child => child.is_primary_guardian).length,
+                    secondary_guardian_count: parentChildren.filter(child => !child.is_primary_guardian).length
+                };
+            });
+
+            // Calculate summary statistics
+            const totalChildren = formattedParents.reduce((sum, parent) => sum + parent.children_count, 0);
+            const totalPrimaryGuardians = formattedParents.reduce((sum, parent) => sum + parent.primary_guardian_count, 0);
+            const totalSecondaryGuardians = formattedParents.reduce((sum, parent) => sum + parent.secondary_guardian_count, 0);
+            const parentsWithChildren = formattedParents.filter(parent => parent.children_count > 0).length;
+            const parentsWithoutChildren = formattedParents.filter(parent => parent.children_count === 0).length;
 
             res.json({
                 status: 'success',
                 data: {
                     parents: formattedParents,
+                    filters: {
+                        class_id: class_id || null,
+                        class_division_id: class_division_id || null,
+                        student_id: student_id || null,
+                        search: search || null
+                    },
+                    summary: {
+                        total_parents: formattedParents.length,
+                        total_children: totalChildren,
+                        total_primary_guardians: totalPrimaryGuardians,
+                        total_secondary_guardians: totalSecondaryGuardians,
+                        parents_with_children: parentsWithChildren,
+                        parents_without_children: parentsWithoutChildren,
+                        average_children_per_parent: formattedParents.length > 0 ? (totalChildren / formattedParents.length).toFixed(2) : 0
+                    },
                     pagination: {
                         page: parseInt(page),
                         limit: parseInt(limit),
