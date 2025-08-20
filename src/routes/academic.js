@@ -868,7 +868,8 @@ router.post('/class-divisions/:id/assign-teacher',
                 });
             }
 
-            if (assignment_type === 'subject_teacher' && subject) {
+            // Validate subject if provided (for both subject_teacher and class_teacher)
+            if (subject && String(subject).trim().length > 0) {
                 // If class has subjects configured, ensure provided subject exists in mapping (by name or code)
                 const { data: mappedSubjects } = await adminSupabase
                     .from('class_division_subjects')
@@ -894,7 +895,7 @@ router.post('/class-divisions/:id/assign-teacher',
                 .eq('teacher_id', teacher_id)
                 .eq('assignment_type', assignment_type)
                 .eq('is_active', true);
-            if (assignment_type === 'subject_teacher' && subject) {
+            if (subject && String(subject).trim().length > 0) {
                 dupQuery = dupQuery.eq('subject', subject);
             }
             const { data: existingAssignment } = await dupQuery.single();
@@ -932,7 +933,7 @@ router.post('/class-divisions/:id/assign-teacher',
                     class_division_id,
                     teacher_id,
                     assignment_type,
-                    subject: assignment_type === 'subject_teacher' ? subject : null,
+                    subject: subject && String(subject).trim().length > 0 ? subject : null,
                     is_primary,
                     assigned_by: req.user.id,
                     is_active: true
@@ -1115,6 +1116,9 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
                     message: 'Subject is required when assignment_type is subject_teacher'
                 });
             }
+
+            // Allow class_teacher to optionally specify subject
+            // This enables class teachers to also teach specific subjects
 
             if (Object.keys(updateData).length === 0) {
                 return res.status(400).json({
@@ -1312,7 +1316,7 @@ router.post('/bulk-assign-teachers',
                         .eq('teacher_id', teacher_id)
                         .eq('assignment_type', assignment_type)
                         .eq('is_active', true);
-                    if (assignment_type === 'subject_teacher' && subject) {
+                    if (subject && String(subject).trim().length > 0) {
                         existingQuery = existingQuery.eq('subject', subject);
                     }
                     const { data: existing } = await existingQuery.single();
@@ -1351,7 +1355,7 @@ router.post('/bulk-assign-teachers',
                             class_division_id,
                             teacher_id,
                             assignment_type,
-                            subject: assignment_type === 'subject_teacher' ? subject : null,
+                            subject: subject && String(subject).trim().length > 0 ? subject : null,
                             is_primary,
                             assigned_by: req.user.id,
                             is_active: true
