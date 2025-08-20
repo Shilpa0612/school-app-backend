@@ -338,31 +338,28 @@ router.get('/my-children',
             const offset = (page - 1) * limit;
             const { status, student_id, from_date, to_date } = req.query;
 
-            // Get all children of this parent
+            console.log('Parent leave requests debug:', {
+                user_id: req.user.id,
+                user_role: req.user.role,
+                filters: { status, student_id, from_date, to_date }
+            });
+
+            // Step 1: Get all children of this parent (simplified query first)
             const { data: children, error: childrenError } = await adminSupabase
                 .from('parent_student_mappings')
-                .select(`
-                    student_id,
-                    student:students_master (
-                        id,
-                        full_name,
-                        admission_number,
-                        date_of_birth,
-                        student_academic_records (
-                            class_division:class_division_id (
-                                division,
-                                level:class_level_id (
-                                    name,
-                                    sequence_number
-                                )
-                            ),
-                            roll_number
-                        )
-                    )
-                `)
+                .select('student_id')
                 .eq('parent_id', req.user.id);
 
-            if (childrenError) throw childrenError;
+            console.log('Children query result:', {
+                children: children,
+                childrenError: childrenError,
+                childrenCount: children?.length || 0
+            });
+
+            if (childrenError) {
+                console.error('Children query error:', childrenError);
+                throw childrenError;
+            }
 
             if (!children || children.length === 0) {
                 return res.json({
@@ -385,31 +382,17 @@ router.get('/my-children',
             }
 
             const studentIds = children.map(child => child.student_id);
+            console.log('Student IDs for leave requests:', studentIds);
 
-            // Build query for leave requests
-            let query = adminSupabase
+            // Step 2: Get leave requests with basic student info first
+            let leaveQuery = adminSupabase
                 .from('leave_requests')
                 .select(`
                     *,
                     student:student_id (
                         id,
                         full_name,
-                        admission_number,
-                        student_academic_records (
-                            class_division:class_division_id (
-                                division,
-                                level:class_level_id (
-                                    name,
-                                    sequence_number
-                                )
-                            ),
-                            roll_number
-                        )
-                    ),
-                    reviewer:reviewed_by (
-                        id,
-                        full_name,
-                        role
+                        admission_number
                     )
                 `)
                 .in('student_id', studentIds)
@@ -417,7 +400,7 @@ router.get('/my-children',
 
             // Apply status filter if provided
             if (status) {
-                query = query.eq('status', status);
+                leaveQuery = leaveQuery.eq('status', status);
             }
 
             // Apply student filter if provided (must be one of parent's children)
@@ -428,56 +411,104 @@ router.get('/my-children',
                         message: 'Not authorized to access leave requests for this student'
                     });
                 }
-                query = query.eq('student_id', student_id);
+                leaveQuery = leaveQuery.eq('student_id', student_id);
             }
 
             // Apply date range overlap filter if provided
             if (from_date && to_date) {
-                query = query.lte('start_date', to_date).gte('end_date', from_date);
+                leaveQuery = leaveQuery.lte('start_date', to_date).gte('end_date', from_date);
             } else if (from_date) {
-                query = query.gte('end_date', from_date);
+                leaveQuery = leaveQuery.gte('end_date', from_date);
             } else if (to_date) {
-                query = query.lte('start_date', to_date);
+                leaveQuery = leaveQuery.lte('start_date', to_date);
             }
 
-            // Get total count for pagination
-            const { count: totalCount, error: countError } = await query.count();
+            console.log('Leave query built, executing...');
 
-            if (countError) throw countError;
+            // Get all leave requests first (without pagination for count)
+            const { data: allLeaveRequests, error: allLeaveError } = await leaveQuery;
 
-            // Apply pagination
-            const { data: leaveRequests, error } = await query
-                .range(offset, offset + limit - 1);
+            console.log('All leave requests result:', {
+                allLeaveRequests: allLeaveRequests,
+                allLeaveError: allLeaveError,
+                count: allLeaveRequests?.length || 0
+            });
 
-            if (error) throw error;
+            if (allLeaveError) {
+                console.error('Leave requests query error:', allLeaveError);
+                throw allLeaveError;
+            }
+
+            const totalCount = allLeaveRequests?.length || 0;
+
+            // Apply pagination manually
+            const paginatedLeaveRequests = allLeaveRequests?.slice(offset, offset + limit) || [];
+
+            // Step 3: Get detailed student information separately
+            const { data: detailedStudents, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    admission_number,
+                    date_of_birth,
+                    student_academic_records (
+                        class_division:class_division_id (
+                            division,
+                            level:class_level_id (
+                                name,
+                                sequence_number
+                            )
+                        ),
+                        roll_number
+                    )
+                `)
+                .in('id', studentIds);
+
+            console.log('Detailed students result:', {
+                detailedStudents: detailedStudents,
+                studentsError: studentsError,
+                count: detailedStudents?.length || 0
+            });
+
+            if (studentsError) {
+                console.error('Students query error:', studentsError);
+                throw studentsError;
+            }
+
+            // Create a map for quick student lookup
+            const studentMap = {};
+            detailedStudents?.forEach(student => {
+                studentMap[student.id] = student;
+            });
+
+            // Enhance leave requests with detailed student info
+            const enhancedLeaveRequests = paginatedLeaveRequests.map(request => ({
+                ...request,
+                student: studentMap[request.student_id] || request.student
+            }));
 
             // Group leave requests by student for better organization
             const leaveRequestsByStudent = {};
-            children.forEach(child => {
-                leaveRequestsByStudent[child.student_id] = {
-                    student: child.student,
-                    leave_requests: []
+            detailedStudents?.forEach(student => {
+                leaveRequestsByStudent[student.id] = {
+                    student: student,
+                    leave_requests: enhancedLeaveRequests.filter(req => req.student_id === student.id)
                 };
-            });
-
-            leaveRequests.forEach(request => {
-                if (leaveRequestsByStudent[request.student_id]) {
-                    leaveRequestsByStudent[request.student_id].leave_requests.push(request);
-                }
             });
 
             res.json({
                 status: 'success',
                 data: {
-                    leave_requests: leaveRequests,
+                    leave_requests: enhancedLeaveRequests,
                     leave_requests_by_student: leaveRequestsByStudent,
-                    children: children.map(child => ({
-                        id: child.student_id,
-                        name: child.student.full_name,
-                        admission_number: child.student.admission_number,
-                        class_info: child.student.student_academic_records?.[0]?.class_division || null
-                    })),
-                    count: leaveRequests.length,
+                    children: detailedStudents?.map(student => ({
+                        id: student.id,
+                        name: student.full_name,
+                        admission_number: student.admission_number,
+                        class_info: student.student_academic_records?.[0]?.class_division || null
+                    })) || [],
+                    count: enhancedLeaveRequests.length,
                     total_count: totalCount,
                     filters: {
                         status: status || null,
@@ -496,7 +527,70 @@ router.get('/my-children',
                 }
             });
         } catch (error) {
+            console.error('Parent leave requests error:', error);
             next(error);
+        }
+    }
+);
+
+// Debug endpoint for parent leave requests
+router.get('/debug/parent-children',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const userId = req.user.id;
+            const userRole = req.user.role;
+
+            console.log('Debug endpoint called:', { userId, userRole });
+
+            // Test 1: Check if user exists
+            const { data: user, error: userError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', userId)
+                .single();
+
+            // Test 2: Check parent-student mappings
+            const { data: mappings, error: mappingsError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select('*')
+                .eq('parent_id', userId);
+
+            // Test 3: Check if leave_requests table exists and has data
+            const { data: leaveRequests, error: leaveError } = await adminSupabase
+                .from('leave_requests')
+                .select('*')
+                .limit(5);
+
+            // Test 4: Check students_master table
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select('id, full_name, admission_number')
+                .limit(5);
+
+            res.json({
+                status: 'success',
+                data: {
+                    user: { data: user, error: userError },
+                    parent_student_mappings: { data: mappings, error: mappingsError },
+                    leave_requests: { data: leaveRequests, error: leaveError },
+                    students_master: { data: students, error: studentsError },
+                    debug_info: {
+                        user_id: userId,
+                        user_role: userRole,
+                        mappings_count: mappings?.length || 0,
+                        leave_requests_count: leaveRequests?.length || 0,
+                        students_count: students?.length || 0
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Debug endpoint error:', error);
+            res.status(500).json({
+                status: 'error',
+                message: error.message,
+                stack: error.stack
+            });
         }
     }
 );
