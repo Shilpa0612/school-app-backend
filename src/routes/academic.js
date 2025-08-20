@@ -383,6 +383,7 @@ router.get('/my-teacher-id',
                 .select(`
                     id,
                     assignment_type,
+                    subject,
                     is_primary,
                     assigned_date,
                     class_division:class_division_id (
@@ -449,6 +450,7 @@ router.get('/my-teacher-id',
                             sequence_number: classLevel?.sequence_number || 0,
                             academic_year: academicYear?.year_name || 'Unknown',
                             assignment_type: 'class_teacher',
+                            subject: null, // Legacy assignments don't have subject info
                             is_primary: true,
                             assigned_date: null
                         });
@@ -465,6 +467,7 @@ router.get('/my-teacher-id',
                     sequence_number: assignment.class_division.class_level?.sequence_number || 0,
                     academic_year: assignment.class_division.academic_year?.year_name || 'Unknown',
                     assignment_type: assignment.assignment_type,
+                    subject: assignment.subject, // Include the subject taught
                     is_primary: assignment.is_primary,
                     assigned_date: assignment.assigned_date
                 }));
@@ -504,7 +507,11 @@ router.get('/my-teacher-id',
                         subject_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'subject_teacher').length,
                         assistant_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'assistant_teacher').length,
                         substitute_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'substitute_teacher').length
-                    }
+                    },
+                    subjects_taught: classesWithDetails
+                        .filter(c => c.assignment_type === 'subject_teacher' && c.subject)
+                        .map(c => c.subject)
+                        .filter((subject, index, arr) => arr.indexOf(subject) === index) // Remove duplicates
                 }
             });
         } catch (error) {
@@ -1182,6 +1189,7 @@ router.get('/teachers/:teacher_id/classes',
                 .select(`
                     id,
                     assignment_type,
+                    subject,
                     is_primary,
                     assigned_date,
                     is_active,
@@ -1216,6 +1224,7 @@ router.get('/teachers/:teacher_id/classes',
             const formattedAssignments = assignments.map(assignment => ({
                 assignment_id: assignment.id,
                 assignment_type: assignment.assignment_type,
+                subject: assignment.subject, // Include the subject taught
                 is_primary: assignment.is_primary,
                 assigned_date: assignment.assigned_date,
                 class_info: {
@@ -1238,7 +1247,11 @@ router.get('/teachers/:teacher_id/classes',
                     assignments: formattedAssignments,
                     primary_classes: formattedAssignments.filter(a => a.is_primary),
                     total_assignments: formattedAssignments.length,
-                    has_assignments: formattedAssignments.length > 0
+                    has_assignments: formattedAssignments.length > 0,
+                    subjects_taught: formattedAssignments
+                        .filter(a => a.assignment_type === 'subject_teacher' && a.subject)
+                        .map(a => a.subject)
+                        .filter((subject, index, arr) => arr.indexOf(subject) === index) // Remove duplicates
                 }
             });
 
