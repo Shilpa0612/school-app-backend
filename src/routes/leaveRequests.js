@@ -327,6 +327,180 @@ router.put('/:id/status',
     }
 );
 
+// Get leave requests for parent's children
+router.get('/my-children',
+    authenticate,
+    authorize('parent'),
+    async (req, res, next) => {
+        try {
+            const page = parseInt(req.query.page) || 1;
+            const limit = parseInt(req.query.limit) || 20;
+            const offset = (page - 1) * limit;
+            const { status, student_id, from_date, to_date } = req.query;
+
+            // Get all children of this parent
+            const { data: children, error: childrenError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    student_id,
+                    student:students_master (
+                        id,
+                        full_name,
+                        admission_number,
+                        date_of_birth,
+                        student_academic_records (
+                            class_division:class_division_id (
+                                division,
+                                level:class_level_id (
+                                    name,
+                                    sequence_number
+                                )
+                            ),
+                            roll_number
+                        )
+                    )
+                `)
+                .eq('parent_id', req.user.id);
+
+            if (childrenError) throw childrenError;
+
+            if (!children || children.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        leave_requests: [],
+                        children: [],
+                        count: 0,
+                        total_count: 0,
+                        pagination: {
+                            page,
+                            limit,
+                            total: 0,
+                            total_pages: 0,
+                            has_next: false,
+                            has_prev: false
+                        }
+                    }
+                });
+            }
+
+            const studentIds = children.map(child => child.student_id);
+
+            // Build query for leave requests
+            let query = adminSupabase
+                .from('leave_requests')
+                .select(`
+                    *,
+                    student:student_id (
+                        id,
+                        full_name,
+                        admission_number,
+                        student_academic_records (
+                            class_division:class_division_id (
+                                division,
+                                level:class_level_id (
+                                    name,
+                                    sequence_number
+                                )
+                            ),
+                            roll_number
+                        )
+                    ),
+                    reviewer:reviewed_by (
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .in('student_id', studentIds)
+                .order('created_at', { ascending: false });
+
+            // Apply status filter if provided
+            if (status) {
+                query = query.eq('status', status);
+            }
+
+            // Apply student filter if provided (must be one of parent's children)
+            if (student_id) {
+                if (!studentIds.includes(student_id)) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'Not authorized to access leave requests for this student'
+                    });
+                }
+                query = query.eq('student_id', student_id);
+            }
+
+            // Apply date range overlap filter if provided
+            if (from_date && to_date) {
+                query = query.lte('start_date', to_date).gte('end_date', from_date);
+            } else if (from_date) {
+                query = query.gte('end_date', from_date);
+            } else if (to_date) {
+                query = query.lte('start_date', to_date);
+            }
+
+            // Get total count for pagination
+            const { count: totalCount, error: countError } = await query.count();
+
+            if (countError) throw countError;
+
+            // Apply pagination
+            const { data: leaveRequests, error } = await query
+                .range(offset, offset + limit - 1);
+
+            if (error) throw error;
+
+            // Group leave requests by student for better organization
+            const leaveRequestsByStudent = {};
+            children.forEach(child => {
+                leaveRequestsByStudent[child.student_id] = {
+                    student: child.student,
+                    leave_requests: []
+                };
+            });
+
+            leaveRequests.forEach(request => {
+                if (leaveRequestsByStudent[request.student_id]) {
+                    leaveRequestsByStudent[request.student_id].leave_requests.push(request);
+                }
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    leave_requests: leaveRequests,
+                    leave_requests_by_student: leaveRequestsByStudent,
+                    children: children.map(child => ({
+                        id: child.student_id,
+                        name: child.student.full_name,
+                        admission_number: child.student.admission_number,
+                        class_info: child.student.student_academic_records?.[0]?.class_division || null
+                    })),
+                    count: leaveRequests.length,
+                    total_count: totalCount,
+                    filters: {
+                        status: status || null,
+                        student_id: student_id || null,
+                        from_date: from_date || null,
+                        to_date: to_date || null
+                    },
+                    pagination: {
+                        page,
+                        limit,
+                        total: totalCount,
+                        total_pages: Math.ceil(totalCount / limit),
+                        has_next: page < Math.ceil(totalCount / limit),
+                        has_prev: page > 1
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Temporary debug endpoint to check table structure
 router.get('/debug/table-structure',
     authenticate,

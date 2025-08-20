@@ -41,6 +41,7 @@ app.use('/api/lists', (await import('./routes/lists.js')).default); // Add lists
 app.use('/api/analytics', (await import('./routes/analytics.js')).default); // Add analytics routes
 app.use('/api/activities', (await import('./routes/activities.js')).default); // Add activities routes
 app.use('/api/feedback', (await import('./routes/feedback.js')).default); // Add feedback routes
+app.use('/api/timetable', (await import('./routes/timetable.js')).default); // Add timetable routes
 
 // Health check endpoint
 app.get('/health', (req, res) => {

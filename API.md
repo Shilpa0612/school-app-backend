@@ -868,6 +868,113 @@ GET /calendar/events/class/:class_division_id
 
 **Response:** List of class-specific events
 
+#### Get Teacher Events (School-wide + Assigned Classes)
+
+```http
+GET /calendar/events/teacher
+```
+
+**Query Parameters:**
+
+- `start_date`: Filter events from this date
+- `end_date`: Filter events until this date
+- `event_category`: Filter by category
+- `event_type`: Filter by event type (`school_wide`, `class_specific`, `teacher_specific`)
+- `class_division_id`: Filter by specific class (must be teacher's assigned class)
+- `use_ist`: Set to `true` to get events in IST timezone (default: `true`)
+
+**Access Control:**
+
+- Only teachers can access this endpoint
+- Returns both school-wide events and class-specific events for their assigned classes
+- Teachers can only view events for classes they are assigned to
+
+**Response:** List of all relevant events for the teacher with assigned class information
+
+**Example Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "events": [
+      {
+        "id": "uuid",
+        "title": "School Annual Day",
+        "description": "Annual day celebration",
+        "event_date": "2024-01-15T09:00:00Z",
+        "event_date_ist": "2024-01-15T14:30:00+05:30",
+        "event_type": "school_wide",
+        "event_category": "cultural",
+        "is_single_day": true,
+        "start_time": "09:00:00",
+        "end_time": "17:00:00",
+        "timezone": "Asia/Kolkata",
+        "created_by": "uuid",
+        "created_at": "2024-01-10T10:00:00Z",
+        "creator_name": "Principal Name",
+        "creator_role": "principal"
+      },
+      {
+        "id": "uuid",
+        "title": "Class 5A Parent Meeting",
+        "description": "Monthly parent-teacher meeting",
+        "event_date": "2024-01-20T14:00:00Z",
+        "event_date_ist": "2024-01-20T19:30:00+05:30",
+        "event_type": "class_specific",
+        "class_division_id": "uuid",
+        "event_category": "meeting",
+        "is_single_day": true,
+        "start_time": "14:00:00",
+        "end_time": "15:00:00",
+        "timezone": "Asia/Kolkata",
+        "created_by": "uuid",
+        "created_at": "2024-01-12T10:00:00Z",
+        "creator_name": "Teacher Name",
+        "creator_role": "teacher",
+        "class_division": "A",
+        "class_level": "Grade 5",
+        "academic_year": "2024-2025"
+      }
+    ],
+    "assigned_classes": [
+      {
+        "class_division_id": "uuid",
+        "assignment_type": "class_teacher",
+        "subject": null,
+        "is_primary": true,
+        "class_info": {
+          "id": "uuid",
+          "division": "A",
+          "academic_year": {
+            "year_name": "2024-2025"
+          },
+          "class_level": {
+            "name": "Grade 5"
+          }
+        }
+      },
+      {
+        "class_division_id": "uuid",
+        "assignment_type": "subject_teacher",
+        "subject": "Mathematics",
+        "is_primary": false,
+        "class_info": {
+          "id": "uuid",
+          "division": "B",
+          "academic_year": {
+            "year_name": "2024-2025"
+          },
+          "class_level": {
+            "name": "Grade 6"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
 #### Get Parent Events (School-wide + Class-specific)
 
 ```http
@@ -2282,6 +2389,7 @@ GET /api/students/divisions/summary
 - Activity Planning
 - Feedback System
 - Real-time Messaging (WebSocket)
+- Timetable Management
 
 ### ⚠️ **Partially Implemented (20-80%)**
 
@@ -4235,6 +4343,546 @@ POST /api/activities/:id/participants
       "current_participants": 28,
       "participants": [...]
     }
+  }
+}
+```
+
+### Timetable Management
+
+**Overview:**
+The timetable system manages class schedules with academic year scope and supports Monday to Saturday schedules. It includes conflict prevention, template-based creation, and role-based access control.
+
+**Key Features:**
+
+- **Academic Year Specific**: Each academic year can have different timetables
+- **Weekday Support**: Monday to Saturday (1-6)
+- **Conflict Prevention**: No overlapping periods or teacher conflicts
+- **Template System**: Reusable schedules for similar classes
+- **Role-Based Access**: Different permissions for different user types
+
+**Access Control Summary:**
+
+- **Admin/Principal**: Full access to create, manage, and view all timetables
+- **Teachers**: Can view their own timetable and their assigned class timetables
+- **Parents**: Can view their children's class timetables
+
+#### Get All Periods
+
+```http
+GET /api/timetable/periods
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Full access
+- **Teachers**: Can view periods for reference
+- **Parents**: Not available (parents don't need period information)
+
+**Notes:**
+
+- Returns all active periods with timing information
+- Teachers use this to understand the school's period structure
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "periods": [
+      {
+        "id": "uuid",
+        "name": "Period 1",
+        "start_time": "08:00:00",
+        "end_time": "08:45:00",
+        "period_type": "academic",
+        "sequence_number": 1
+      }
+    ]
+  }
+}
+```
+
+#### Create Period
+
+```http
+POST /api/timetable/periods
+```
+
+**Body:**
+
+```json
+{
+  "name": "Period 1",
+  "start_time": "08:00:00",
+  "end_time": "08:45:00",
+  "period_type": "academic",
+  "sequence_number": 1
+}
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Can create and manage periods
+- **Teachers**: Not available (administrative function)
+- **Parents**: Not available (administrative function)
+
+**Notes:**
+
+- Validates no overlapping periods
+- Period types: `academic`, `break`, `lunch`, `assembly`, `other`
+- This is a school-wide administrative setting
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "period": {
+      "id": "uuid",
+      "name": "Period 1",
+      "start_time": "08:00:00",
+      "end_time": "08:45:00",
+      "period_type": "academic",
+      "sequence_number": 1,
+      "created_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Create Timetable Entry
+
+```http
+POST /api/timetable/entries
+```
+
+**Body:**
+
+```json
+{
+  "class_division_id": "uuid",
+  "academic_year_id": "uuid",
+  "period_id": "uuid",
+  "day_of_week": 1,
+  "subject": "Mathematics",
+  "teacher_id": "uuid",
+  "notes": "Bring calculator for this period"
+}
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Can create timetable entries
+- **Teachers**: Not available (administrative function)
+- **Parents**: Not available (administrative function)
+
+**Notes:**
+
+- Day of week: 1=Monday, 2=Tuesday, 3=Wednesday, 4=Thursday, 5=Friday, 6=Saturday
+- Validates no conflicts for class or teacher
+- Academic year specific timetables
+- This creates the master school schedule
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "entry": {
+      "id": "uuid",
+      "class_division_id": "uuid",
+      "academic_year_id": "uuid",
+      "period_id": "uuid",
+      "day_of_week": 1,
+      "subject": "Mathematics",
+      "teacher_id": "uuid",
+      "notes": "Bring calculator for this period",
+      "created_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Get Class Timetable
+
+```http
+GET /api/timetable/class/:class_division_id
+```
+
+**Query Parameters:**
+
+- `academic_year_id`: Filter by academic year (optional)
+- `day_of_week`: Filter by specific day (1-6)
+
+**Access Control:**
+
+- **Admin/Principal**: Can view any class timetable
+- **Teachers**: Can only view timetables for their assigned classes
+- **Parents**: Can view timetables for their children's classes
+
+**Notes:**
+
+- Returns timetable organized by day
+- Teachers see schedules for classes they teach
+- Parents see schedules for their children's classes
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "class_division": {
+      "id": "uuid",
+      "division": "A",
+      "level": {
+        "name": "Grade 1",
+        "sequence_number": 1
+      }
+    },
+    "timetable": {
+      "1": {
+        "day_name": "Monday",
+        "day_number": 1,
+        "entries": [
+          {
+            "id": "uuid",
+            "period": {
+              "name": "Period 1",
+              "start_time": "08:00:00",
+              "end_time": "08:45:00"
+            },
+            "subject": "Mathematics",
+            "teacher": {
+              "id": "uuid",
+              "full_name": "Teacher Name"
+            },
+            "notes": "Bring calculator"
+          }
+        ]
+      },
+      "6": {
+        "day_name": "Saturday",
+        "day_number": 6,
+        "entries": []
+      }
+    },
+    "total_entries": 25
+  }
+}
+```
+
+#### Get Teacher Timetable
+
+```http
+GET /api/timetable/teacher/:teacher_id
+```
+
+**Query Parameters:**
+
+- `academic_year_id`: Filter by academic year (optional)
+- `day_of_week`: Filter by specific day (1-6)
+
+**Access Control:**
+
+- **Admin/Principal**: Can view any teacher's timetable
+- **Teachers**: Can only view their own timetable
+- **Parents**: Not available (privacy concern)
+
+**Notes:**
+
+- Returns teacher's schedule across all assigned classes
+- Teachers see their complete weekly schedule
+- Admin/Principal can monitor teacher workload
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "teacher": {
+      "id": "uuid",
+      "full_name": "Teacher Name"
+    },
+    "timetable": {
+      "1": {
+        "day_name": "Monday",
+        "day_number": 1,
+        "entries": [
+          {
+            "id": "uuid",
+            "period": {
+              "name": "Period 1",
+              "start_time": "08:00:00",
+              "end_time": "08:45:00"
+            },
+            "subject": "Mathematics",
+            "class_division": {
+              "division": "A",
+              "level": {
+                "name": "Grade 1"
+              }
+            },
+            "notes": "Bring calculator"
+          }
+        ]
+      }
+    },
+    "total_entries": 15
+  }
+}
+```
+
+#### Update Timetable Entry
+
+```http
+PUT /api/timetable/entries/:id
+```
+
+**Body:**
+
+```json
+{
+  "subject": "Advanced Mathematics",
+  "teacher_id": "uuid",
+  "notes": "Updated notes"
+}
+```
+
+**Notes:**
+
+- Available for Admin and Principal only
+- All fields are optional
+- Validates teacher conflicts
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "entry": {
+      "id": "uuid",
+      "subject": "Advanced Mathematics",
+      "teacher_id": "uuid",
+      "notes": "Updated notes",
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Delete Timetable Entry
+
+```http
+DELETE /api/timetable/entries/:id
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Can delete timetable entries
+- **Teachers**: Not available (administrative function)
+- **Parents**: Not available (administrative function)
+
+**Notes:**
+
+- Soft deletes the entry
+- Removes the entry from the class schedule
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Timetable entry deleted successfully"
+}
+```
+
+#### Bulk Update Timetable Entries
+
+```http
+PUT /api/timetable/bulk-update
+```
+
+**Body:**
+
+```json
+{
+  "filters": {
+    "class_level_id": "uuid",
+    "academic_year_id": "uuid",
+    "day_of_week": 1,
+    "period_id": "uuid"
+  },
+  "updates": {
+    "subject": "Science",
+    "teacher_id": "uuid",
+    "notes": "Updated subject"
+  }
+}
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Can perform bulk updates
+- **Teachers**: Not available (administrative function)
+- **Parents**: Not available (administrative function)
+
+**Notes:**
+
+- Updates multiple timetable entries based on filters
+- Useful for changing the same period across multiple classes
+- Validates teacher conflicts before applying updates
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "updated_entries": 15,
+    "filters_applied": {
+      "class_level_id": "uuid",
+      "day_of_week": 1,
+      "period_id": "uuid"
+    }
+  }
+}
+```
+
+#### Update Template Entry
+
+```http
+PUT /api/timetable/templates/:template_id/entries/:entry_id
+```
+
+**Body:**
+
+```json
+{
+  "subject": "Updated Subject",
+  "notes": "Updated notes"
+}
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Can update template entries
+- **Teachers**: Not available (administrative function)
+- **Parents**: Not available (administrative function)
+
+**Notes:**
+
+- Updates a specific entry in a template
+- Changes the pattern for all classes using this template
+- Must re-apply template to affected classes for changes to take effect
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "entry": {
+      "id": "uuid",
+      "subject": "Updated Subject",
+      "notes": "Updated notes",
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Create Timetable Template
+
+```http
+POST /api/timetable/templates
+```
+
+**Body:**
+
+```json
+{
+  "name": "Primary Template",
+  "description": "Standard primary class schedule",
+  "academic_year_id": "uuid",
+  "class_level_id": "uuid"
+}
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Can create and manage templates
+- **Teachers**: Not available (administrative function)
+- **Parents**: Not available (administrative function)
+
+**Why Templates Are Needed:**
+
+1. **Efficiency**: Instead of creating timetables from scratch for each class, templates provide a standard structure
+2. **Consistency**: Ensures all classes of the same level follow similar patterns
+3. **Time Saving**: Apply one template to multiple classes (e.g., all Grade 1 classes)
+4. **Standardization**: Maintains consistent subject distribution across similar classes
+5. **Easy Updates**: Change the template once, apply to all affected classes
+
+**Example Use Cases:**
+
+- **Primary Template**: Standard schedule for Grades 1-5
+- **Secondary Template**: Different schedule for Grades 6-10
+- **Special Needs Template**: Modified schedule for special education classes
+- **Exam Template**: Adjusted schedule during exam periods
+
+**Notes:**
+
+- Templates can be applied to multiple classes
+- Each template is specific to an academic year and class level
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "template": {
+      "id": "uuid",
+      "name": "Primary Template",
+      "description": "Standard primary class schedule",
+      "created_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Apply Template to Class
+
+```http
+POST /api/timetable/templates/:template_id/apply/:class_division_id
+```
+
+**Access Control:**
+
+- **Admin/Principal**: Can apply templates to classes
+- **Teachers**: Not available (administrative function)
+- **Parents**: Not available (administrative function)
+
+**Notes:**
+
+- Creates timetable entries from template
+- Replaces existing entries for the class
+- Useful for bulk timetable creation at the start of academic year
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "applied_entries": 30,
+    "class_division_id": "uuid",
+    "template_id": "uuid"
   }
 }
 ```

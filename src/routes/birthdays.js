@@ -333,10 +333,32 @@ router.get('/division/:class_division_id',
     async (req, res, next) => {
         try {
             const { class_division_id } = req.params;
-            const { date } = req.query; // Optional date parameter (YYYY-MM-DD format)
+            const { date, start_date, end_date } = req.query; // Support single date or date range
             const page = parseInt(req.query.page) || 1;
             const limit = parseInt(req.query.limit) || 20;
             const offset = (page - 1) * limit;
+
+            // Validate date parameters
+            if (date && (start_date || end_date)) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Cannot use both single date and date range parameters. Use either "date" or "start_date" and "end_date"'
+                });
+            }
+
+            if (start_date && !end_date) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Both start_date and end_date are required for date range filtering'
+                });
+            }
+
+            if (!start_date && end_date) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Both start_date and end_date are required for date range filtering'
+                });
+            }
 
             // Check if class division exists
             const { data: classData, error: classError } = await adminSupabase
@@ -383,11 +405,6 @@ router.get('/division/:class_division_id',
                 }
             }
 
-            // Determine the date to check (today or specified date)
-            const checkDate = date ? new Date(date) : new Date();
-            const month = checkDate.getMonth();
-            const day = checkDate.getDate();
-
             // Get students in this class division
             const { data: students, error } = await adminSupabase
                 .from('students_master')
@@ -408,12 +425,86 @@ router.get('/division/:class_division_id',
 
             if (error) throw error;
 
-            // Filter students with birthdays on the specified date
-            const birthdayStudents = students.filter(student => {
-                const studentBirthday = new Date(student.date_of_birth);
-                return studentBirthday.getMonth() === month &&
-                    studentBirthday.getDate() === day;
-            });
+            let birthdayStudents = [];
+            let filterInfo = {};
+
+            if (date) {
+                // Single date filtering
+                const checkDate = new Date(date);
+                if (isNaN(checkDate.getTime())) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid date format. Use YYYY-MM-DD'
+                    });
+                }
+
+                const month = checkDate.getMonth();
+                const day = checkDate.getDate();
+
+                birthdayStudents = students.filter(student => {
+                    const studentBirthday = new Date(student.date_of_birth);
+                    return studentBirthday.getMonth() === month &&
+                        studentBirthday.getDate() === day;
+                });
+
+                filterInfo = {
+                    type: 'single_date',
+                    date: checkDate.toISOString().split('T')[0]
+                };
+            } else if (start_date && end_date) {
+                // Date range filtering
+                const startDate = new Date(start_date);
+                const endDate = new Date(end_date);
+
+                if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid date format. Use YYYY-MM-DD'
+                    });
+                }
+
+                if (startDate > endDate) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'start_date cannot be after end_date'
+                    });
+                }
+
+                birthdayStudents = students.filter(student => {
+                    const studentBirthday = new Date(student.date_of_birth);
+                    const currentYear = new Date().getFullYear();
+
+                    // Create birthday dates for the current year
+                    const birthdayThisYear = new Date(currentYear, studentBirthday.getMonth(), studentBirthday.getDate());
+                    const birthdayNextYear = new Date(currentYear + 1, studentBirthday.getMonth(), studentBirthday.getDate());
+
+                    // Check if birthday falls within the range
+                    return (birthdayThisYear >= startDate && birthdayThisYear <= endDate) ||
+                        (birthdayNextYear >= startDate && birthdayNextYear <= endDate);
+                });
+
+                filterInfo = {
+                    type: 'date_range',
+                    start_date: startDate.toISOString().split('T')[0],
+                    end_date: endDate.toISOString().split('T')[0]
+                };
+            } else {
+                // Default to today's birthdays
+                const today = new Date();
+                const month = today.getMonth();
+                const day = today.getDate();
+
+                birthdayStudents = students.filter(student => {
+                    const studentBirthday = new Date(student.date_of_birth);
+                    return studentBirthday.getMonth() === month &&
+                        studentBirthday.getDate() === day;
+                });
+
+                filterInfo = {
+                    type: 'today',
+                    date: today.toISOString().split('T')[0]
+                };
+            }
 
             // Apply pagination
             const totalCount = birthdayStudents.length;
@@ -430,7 +521,7 @@ router.get('/division/:class_division_id',
                     birthdays: paginatedStudents,
                     count: paginatedStudents.length,
                     total_count: totalCount,
-                    date: checkDate.toISOString().split('T')[0],
+                    filter: filterInfo,
                     pagination: {
                         page,
                         limit,
@@ -453,10 +544,32 @@ router.get('/my-classes',
     authorize('teacher'),
     async (req, res, next) => {
         try {
-            const { date } = req.query; // Optional date parameter (YYYY-MM-DD)
+            const { date, start_date, end_date } = req.query; // Support single date or date range
             const page = parseInt(req.query.page) || 1;
             const limit = parseInt(req.query.limit) || 20;
             const offset = (page - 1) * limit;
+
+            // Validate date parameters
+            if (date && (start_date || end_date)) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Cannot use both single date and date range parameters. Use either "date" or "start_date" and "end_date"'
+                });
+            }
+
+            if (start_date && !end_date) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Both start_date and end_date are required for date range filtering'
+                });
+            }
+
+            if (!start_date && end_date) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Both start_date and end_date are required for date range filtering'
+                });
+            }
 
             // Collect class divisions where this teacher is assigned (legacy + many-to-many)
             const [{ data: legacyDivisions }, { data: mmAssignments }] = await Promise.all([
@@ -477,13 +590,22 @@ router.get('/my-classes',
             ]));
 
             if (assignedIds.length === 0) {
+                let filterInfo = {};
+                if (date) {
+                    filterInfo = { type: 'single_date', date: date };
+                } else if (start_date && end_date) {
+                    filterInfo = { type: 'date_range', start_date, end_date };
+                } else {
+                    filterInfo = { type: 'today', date: new Date().toISOString().split('T')[0] };
+                }
+
                 return res.json({
                     status: 'success',
                     data: {
                         birthdays: [],
                         count: 0,
                         total_count: 0,
-                        date: (date ? new Date(date) : new Date()).toISOString().split('T')[0],
+                        filter: filterInfo,
                         class_division_ids: [],
                         pagination: {
                             page,
@@ -496,11 +618,6 @@ router.get('/my-classes',
                     }
                 });
             }
-
-            // Determine date to check
-            const checkDate = date ? new Date(date) : new Date();
-            const month = checkDate.getMonth();
-            const day = checkDate.getDate();
 
             // Fetch students for all assigned divisions
             const { data: students, error } = await adminSupabase
@@ -527,11 +644,86 @@ router.get('/my-classes',
 
             if (error) throw error;
 
-            // Filter students with birthdays on the specified date
-            const birthdayStudents = students.filter(student => {
-                const studentBirthday = new Date(student.date_of_birth);
-                return studentBirthday.getMonth() === month && studentBirthday.getDate() === day;
-            });
+            let birthdayStudents = [];
+            let filterInfo = {};
+
+            if (date) {
+                // Single date filtering
+                const checkDate = new Date(date);
+                if (isNaN(checkDate.getTime())) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid date format. Use YYYY-MM-DD'
+                    });
+                }
+
+                const month = checkDate.getMonth();
+                const day = checkDate.getDate();
+
+                birthdayStudents = students.filter(student => {
+                    const studentBirthday = new Date(student.date_of_birth);
+                    return studentBirthday.getMonth() === month &&
+                        studentBirthday.getDate() === day;
+                });
+
+                filterInfo = {
+                    type: 'single_date',
+                    date: checkDate.toISOString().split('T')[0]
+                };
+            } else if (start_date && end_date) {
+                // Date range filtering
+                const startDate = new Date(start_date);
+                const endDate = new Date(end_date);
+
+                if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid date format. Use YYYY-MM-DD'
+                    });
+                }
+
+                if (startDate > endDate) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'start_date cannot be after end_date'
+                    });
+                }
+
+                birthdayStudents = students.filter(student => {
+                    const studentBirthday = new Date(student.date_of_birth);
+                    const currentYear = new Date().getFullYear();
+
+                    // Create birthday dates for the current year
+                    const birthdayThisYear = new Date(currentYear, studentBirthday.getMonth(), studentBirthday.getDate());
+                    const birthdayNextYear = new Date(currentYear + 1, studentBirthday.getMonth(), studentBirthday.getDate());
+
+                    // Check if birthday falls within the range
+                    return (birthdayThisYear >= startDate && birthdayThisYear <= endDate) ||
+                        (birthdayNextYear >= startDate && birthdayNextYear <= endDate);
+                });
+
+                filterInfo = {
+                    type: 'date_range',
+                    start_date: startDate.toISOString().split('T')[0],
+                    end_date: endDate.toISOString().split('T')[0]
+                };
+            } else {
+                // Default to today's birthdays
+                const today = new Date();
+                const month = today.getMonth();
+                const day = today.getDate();
+
+                birthdayStudents = students.filter(student => {
+                    const studentBirthday = new Date(student.date_of_birth);
+                    return studentBirthday.getMonth() === month &&
+                        studentBirthday.getDate() === day;
+                });
+
+                filterInfo = {
+                    type: 'today',
+                    date: today.toISOString().split('T')[0]
+                };
+            }
 
             // Apply pagination
             const totalCount = birthdayStudents.length;
@@ -543,7 +735,7 @@ router.get('/my-classes',
                     birthdays: paginatedStudents,
                     count: paginatedStudents.length,
                     total_count: totalCount,
-                    date: checkDate.toISOString().split('T')[0],
+                    filter: filterInfo,
                     class_division_ids: assignedIds,
                     pagination: {
                         page,

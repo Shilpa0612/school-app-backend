@@ -309,6 +309,186 @@ router.get('/events/parent',
     }
 );
 
+// Get all relevant events for teachers (school-wide + assigned classes)
+router.get('/events/teacher',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const {
+                start_date,
+                end_date,
+                event_category,
+                event_type,
+                class_division_id,
+                use_ist = 'true'
+            } = req.query;
+
+            // Verify user is a teacher
+            if (req.user.role !== 'teacher') {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'This endpoint is only for teachers'
+                });
+            }
+
+            // Get all class divisions where teacher is assigned
+            const { data: teacherAssignments, error: assignmentsError } = await supabase
+                .from('class_teacher_assignments')
+                .select(`
+                    class_division_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    class_divisions!inner (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
+                `)
+                .eq('teacher_id', req.user.id)
+                .eq('is_active', true);
+
+            if (assignmentsError) throw assignmentsError;
+
+            const assignedClasses = teacherAssignments || [];
+            const classDivisionIds = assignedClasses?.map(assignment => assignment.class_division_id) || [];
+
+            // If teacher has no assigned classes, only show school-wide events
+            if (classDivisionIds.length === 0) {
+                let query;
+
+                if (use_ist === 'true') {
+                    query = supabase.rpc('get_events_with_ist', {
+                        p_start_date: start_date,
+                        p_end_date: end_date,
+                        p_event_type: 'school_wide',
+                        p_event_category: event_category
+                    });
+                } else {
+                    query = supabase
+                        .from('calendar_events')
+                        .select(`
+                            *,
+                            creator:created_by (id, full_name, role),
+                            class:class_division_id (
+                                id,
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name)
+                            )
+                        `)
+                        .eq('event_type', 'school_wide');
+
+                    // Apply filters
+                    if (start_date) {
+                        query = query.gte('event_date', start_date);
+                    }
+                    if (end_date) {
+                        query = query.lte('event_date', end_date);
+                    }
+                    if (event_category) {
+                        query = query.eq('event_category', event_category);
+                    }
+
+                    query = query.order('event_date', { ascending: true });
+                }
+
+                const { data, error } = await query;
+                if (error) throw error;
+
+                return res.json({
+                    status: 'success',
+                    data: {
+                        events: data || [],
+                        assigned_classes: []
+                    }
+                });
+            }
+
+            let query;
+
+            if (use_ist === 'true') {
+                // Use the custom function for IST timezone with teacher-specific filtering
+                query = supabase.rpc('get_teacher_events_with_ist', {
+                    p_start_date: start_date,
+                    p_end_date: end_date,
+                    p_event_category: event_category,
+                    p_event_type: event_type,
+                    p_class_division_id: class_division_id,
+                    p_class_division_ids: classDivisionIds
+                });
+            } else {
+                // Use regular query with teacher-specific filtering
+                query = supabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by (id, full_name, role),
+                        class:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `);
+
+                // Build the OR condition for teacher's assigned classes + school-wide events
+                const conditions = ['event_type.eq.school_wide'];
+                if (classDivisionIds.length > 0) {
+                    conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
+                }
+                query = query.or(conditions.join(','));
+
+                // Apply filters
+                if (start_date) {
+                    query = query.gte('event_date', start_date);
+                }
+                if (end_date) {
+                    query = query.lte('event_date', end_date);
+                }
+                if (event_category) {
+                    query = query.eq('event_category', event_category);
+                }
+                if (event_type) {
+                    query = query.eq('event_type', event_type);
+                }
+                if (class_division_id) {
+                    // Verify teacher is assigned to this specific class
+                    if (!classDivisionIds.includes(class_division_id)) {
+                        return res.status(403).json({
+                            status: 'error',
+                            message: 'You are not assigned to this class'
+                        });
+                    }
+                    query = query.eq('class_division_id', class_division_id);
+                }
+
+                query = query.order('event_date', { ascending: true });
+            }
+
+            const { data, error } = await query;
+            if (error) throw error;
+
+            res.json({
+                status: 'success',
+                data: {
+                    events: data || [],
+                    assigned_classes: assignedClasses.map(assignment => ({
+                        class_division_id: assignment.class_division_id,
+                        assignment_type: assignment.assignment_type,
+                        subject: assignment.subject,
+                        is_primary: assignment.is_primary,
+                        class_info: assignment.class_divisions
+                    }))
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Get event by ID
 router.get('/events/:id',
     authenticate,
