@@ -733,6 +733,8 @@ router.get('/divisions/summary',
         try {
             const { academic_year_id } = req.query;
 
+            console.log('Divisions summary debug - starting with academic_year_id:', academic_year_id);
+
             // Get current active academic year if not specified
             let currentAcademicYearId = academic_year_id;
             if (!currentAcademicYearId) {
@@ -743,14 +745,19 @@ router.get('/divisions/summary',
                     .single();
 
                 if (yearError) {
-                    logger.error('Error fetching active academic year:', yearError);
-                    throw yearError;
+                    console.error('Error fetching active academic year:', yearError);
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Failed to fetch active academic year',
+                        details: yearError.message
+                    });
                 }
 
                 currentAcademicYearId = activeYear.id;
+                console.log('Using active academic year:', currentAcademicYearId);
             }
 
-            // Get all class divisions with enhanced details
+            // Get all class divisions with basic details first
             const { data: divisions, error: divisionsError } = await adminSupabase
                 .from('class_divisions')
                 .select(`
@@ -769,20 +776,66 @@ router.get('/divisions/summary',
                         id,
                         name,
                         is_active
-                    ),
-                    student_academic_records (
-                        id
                     )
                 `)
                 .eq('academic_year_id', currentAcademicYearId);
 
             if (divisionsError) {
-                logger.error('Error fetching divisions:', divisionsError);
-                throw divisionsError;
+                console.error('Error fetching divisions:', divisionsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch divisions',
+                    details: divisionsError.message
+                });
+            }
+
+            console.log('Found divisions:', divisions?.length || 0);
+
+            if (!divisions || divisions.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        divisions: [],
+                        total_divisions: 0,
+                        total_students: 0,
+                        academic_year: {
+                            id: currentAcademicYearId,
+                            name: 'Unknown'
+                        },
+                        summary: {
+                            total_subject_teachers: 0,
+                            total_subjects: 0,
+                            divisions_with_class_teachers: 0,
+                            divisions_with_subject_teachers: 0
+                        }
+                    }
+                });
+            }
+
+            const divisionIds = divisions.map(div => div.id);
+            console.log('Division IDs:', divisionIds);
+
+            // Get student counts for each division
+            const { data: studentCounts, error: studentCountsError } = await adminSupabase
+                .from('student_academic_records')
+                .select('class_division_id')
+                .in('class_division_id', divisionIds)
+                .eq('status', 'ongoing');
+
+            if (studentCountsError) {
+                console.error('Error fetching student counts:', studentCountsError);
+                // Continue without student counts
+            }
+
+            // Count students per division
+            const studentCountByDivision = {};
+            if (studentCounts) {
+                studentCounts.forEach(record => {
+                    studentCountByDivision[record.class_division_id] = (studentCountByDivision[record.class_division_id] || 0) + 1;
+                });
             }
 
             // Get subject teachers for all divisions
-            const divisionIds = divisions.map(div => div.id);
             const { data: subjectTeachers, error: subjectTeachersError } = await adminSupabase
                 .from('class_teacher_assignments')
                 .select(`
@@ -800,8 +853,8 @@ router.get('/divisions/summary',
                 .eq('is_active', true);
 
             if (subjectTeachersError) {
-                logger.error('Error fetching subject teachers:', subjectTeachersError);
-                throw subjectTeachersError;
+                console.error('Error fetching subject teachers:', subjectTeachersError);
+                // Continue without subject teachers
             }
 
             // Get subjects for all divisions
@@ -818,29 +871,29 @@ router.get('/divisions/summary',
                 .in('class_division_id', divisionIds);
 
             if (subjectsError) {
-                logger.error('Error fetching division subjects:', subjectsError);
-                throw subjectsError;
+                console.error('Error fetching division subjects:', subjectsError);
+                // Continue without subjects
             }
 
             // Process the data to get comprehensive division information
             const divisionsWithDetails = divisions.map(division => {
                 // Get subject teachers for this division
-                const divisionSubjectTeachers = subjectTeachers
+                const divisionSubjectTeachers = (subjectTeachers || [])
                     .filter(st => st.class_division_id === division.id)
                     .map(st => ({
                         id: st.teacher_id,
-                        name: st.teacher.full_name,
+                        name: st.teacher?.full_name || 'Unknown',
                         subject: st.subject,
                         is_class_teacher: division.teacher?.id === st.teacher_id
                     }));
 
                 // Get subjects for this division
-                const divisionSubjectsList = divisionSubjects
+                const divisionSubjectsList = (divisionSubjects || [])
                     .filter(ds => ds.class_division_id === division.id)
                     .map(ds => ({
-                        id: ds.subject.id,
-                        name: ds.subject.name,
-                        code: ds.subject.code
+                        id: ds.subject?.id || 'unknown',
+                        name: ds.subject?.name || 'Unknown',
+                        code: ds.subject?.code || 'UNK'
                     }));
 
                 return {
@@ -855,7 +908,7 @@ router.get('/divisions/summary',
                     } : null,
                     subject_teachers: divisionSubjectTeachers,
                     subjects: divisionSubjectsList,
-                    student_count: division.student_academic_records?.length || 0
+                    student_count: studentCountByDivision[division.id] || 0
                 };
             }).sort((a, b) => {
                 // First sort by level sequence
@@ -866,26 +919,33 @@ router.get('/divisions/summary',
                 return a.division.localeCompare(b.division);
             });
 
+            const totalStudents = divisionsWithDetails.reduce((sum, div) => sum + div.student_count, 0);
+
             res.json({
                 status: 'success',
                 data: {
                     divisions: divisionsWithDetails,
                     total_divisions: divisionsWithDetails.length,
-                    total_students: divisionsWithDetails.reduce((sum, div) => sum + div.student_count, 0),
+                    total_students: totalStudents,
                     academic_year: {
                         id: currentAcademicYearId,
                         name: divisions[0]?.academic_year?.name || 'Unknown'
                     },
                     summary: {
-                        total_subject_teachers: subjectTeachers.length,
-                        total_subjects: divisionSubjects.length,
+                        total_subject_teachers: subjectTeachers?.length || 0,
+                        total_subjects: divisionSubjects?.length || 0,
                         divisions_with_class_teachers: divisionsWithDetails.filter(d => d.class_teacher).length,
                         divisions_with_subject_teachers: divisionsWithDetails.filter(d => d.subject_teachers.length > 0).length
                     }
                 }
             });
         } catch (error) {
-            next(error);
+            console.error('Unexpected error in divisions summary:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Internal server error',
+                details: error.message
+            });
         }
     }
 );
@@ -898,6 +958,8 @@ router.get('/divisions/teacher/:teacher_id/summary',
         try {
             const { teacher_id } = req.params;
             const { academic_year_id } = req.query;
+
+            console.log('Teacher divisions summary debug - teacher_id:', teacher_id, 'academic_year_id:', academic_year_id);
 
             // Validate teacher_id
             if (!teacher_id) {
@@ -922,6 +984,8 @@ router.get('/divisions/teacher/:teacher_id/summary',
                 });
             }
 
+            console.log('Teacher found:', teacher.full_name);
+
             // Get current active academic year if not specified
             let currentAcademicYearId = academic_year_id;
             if (!currentAcademicYearId) {
@@ -932,15 +996,20 @@ router.get('/divisions/teacher/:teacher_id/summary',
                     .single();
 
                 if (yearError) {
-                    logger.error('Error fetching active academic year:', yearError);
-                    throw yearError;
+                    console.error('Error fetching active academic year:', yearError);
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Failed to fetch active academic year',
+                        details: yearError.message
+                    });
                 }
 
                 currentAcademicYearId = activeYear.id;
+                console.log('Using active academic year:', currentAcademicYearId);
             }
 
             // Get class divisions where this teacher is assigned (both legacy and many-to-many)
-            const [{ data: legacyDivisions }, { data: mmAssignments }] = await Promise.all([
+            const [{ data: legacyDivisions, error: legacyError }, { data: mmAssignments, error: mmError }] = await Promise.all([
                 adminSupabase
                     .from('class_divisions')
                     .select(`
@@ -959,9 +1028,6 @@ router.get('/divisions/teacher/:teacher_id/summary',
                             id,
                             name,
                             is_active
-                        ),
-                        student_academic_records (
-                            id
                         )
                     `)
                     .eq('teacher_id', teacher_id)
@@ -991,9 +1057,6 @@ router.get('/divisions/teacher/:teacher_id/summary',
                                 id,
                                 name,
                                 is_active
-                            ),
-                            student_academic_records (
-                                id
                             )
                         )
                     `)
@@ -1001,6 +1064,17 @@ router.get('/divisions/teacher/:teacher_id/summary',
                     .eq('is_active', true)
                     .eq('class_division.academic_year_id', currentAcademicYearId)
             ]);
+
+            if (legacyError) {
+                console.error('Error fetching legacy divisions:', legacyError);
+            }
+
+            if (mmError) {
+                console.error('Error fetching many-to-many assignments:', mmError);
+            }
+
+            console.log('Legacy divisions:', legacyDivisions?.length || 0);
+            console.log('MM assignments:', mmAssignments?.length || 0);
 
             // Combine and deduplicate divisions
             const allDivisions = [];
@@ -1036,6 +1110,39 @@ router.get('/divisions/teacher/:teacher_id/summary',
                 });
             }
 
+            console.log('Combined divisions:', allDivisions.length);
+
+            if (allDivisions.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        teacher: {
+                            id: teacher.id,
+                            name: teacher.full_name,
+                            role: teacher.role
+                        },
+                        divisions: [],
+                        primary_assignments: [],
+                        secondary_assignments: [],
+                        total_divisions: 0,
+                        total_students: 0,
+                        academic_year: {
+                            id: currentAcademicYearId,
+                            name: 'Unknown'
+                        },
+                        summary: {
+                            total_subject_teachers: 0,
+                            total_subjects: 0,
+                            divisions_with_class_teachers: 0,
+                            divisions_with_subject_teachers: 0,
+                            primary_assignments_count: 0,
+                            secondary_assignments_count: 0,
+                            subjects_taught: []
+                        }
+                    }
+                });
+            }
+
             // Get subject teachers for all divisions
             const divisionIdsArray = Array.from(divisionIds);
             const { data: subjectTeachers, error: subjectTeachersError } = await adminSupabase
@@ -1056,8 +1163,8 @@ router.get('/divisions/teacher/:teacher_id/summary',
                 .eq('is_active', true);
 
             if (subjectTeachersError) {
-                logger.error('Error fetching subject teachers:', subjectTeachersError);
-                throw subjectTeachersError;
+                console.error('Error fetching subject teachers:', subjectTeachersError);
+                // Continue without subject teachers
             }
 
             // Get subjects for all divisions
@@ -1074,30 +1181,50 @@ router.get('/divisions/teacher/:teacher_id/summary',
                 .in('class_division_id', divisionIdsArray);
 
             if (subjectsError) {
-                logger.error('Error fetching division subjects:', subjectsError);
-                throw subjectsError;
+                console.error('Error fetching division subjects:', subjectsError);
+                // Continue without subjects
+            }
+
+            // Get student counts for each division
+            const { data: studentCounts, error: studentCountsError } = await adminSupabase
+                .from('student_academic_records')
+                .select('class_division_id')
+                .in('class_division_id', divisionIdsArray)
+                .eq('status', 'ongoing');
+
+            if (studentCountsError) {
+                console.error('Error fetching student counts:', studentCountsError);
+                // Continue without student counts
+            }
+
+            // Count students per division
+            const studentCountByDivision = {};
+            if (studentCounts) {
+                studentCounts.forEach(record => {
+                    studentCountByDivision[record.class_division_id] = (studentCountByDivision[record.class_division_id] || 0) + 1;
+                });
             }
 
             // Process the data to get comprehensive division information
             const divisionsWithDetails = allDivisions.map(division => {
                 // Get subject teachers for this division
-                const divisionSubjectTeachers = subjectTeachers
+                const divisionSubjectTeachers = (subjectTeachers || [])
                     .filter(st => st.class_division_id === division.id)
                     .map(st => ({
                         id: st.teacher_id,
-                        name: st.teacher.full_name,
+                        name: st.teacher?.full_name || 'Unknown',
                         subject: st.subject,
                         assignment_type: st.assignment_type,
                         is_class_teacher: division.teacher?.id === st.teacher_id
                     }));
 
                 // Get subjects for this division
-                const divisionSubjectsList = divisionSubjects
+                const divisionSubjectsList = (divisionSubjects || [])
                     .filter(ds => ds.class_division_id === division.id)
                     .map(ds => ({
-                        id: ds.subject.id,
-                        name: ds.subject.name,
-                        code: ds.subject.code
+                        id: ds.subject?.id || 'unknown',
+                        name: ds.subject?.name || 'Unknown',
+                        code: ds.subject?.code || 'UNK'
                     }));
 
                 return {
@@ -1112,7 +1239,7 @@ router.get('/divisions/teacher/:teacher_id/summary',
                     } : null,
                     subject_teachers: divisionSubjectTeachers,
                     subjects: divisionSubjectsList,
-                    student_count: division.student_academic_records?.length || 0,
+                    student_count: studentCountByDivision[division.id] || 0,
                     teacher_assignment: {
                         type: division.assignment_type,
                         is_primary: division.is_primary,
@@ -1132,6 +1259,8 @@ router.get('/divisions/teacher/:teacher_id/summary',
             const primaryAssignments = divisionsWithDetails.filter(d => d.teacher_assignment.is_primary);
             const secondaryAssignments = divisionsWithDetails.filter(d => !d.teacher_assignment.is_primary);
 
+            const totalStudents = divisionsWithDetails.reduce((sum, div) => sum + div.student_count, 0);
+
             res.json({
                 status: 'success',
                 data: {
@@ -1144,14 +1273,14 @@ router.get('/divisions/teacher/:teacher_id/summary',
                     primary_assignments: primaryAssignments,
                     secondary_assignments: secondaryAssignments,
                     total_divisions: divisionsWithDetails.length,
-                    total_students: divisionsWithDetails.reduce((sum, div) => sum + div.student_count, 0),
+                    total_students: totalStudents,
                     academic_year: {
                         id: currentAcademicYearId,
                         name: allDivisions[0]?.academic_year?.name || 'Unknown'
                     },
                     summary: {
-                        total_subject_teachers: subjectTeachers.length,
-                        total_subjects: divisionSubjects.length,
+                        total_subject_teachers: subjectTeachers?.length || 0,
+                        total_subjects: divisionSubjects?.length || 0,
                         divisions_with_class_teachers: divisionsWithDetails.filter(d => d.class_teacher).length,
                         divisions_with_subject_teachers: divisionsWithDetails.filter(d => d.subject_teachers.length > 0).length,
                         primary_assignments_count: primaryAssignments.length,
@@ -1163,7 +1292,12 @@ router.get('/divisions/teacher/:teacher_id/summary',
                 }
             });
         } catch (error) {
-            next(error);
+            console.error('Unexpected error in teacher divisions summary:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Internal server error',
+                details: error.message
+            });
         }
     }
 );

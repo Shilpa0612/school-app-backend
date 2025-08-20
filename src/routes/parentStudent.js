@@ -487,7 +487,7 @@ router.get('/parents',
 
             // Get parent-student mappings separately for better performance
             const parentIds = parents.map(p => p.id);
-            const { data: mappings, error: mappingsError } = await supabase
+            const { data: mappings, error: mappingsError } = await adminSupabase
                 .from('parent_student_mappings')
                 .select(`
                     parent_id,
@@ -506,6 +506,14 @@ router.get('/parents',
                 // Continue without mappings rather than failing completely
             }
 
+            // Debug logging
+            logger.info('Parent mappings debug:', {
+                parentIds: parentIds,
+                mappingsCount: mappings?.length || 0,
+                mappingsError: mappingsError?.message,
+                sampleMapping: mappings?.[0]
+            });
+
             // Group mappings by parent
             const mappingsByParent = {};
             if (mappings) {
@@ -522,6 +530,11 @@ router.get('/parents',
                     });
                 });
             }
+
+            logger.info('Mappings by parent debug:', {
+                mappingsByParentKeys: Object.keys(mappingsByParent),
+                sampleParentMappings: Object.entries(mappingsByParent).slice(0, 2)
+            });
 
             // Process and format the data
             const formattedParents = parents.map(parent => {
@@ -915,6 +928,84 @@ router.put('/parents/:parent_id',
             res.status(500).json({
                 status: 'error',
                 message: 'Internal server error'
+            });
+        }
+    }
+);
+
+// Debug endpoint to check parent-student mappings
+router.get('/debug/mappings',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            // Check all parent-student mappings
+            const { data: allMappings, error: allMappingsError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    id,
+                    parent_id,
+                    student_id,
+                    relationship,
+                    is_primary_guardian,
+                    created_at,
+                    parent:parent_id (
+                        id,
+                        full_name,
+                        role
+                    ),
+                    student:student_id (
+                        id,
+                        full_name,
+                        admission_number
+                    )
+                `)
+                .limit(10);
+
+            // Check parents table
+            const { data: parents, error: parentsError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('role', 'parent')
+                .limit(5);
+
+            // Check students table
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select('id, full_name, admission_number')
+                .limit(5);
+
+            res.json({
+                status: 'success',
+                data: {
+                    all_mappings: {
+                        data: allMappings,
+                        error: allMappingsError?.message,
+                        count: allMappings?.length || 0
+                    },
+                    parents: {
+                        data: parents,
+                        error: parentsError?.message,
+                        count: parents?.length || 0
+                    },
+                    students: {
+                        data: students,
+                        error: studentsError?.message,
+                        count: students?.length || 0
+                    },
+                    debug_info: {
+                        has_mappings: (allMappings && allMappings.length > 0),
+                        has_parents: (parents && parents.length > 0),
+                        has_students: (students && students.length > 0)
+                    }
+                }
+            });
+        } catch (error) {
+            logger.error('Debug endpoint error:', error);
+            res.status(500).json({
+                status: 'error',
+                message: error.message,
+                stack: error.stack
             });
         }
     }
