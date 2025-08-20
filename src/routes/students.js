@@ -737,6 +737,8 @@ router.get('/divisions/summary',
 
             // Get current active academic year if not specified
             let currentAcademicYearId = academic_year_id;
+            let activeYearName = 'All Years';
+
             if (!currentAcademicYearId) {
                 const { data: activeYear, error: yearError } = await adminSupabase
                     .from('academic_years')
@@ -746,19 +748,25 @@ router.get('/divisions/summary',
 
                 if (yearError) {
                     console.error('Error fetching active academic year:', yearError);
-                    return res.status(500).json({
-                        status: 'error',
-                        message: 'Failed to fetch active academic year',
-                        details: yearError.message
-                    });
+                    // Continue without academic year filter
+                    currentAcademicYearId = null;
+                } else {
+                    currentAcademicYearId = activeYear.id;
+                    activeYearName = activeYear.year_name;
+                    console.log('Using active academic year:', currentAcademicYearId);
                 }
-
-                currentAcademicYearId = activeYear.id;
-                console.log('Using active academic year:', currentAcademicYearId);
+            } else {
+                // Get the name for the specified academic year
+                const { data: specifiedYear } = await adminSupabase
+                    .from('academic_years')
+                    .select('year_name')
+                    .eq('id', currentAcademicYearId)
+                    .single();
+                activeYearName = specifiedYear?.year_name || 'Unknown';
             }
 
             // Get all class divisions with basic details first
-            const { data: divisions, error: divisionsError } = await adminSupabase
+            let query = adminSupabase
                 .from('class_divisions')
                 .select(`
                     id,
@@ -777,8 +785,14 @@ router.get('/divisions/summary',
                         year_name,
                         is_active
                     )
-                `)
-                .eq('academic_year_id', currentAcademicYearId);
+                `);
+
+            // Apply academic year filter only if specified
+            if (currentAcademicYearId) {
+                query = query.eq('academic_year_id', currentAcademicYearId);
+            }
+
+            const { data: divisions, error: divisionsError } = await query;
 
             if (divisionsError) {
                 console.error('Error fetching divisions:', divisionsError);
@@ -790,6 +804,8 @@ router.get('/divisions/summary',
             }
 
             console.log('Found divisions:', divisions?.length || 0);
+            console.log('Current academic year ID:', currentAcademicYearId);
+            console.log('Sample division:', divisions?.[0]);
 
             if (!divisions || divisions.length === 0) {
                 return res.json({
@@ -800,7 +816,7 @@ router.get('/divisions/summary',
                         total_students: 0,
                         academic_year: {
                             id: currentAcademicYearId,
-                            name: 'Unknown'
+                            name: activeYearName
                         },
                         summary: {
                             total_subject_teachers: 0,
@@ -929,7 +945,7 @@ router.get('/divisions/summary',
                     total_students: totalStudents,
                     academic_year: {
                         id: currentAcademicYearId,
-                        name: divisions[0]?.academic_year?.year_name || 'Unknown'
+                        name: activeYearName
                     },
                     summary: {
                         total_subject_teachers: subjectTeachers?.length || 0,
@@ -1075,6 +1091,9 @@ router.get('/divisions/teacher/:teacher_id/summary',
 
             console.log('Legacy divisions:', legacyDivisions?.length || 0);
             console.log('MM assignments:', mmAssignments?.length || 0);
+            console.log('Current academic year ID:', currentAcademicYearId);
+            console.log('Sample legacy division:', legacyDivisions?.[0]);
+            console.log('Sample MM assignment:', mmAssignments?.[0]);
 
             // Combine and deduplicate divisions
             const allDivisions = [];
@@ -1702,6 +1721,94 @@ router.post('/:student_id/profile-photo',
             });
         } catch (error) {
             next(error);
+        }
+    }
+);
+
+// Debug endpoint to check class divisions and academic years
+router.get('/debug/divisions',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            // Check all academic years
+            const { data: academicYears, error: academicYearsError } = await adminSupabase
+                .from('academic_years')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            // Check all class divisions
+            const { data: allDivisions, error: allDivisionsError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    academic_year_id,
+                    class_level_id,
+                    teacher_id,
+                    academic_year:academic_year_id (
+                        id,
+                        year_name,
+                        is_active
+                    ),
+                    level:class_level_id (
+                        id,
+                        name,
+                        sequence_number
+                    )
+                `)
+                .order('created_at', { ascending: false });
+
+            // Check active academic year
+            const { data: activeYear, error: activeYearError } = await adminSupabase
+                .from('academic_years')
+                .select('*')
+                .eq('is_active', true)
+                .single();
+
+            // Check divisions for active year
+            const { data: activeYearDivisions, error: activeYearDivisionsError } = await adminSupabase
+                .from('class_divisions')
+                .select('*')
+                .eq('academic_year_id', activeYear?.id || 'no-active-year');
+
+            res.json({
+                status: 'success',
+                data: {
+                    academic_years: {
+                        data: academicYears,
+                        error: academicYearsError?.message,
+                        count: academicYears?.length || 0
+                    },
+                    all_divisions: {
+                        data: allDivisions,
+                        error: allDivisionsError?.message,
+                        count: allDivisions?.length || 0
+                    },
+                    active_year: {
+                        data: activeYear,
+                        error: activeYearError?.message
+                    },
+                    active_year_divisions: {
+                        data: activeYearDivisions,
+                        error: activeYearDivisionsError?.message,
+                        count: activeYearDivisions?.length || 0
+                    },
+                    debug_info: {
+                        has_academic_years: (academicYears && academicYears.length > 0),
+                        has_divisions: (allDivisions && allDivisions.length > 0),
+                        has_active_year: !!activeYear,
+                        has_active_year_divisions: (activeYearDivisions && activeYearDivisions.length > 0)
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Debug endpoint error:', error);
+            res.status(500).json({
+                status: 'error',
+                message: error.message,
+                stack: error.stack
+            });
         }
     }
 );
