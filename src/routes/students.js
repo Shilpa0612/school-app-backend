@@ -740,7 +740,7 @@ router.get('/divisions/summary',
             if (!currentAcademicYearId) {
                 const { data: activeYear, error: yearError } = await adminSupabase
                     .from('academic_years')
-                    .select('id, name')
+                    .select('id, year_name')
                     .eq('is_active', true)
                     .single();
 
@@ -774,7 +774,7 @@ router.get('/divisions/summary',
                     ),
                     academic_year:academic_year_id (
                         id,
-                        name,
+                        year_name,
                         is_active
                     )
                 `)
@@ -929,7 +929,7 @@ router.get('/divisions/summary',
                     total_students: totalStudents,
                     academic_year: {
                         id: currentAcademicYearId,
-                        name: divisions[0]?.academic_year?.name || 'Unknown'
+                        name: divisions[0]?.academic_year?.year_name || 'Unknown'
                     },
                     summary: {
                         total_subject_teachers: subjectTeachers?.length || 0,
@@ -991,7 +991,7 @@ router.get('/divisions/teacher/:teacher_id/summary',
             if (!currentAcademicYearId) {
                 const { data: activeYear, error: yearError } = await adminSupabase
                     .from('academic_years')
-                    .select('id, name')
+                    .select('id, year_name')
                     .eq('is_active', true)
                     .single();
 
@@ -1026,7 +1026,7 @@ router.get('/divisions/teacher/:teacher_id/summary',
                         ),
                         academic_year:academic_year_id (
                             id,
-                            name,
+                            year_name,
                             is_active
                         )
                     `)
@@ -1276,7 +1276,7 @@ router.get('/divisions/teacher/:teacher_id/summary',
                     total_students: totalStudents,
                     academic_year: {
                         id: currentAcademicYearId,
-                        name: allDivisions[0]?.academic_year?.name || 'Unknown'
+                        name: allDivisions[0]?.academic_year?.year_name || 'Unknown'
                     },
                     summary: {
                         total_subject_teachers: subjectTeachers?.length || 0,
