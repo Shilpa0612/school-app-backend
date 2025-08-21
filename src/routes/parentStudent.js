@@ -164,13 +164,17 @@ router.get('/mappings',
                         id,
                         full_name,
                         admission_number,
-                        class:class_id (
+                        profile_photo_path,
+                        student_academic_records (
                             id,
-                            name,
-                            section,
-                            teacher:teacher_id (
+                            roll_number,
+                            status,
+                            class_division:class_division_id (
                                 id,
-                                full_name
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name, sequence_number),
+                                teacher:teacher_id (id, full_name)
                             )
                         )
                     )
@@ -179,9 +183,23 @@ router.get('/mappings',
 
             if (error) throw error;
 
+            // Generate profile photo URLs for all students
+            const mappingsWithPhotos = await Promise.all(data.map(async (mapping) => {
+                let profile_photo_url = null;
+                if (mapping.student.profile_photo_path) {
+                    const path = mapping.student.profile_photo_path.replace('profile-pictures/', '');
+                    const { data: publicData } = adminSupabase.storage.from('profile-pictures').getPublicUrl(path);
+                    profile_photo_url = publicData?.publicUrl || null;
+                }
+                return {
+                    ...mapping,
+                    student: { ...mapping.student, profile_photo_url }
+                };
+            }));
+
             res.json({
                 status: 'success',
-                data: { mappings: data }
+                data: { mappings: mappingsWithPhotos }
             });
         } catch (error) {
             next(error);
@@ -222,6 +240,7 @@ router.get('/child/:student_id',
                     date_of_birth,
                     admission_date,
                     status,
+                    profile_photo_path,
                     student_academic_records!inner (
                         id,
                         roll_number,
@@ -245,10 +264,18 @@ router.get('/child/:student_id',
                 });
             }
 
+            // Generate profile photo URL
+            let profile_photo_url = null;
+            if (student.profile_photo_path) {
+                const path = student.profile_photo_path.replace('profile-pictures/', '');
+                const { data: publicData } = adminSupabase.storage.from('profile-pictures').getPublicUrl(path);
+                profile_photo_url = publicData?.publicUrl || null;
+            }
+
             res.json({
                 status: 'success',
                 data: {
-                    student,
+                    student: { ...student, profile_photo_url },
                     relationship: mapping.relationship,
                     is_primary_guardian: mapping.is_primary_guardian
                 }
@@ -1007,6 +1034,91 @@ router.get('/debug/mappings',
                 message: error.message,
                 stack: error.stack
             });
+        }
+    }
+);
+
+// Debug endpoint for parents to test photo access
+router.get('/child/:student_id/debug-photo',
+    authenticate,
+    authorize('parent'),
+    async (req, res, next) => {
+        try {
+            const { student_id } = req.params;
+
+            // Verify this parent is linked to the student
+            const { data: mapping, error: mappingError } = await supabase
+                .from('parent_student_mappings')
+                .select('id, relationship, is_primary_guardian')
+                .eq('parent_id', req.user.id)
+                .eq('student_id', student_id)
+                .single();
+
+            if (mappingError || !mapping) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'You do not have permission to view this child'
+                });
+            }
+
+            // Get student data with photo path
+            const { data: student, error: studentError } = await adminSupabase
+                .from('students_master')
+                .select('id, full_name, profile_photo_path')
+                .eq('id', student_id)
+                .single();
+
+            if (studentError || !student) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
+            }
+
+            let debugInfo = {
+                student_id: student.id,
+                full_name: student.full_name,
+                profile_photo_path: student.profile_photo_path,
+                profile_photo_url: null,
+                relationship: mapping.relationship,
+                is_primary_guardian: mapping.is_primary_guardian,
+                parent_id: req.user.id,
+                storage_check: null
+            };
+
+            // Check if profile photo path exists
+            if (student.profile_photo_path) {
+                // Generate public URL
+                const path = student.profile_photo_path.replace('profile-pictures/', '');
+                const { data: publicData, error: urlError } = adminSupabase.storage
+                    .from('profile-pictures')
+                    .getPublicUrl(path);
+
+                if (urlError) {
+                    debugInfo.url_error = urlError.message;
+                } else {
+                    debugInfo.profile_photo_url = publicData?.publicUrl || null;
+                }
+
+                // Check if file exists in storage
+                const { data: fileList, error: listError } = await adminSupabase.storage
+                    .from('profile-pictures')
+                    .list('students/' + student_id);
+
+                if (listError) {
+                    debugInfo.storage_error = listError.message;
+                } else {
+                    debugInfo.storage_check = fileList;
+                }
+            }
+
+            res.json({
+                status: 'success',
+                data: debugInfo
+            });
+
+        } catch (error) {
+            next(error);
         }
     }
 );

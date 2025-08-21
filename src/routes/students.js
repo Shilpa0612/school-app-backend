@@ -1,7 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import multer from 'multer';
-import { adminSupabase, supabase } from '../config/supabase.js';
+import { adminSupabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
@@ -397,7 +397,7 @@ router.get('/class/:class_division_id',
                 let profile_photo_url = null;
                 if (s.profile_photo_path) {
                     const path = s.profile_photo_path.replace('profile-pictures/', '');
-                    const { data } = supabase.storage.from('profile-pictures').getPublicUrl(path);
+                    const { data } = adminSupabase.storage.from('profile-pictures').getPublicUrl(path);
                     profile_photo_url = data?.publicUrl || null;
                 }
                 return { ...s, profile_photo_url };
@@ -1478,7 +1478,7 @@ router.get('/:student_id',
             let profile_photo_url = null;
             if (student.profile_photo_path) {
                 const path = student.profile_photo_path.replace('profile-pictures/', '');
-                const { data: publicData } = supabase.storage.from('profile-pictures').getPublicUrl(path);
+                const { data: publicData } = adminSupabase.storage.from('profile-pictures').getPublicUrl(path);
                 profile_photo_url = publicData?.publicUrl || null;
             }
 
@@ -1703,7 +1703,7 @@ router.post('/:student_id/profile-photo',
             }
 
             // Public URL
-            const { data: publicUrlData } = supabase.storage
+            const { data: publicUrlData } = adminSupabase.storage
                 .from('profile-pictures')
                 .getPublicUrl(filePath);
 
@@ -1715,6 +1715,82 @@ router.post('/:student_id/profile-photo',
                     profile_photo_url: publicUrlData?.publicUrl || null
                 }
             });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Debug endpoint to test photo upload functionality
+router.get('/:student_id/debug-photo',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { student_id } = req.params;
+
+            // Get student data
+            const { data: student, error: studentError } = await adminSupabase
+                .from('students_master')
+                .select('id, full_name, profile_photo_path')
+                .eq('id', student_id)
+                .single();
+
+            if (studentError || !student) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
+            }
+
+            let debugInfo = {
+                student_id: student.id,
+                full_name: student.full_name,
+                profile_photo_path: student.profile_photo_path,
+                profile_photo_url: null,
+                storage_check: null,
+                bucket_check: null
+            };
+
+            // Check if profile photo path exists
+            if (student.profile_photo_path) {
+                // Generate public URL
+                const path = student.profile_photo_path.replace('profile-pictures/', '');
+                const { data: publicData, error: urlError } = adminSupabase.storage
+                    .from('profile-pictures')
+                    .getPublicUrl(path);
+
+                if (urlError) {
+                    debugInfo.url_error = urlError.message;
+                } else {
+                    debugInfo.profile_photo_url = publicData?.publicUrl || null;
+                }
+
+                // Check if file exists in storage
+                const { data: fileList, error: listError } = await adminSupabase.storage
+                    .from('profile-pictures')
+                    .list('students/' + student_id);
+
+                if (listError) {
+                    debugInfo.storage_error = listError.message;
+                } else {
+                    debugInfo.storage_check = fileList;
+                }
+            }
+
+            // Check storage bucket
+            const { data: buckets, error: bucketError } = await adminSupabase.storage.listBuckets();
+            if (bucketError) {
+                debugInfo.bucket_error = bucketError.message;
+            } else {
+                debugInfo.bucket_check = buckets;
+            }
+
+            res.json({
+                status: 'success',
+                data: debugInfo
+            });
+
         } catch (error) {
             next(error);
         }
