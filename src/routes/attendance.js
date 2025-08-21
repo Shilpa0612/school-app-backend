@@ -418,7 +418,7 @@ router.post('/daily', authenticate, async (req, res) => {
 });
 
 // Get daily attendance for a class
-router.get('/daily/class/:class_division_id', auth, async (req, res) => {
+router.get('/daily/class/:class_division_id', authenticate, async (req, res) => {
     try {
         const { class_division_id } = req.params;
         const { date, period_id } = req.query;
@@ -507,7 +507,7 @@ router.get('/daily/class/:class_division_id', auth, async (req, res) => {
 });
 
 // Update daily attendance
-router.put('/daily/:daily_attendance_id', auth, async (req, res) => {
+router.put('/daily/:daily_attendance_id', authenticate, async (req, res) => {
     try {
         const { daily_attendance_id } = req.params;
         const { student_attendance } = req.body;
@@ -591,7 +591,7 @@ router.put('/daily/:daily_attendance_id', auth, async (req, res) => {
 });
 
 // Edit individual student attendance record
-router.put('/student-record/:record_id', auth, async (req, res) => {
+router.put('/student-record/:record_id', authenticate, async (req, res) => {
     try {
         const { record_id } = req.params;
         const { status, remarks } = req.body;
@@ -673,7 +673,7 @@ router.put('/student-record/:record_id', auth, async (req, res) => {
 });
 
 // Edit attendance period (Admin/Principal only)
-router.put('/periods/:period_id', auth, async (req, res) => {
+router.put('/periods/:period_id', authenticate, async (req, res) => {
     try {
         const { period_id } = req.params;
         const { name, start_time, end_time, is_active } = req.body;
@@ -717,7 +717,7 @@ router.put('/periods/:period_id', auth, async (req, res) => {
 });
 
 // Edit attendance holiday (Admin/Principal only)
-router.put('/holidays/:holiday_id', auth, async (req, res) => {
+router.put('/holidays/:holiday_id', authenticate, async (req, res) => {
     try {
         const { holiday_id } = req.params;
         const { holiday_date, holiday_name, holiday_type, description, is_attendance_holiday } = req.body;
@@ -765,7 +765,7 @@ router.put('/holidays/:holiday_id', auth, async (req, res) => {
 // ============================================================================
 
 // Delete attendance period (Admin/Principal only)
-router.delete('/periods/:period_id', auth, async (req, res) => {
+router.delete('/periods/:period_id', authenticate, async (req, res) => {
     try {
         const { period_id } = req.params;
 
@@ -815,7 +815,7 @@ router.delete('/periods/:period_id', auth, async (req, res) => {
 });
 
 // Delete attendance holiday (Admin/Principal only)
-router.delete('/holidays/:holiday_id', auth, async (req, res) => {
+router.delete('/holidays/:holiday_id', authenticate, async (req, res) => {
     try {
         const { holiday_id } = req.params;
 
@@ -849,7 +849,7 @@ router.delete('/holidays/:holiday_id', auth, async (req, res) => {
 });
 
 // Delete daily attendance (Teachers, Admin, Principal)
-router.delete('/daily/:daily_attendance_id', auth, async (req, res) => {
+router.delete('/daily/:daily_attendance_id', authenticate, async (req, res) => {
     try {
         const { daily_attendance_id } = req.params;
 
@@ -904,7 +904,7 @@ router.delete('/daily/:daily_attendance_id', auth, async (req, res) => {
 // ============================================================================
 
 // Get student attendance summary
-router.get('/student/:student_id/summary', auth, async (req, res) => {
+router.get('/student/:student_id/summary', authenticate, async (req, res) => {
     try {
         const { student_id } = req.params;
         const { academic_year_id, start_date, end_date } = req.query;
@@ -1001,7 +1001,7 @@ router.get('/student/:student_id/summary', auth, async (req, res) => {
 });
 
 // Get student attendance details (daily records)
-router.get('/student/:student_id/details', auth, async (req, res) => {
+router.get('/student/:student_id/details', authenticate, async (req, res) => {
     try {
         const { student_id } = req.params;
         const { academic_year_id, start_date, end_date, page = 1, limit = 30 } = req.query;
@@ -1112,7 +1112,7 @@ router.get('/student/:student_id/details', auth, async (req, res) => {
 // ============================================================================
 
 // Get attendance holidays
-router.get('/holidays', auth, async (req, res) => {
+router.get('/holidays', authenticate, async (req, res) => {
     try {
         const { year, month, holiday_type } = req.query;
 
@@ -1149,7 +1149,7 @@ router.get('/holidays', auth, async (req, res) => {
 });
 
 // Create attendance holiday
-router.post('/holidays', auth, async (req, res) => {
+router.post('/holidays', authenticate, async (req, res) => {
     try {
         // Check if user is admin or principal
         if (!['admin', 'principal'].includes(req.user.role)) {
@@ -1201,7 +1201,7 @@ router.post('/holidays', auth, async (req, res) => {
 // ============================================================================
 
 // Create daily attendance for all classes (Admin/Principal only)
-router.post('/create-daily', auth, async (req, res) => {
+router.post('/create-daily', authenticate, async (req, res) => {
     try {
         const { date, period_id } = req.body;
 
@@ -1277,7 +1277,7 @@ router.post('/create-daily', auth, async (req, res) => {
 });
 
 // Sync calendar events as holidays (Admin/Principal only)
-router.post('/sync-calendar-holidays', auth, async (req, res) => {
+router.post('/sync-calendar-holidays', authenticate, async (req, res) => {
     try {
         const { start_date, end_date } = req.body;
 
@@ -1379,7 +1379,7 @@ router.post('/sync-calendar-holidays', auth, async (req, res) => {
 });
 
 // Get attendance status for a class on a specific date
-router.get('/status/:class_division_id', auth, async (req, res) => {
+router.get('/status/:class_division_id', authenticate, async (req, res) => {
     try {
         const { class_division_id } = req.params;
         const { date, period_id } = req.query;
@@ -1445,7 +1445,7 @@ router.get('/status/:class_division_id', auth, async (req, res) => {
 // ============================================================================
 
 // Get class attendance report
-router.get('/reports/class/:class_division_id', auth, async (req, res) => {
+router.get('/reports/class/:class_division_id', authenticate, async (req, res) => {
     try {
         const { class_division_id } = req.params;
         const { start_date, end_date, period_id } = req.query;
