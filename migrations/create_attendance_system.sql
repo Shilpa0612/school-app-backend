@@ -292,17 +292,17 @@ CREATE OR REPLACE FUNCTION public.get_working_days(p_start_date date, p_end_date
 RETURNS integer AS $$
 DECLARE
     working_days integer := 0;
-    current_date date := p_start_date;
+    loop_date date := p_start_date;
 BEGIN
-    WHILE current_date <= p_end_date LOOP
+    WHILE loop_date <= p_end_date LOOP
         -- Skip weekends (Saturday = 6, Sunday = 0)
-        IF EXTRACT(DOW FROM current_date) NOT IN (0, 6) THEN
+        IF EXTRACT(DOW FROM loop_date) NOT IN (0, 6) THEN
             -- Skip holidays
-            IF NOT public.is_attendance_holiday(current_date) THEN
+            IF NOT public.is_attendance_holiday(loop_date) THEN
                 working_days := working_days + 1;
             END IF;
         END IF;
-        current_date := current_date + INTERVAL '1 day';
+        loop_date := loop_date + INTERVAL '1 day';
     END LOOP;
     
     RETURN working_days;

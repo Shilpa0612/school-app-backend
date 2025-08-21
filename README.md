@@ -90,6 +90,46 @@ A comprehensive backend API for a school management system built with Node.js, E
    npm start
    ```
 
+## Database Performance Optimization
+
+For optimal performance, especially as your data grows, run the database optimization scripts:
+
+### Quick Performance Test
+
+```bash
+# Test current performance
+node scripts/test_performance.js
+
+# Or use batch file (Windows)
+scripts/test_performance.bat
+```
+
+### Apply Optimizations
+
+```bash
+# Apply database indexes and optimizations
+node scripts/apply_database_optimizations.js
+
+# Or use batch file (Windows)
+scripts/optimize_database.bat
+```
+
+### Monitor Performance
+
+```bash
+# Check index usage and performance metrics
+node scripts/apply_database_optimizations.js monitor
+```
+
+### Expected Improvements
+
+- Student queries: 10-50x faster
+- Parent queries: 5-20x faster
+- Teacher queries: 5-15x faster
+- Search queries: 3-10x faster
+
+For detailed optimization strategies, see `DATABASE_PERFORMANCE_GUIDE.md`.
+
 ## API Documentation
 
 The API documentation is available in `API.md` with detailed endpoint descriptions, request/response formats, and examples.

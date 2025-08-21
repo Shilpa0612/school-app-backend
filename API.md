@@ -2288,11 +2288,16 @@ GET /api/students/:student_id
 }
 ```
 
-#### Upload Student Profile Photo (Admin/Principal/Teacher)
+#### Upload Student Profile Photo (Admin/Principal/Teacher/Parent)
 
 ```http
 POST /api/students/:student_id/profile-photo
 ```
+
+**Authorization:**
+
+- Admin, Principal, Teacher: Can upload for any student
+- Parent: Can only upload for their own children (verified via parent_student_mappings)
 
 **Body:** form-data with field `photo` (JPEG/PNG, max 2MB)
 
