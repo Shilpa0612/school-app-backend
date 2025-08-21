@@ -408,26 +408,9 @@ router.put('/:id',
 
             if (error) throw error;
 
-            // Update topics if provided
-            if (topics_covered) {
-                // Delete existing topics
-                await adminSupabase
-                    .from('classwork_topics')
-                    .delete()
-                    .eq('classwork_id', id);
-
-                // Insert new topics
-                if (topics_covered.length > 0) {
-                    const topicRecords = topics_covered.map(topic => ({
-                        classwork_id: id,
-                        topic_name: topic,
-                        topic_description: null
-                    }));
-
-                    await adminSupabase
-                        .from('classwork_topics')
-                        .insert(topicRecords);
-                }
+            // Update topics_covered field directly (assuming it's a JSONB or TEXT[] field)
+            if (topics_covered !== undefined) {
+                updateData.topics_covered = topics_covered;
             }
 
             res.json({

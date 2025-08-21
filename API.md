@@ -387,6 +387,66 @@ POST /homework
 
 **Response:** Created homework object
 
+#### Update Homework (Teacher Only)
+
+```http
+PUT /homework/:id
+```
+
+**Body:**
+
+```json
+{
+  "subject": "Advanced Mathematics",
+  "title": "Updated Homework Title",
+  "description": "Updated detailed description",
+  "due_date": "2024-01-05T00:00:00Z"
+}
+```
+
+**Notes:**
+
+- Teachers can only update their own homework
+- All fields are optional
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "homework": {
+      "id": "uuid",
+      "subject": "Advanced Mathematics",
+      "title": "Updated Homework Title",
+      "description": "Updated detailed description",
+      "due_date": "2024-01-05T00:00:00Z",
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Delete Homework (Teacher Only)
+
+```http
+DELETE /homework/:id
+```
+
+**Notes:**
+
+- Teachers can only delete their own homework
+- Deletes the homework and all associated attachments
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Homework deleted successfully"
+}
+```
+
 #### Get Homework List
 
 ```http
@@ -484,6 +544,66 @@ POST /classwork
 ```
 
 **Response:** Created classwork object
+
+#### Update Classwork (Teacher Only)
+
+```http
+PUT /classwork/:id
+```
+
+**Body:**
+
+```json
+{
+  "subject": "Advanced Mathematics",
+  "summary": "Updated summary with more details",
+  "topics_covered": ["Addition", "Subtraction", "Multiplication"],
+  "is_shared_with_parents": false
+}
+```
+
+**Notes:**
+
+- Teachers can only update their own classwork
+- All fields are optional
+- `topics_covered` is stored as a text array
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "classwork": {
+      "id": "uuid",
+      "subject": "Advanced Mathematics",
+      "summary": "Updated summary with more details",
+      "topics_covered": ["Addition", "Subtraction", "Multiplication"],
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
+
+#### Delete Classwork (Teacher Only)
+
+```http
+DELETE /classwork/:id
+```
+
+**Notes:**
+
+- Teachers can only delete their own classwork
+- Deletes the classwork and all associated attachments
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Classwork deleted successfully"
+}
+```
 
 #### Get Classwork List
 
@@ -2390,16 +2510,37 @@ GET /api/students/divisions/summary
 - Feedback System
 - Real-time Messaging (WebSocket)
 - Timetable Management
+- **Student Attendance System** - Complete attendance tracking, marking, and reporting
 
 ### ⚠️ **Partially Implemented (20-80%)**
 
 - Push Notifications (Firebase SDK installed, logic pending)
 - Content Localization (Database ready, UI pending)
 
+### ✅ **Recently Implemented (100%)**
+
+- **Student Attendance System** - Complete attendance tracking, marking, and reporting functionality
+
 ### ❌ **Not Implemented**
 
 - SMS Integration
 - Dynamic Content Translation
+
+## Student Attendance System
+
+**Status**: ✅ **Fully Implemented**
+
+The student attendance system provides comprehensive attendance tracking, marking, and reporting functionality:
+
+- **Daily attendance marking** by teachers for their assigned classes
+- **Multiple attendance statuses**: present, absent, late, half_day, excused
+- **Attendance periods**: morning, afternoon, full day
+- **Holiday management** for accurate attendance calculations
+- **Detailed reports** for parents, teachers, and administrators
+- **Role-based access control** ensuring data privacy
+- **Integration** with existing academic year and class systems
+
+---
 
 ## Rate Limiting
 
@@ -5220,3 +5361,811 @@ DELETE /api/feedback/:id
   "message": "Feedback deleted successfully"
 }
 ```
+
+---
+
+## Student Attendance System
+
+### Attendance Periods
+
+#### Get Attendance Periods
+
+```http
+GET /api/attendance/periods
+```
+
+**Notes:**
+
+- Available for all authenticated users
+- Returns active attendance periods (morning, afternoon, full day)
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "periods": [
+      {
+        "id": "uuid",
+        "name": "Morning",
+        "start_time": "08:00:00",
+        "end_time": "08:30:00",
+        "is_active": true
+      }
+    ]
+  }
+}
+```
+
+#### Create Attendance Period (Admin/Principal Only)
+
+```http
+POST /api/attendance/periods
+```
+
+**Body:**
+
+```json
+{
+  "name": "Evening",
+  "start_time": "15:00:00",
+  "end_time": "15:30:00"
+}
+```
+
+**Response:** Created attendance period object
+
+#### Update Attendance Period (Admin/Principal Only)
+
+```http
+PUT /api/attendance/periods/:period_id
+```
+
+**Body:**
+
+```json
+{
+  "name": "Updated Evening",
+  "start_time": "15:30:00",
+  "end_time": "16:00:00",
+  "is_active": true
+}
+```
+
+**Response:** Updated attendance period object
+
+#### Delete Attendance Period (Admin/Principal Only)
+
+```http
+DELETE /api/attendance/periods/:period_id
+```
+
+**Notes:**
+
+- Cannot delete periods that are being used in attendance records
+- Returns error if period is in use
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Attendance period deleted successfully"
+}
+```
+
+### Daily Attendance
+
+#### Mark Daily Attendance (Automated - Teachers only mark present students)
+
+```http
+POST /api/attendance/daily
+```
+
+**Body:**
+
+```json
+{
+  "class_division_id": "uuid",
+  "attendance_date": "2024-01-15",
+  "period_id": "uuid",
+  "present_students": ["uuid1", "uuid2", "uuid3"]
+}
+```
+
+**Notes:**
+
+- **Automated System**: Daily attendance records are created automatically
+- **Default Status**: All students are marked as "absent" by default
+- **Teacher Workflow**: Teachers only need to provide list of present students
+- **Holiday Detection**: Automatically detects holidays from calendar events and attendance_holidays table
+- **Class-Specific Holidays**: Supports holidays specific to certain classes
+- Teachers can only mark attendance for their assigned classes
+- Admin/Principal can mark attendance for any class
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "daily_attendance": {
+      "id": "uuid",
+      "class_division_id": "uuid",
+      "attendance_date": "2024-01-15",
+      "period_id": "uuid",
+      "marked_by": "uuid",
+      "is_holiday": false,
+      "holiday_reason": null
+    },
+    "student_records": [
+      {
+        "id": "uuid",
+        "student_id": "uuid",
+        "status": "present",
+        "remarks": "Marked present by teacher",
+        "student": {
+          "full_name": "Student Name",
+          "admission_number": "ADM001"
+        }
+      },
+      {
+        "id": "uuid",
+        "student_id": "uuid",
+        "status": "absent",
+        "remarks": "Not marked by teacher",
+        "student": {
+          "full_name": "Student Name",
+          "admission_number": "ADM002"
+        }
+      }
+    ]
+  },
+  "message": "Attendance marked successfully"
+}
+```
+
+**Holiday Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "daily_attendance": {
+      "id": "uuid",
+      "is_holiday": true,
+      "holiday_reason": "Republic Day"
+    }
+  },
+  "message": "Holiday: Republic Day"
+}
+```
+
+#### Get Daily Attendance for Class
+
+```http
+GET /api/attendance/daily/class/:class_division_id?date=2024-01-15&period_id=uuid
+```
+
+**Query Parameters:**
+
+- `date`: Attendance date (YYYY-MM-DD)
+- `period_id`: Attendance period ID (optional)
+
+**Notes:**
+
+- Teachers can only view attendance for their assigned classes
+- Admin/Principal can view attendance for any class
+- Returns attendance records with student details
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "daily_attendance": {
+      "id": "uuid",
+      "attendance_date": "2024-01-15",
+      "period": {
+        "name": "Morning",
+        "start_time": "08:00:00",
+        "end_time": "08:30:00"
+      },
+      "marked_by_user": {
+        "full_name": "Teacher Name",
+        "role": "teacher"
+      }
+    },
+    "student_records": [
+      {
+        "id": "uuid",
+        "student_id": "uuid",
+        "status": "present",
+        "remarks": "On time",
+        "student": {
+          "full_name": "Student Name",
+          "admission_number": "ADM001"
+        }
+      }
+    ]
+  }
+}
+```
+
+#### Update Daily Attendance
+
+```http
+PUT /api/attendance/daily/:daily_attendance_id
+```
+
+**Body:**
+
+```json
+{
+  "student_attendance": [
+    {
+      "student_id": "uuid",
+      "status": "present",
+      "remarks": "Updated remarks"
+    }
+  ]
+}
+```
+
+**Notes:**
+
+- Teachers can only update attendance for their assigned classes
+- Admin/Principal can update any attendance
+- Updates individual student attendance records
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student_records": [
+      {
+        "id": "uuid",
+        "status": "present",
+        "remarks": "Updated remarks",
+        "student": {
+          "full_name": "Student Name",
+          "admission_number": "ADM001"
+        }
+      }
+    ]
+  },
+  "message": "Attendance updated successfully"
+}
+```
+
+#### Edit Individual Student Attendance Record
+
+```http
+PUT /api/attendance/student-record/:record_id
+```
+
+**Body:**
+
+```json
+{
+  "status": "present",
+  "remarks": "Student arrived on time"
+}
+```
+
+**Notes:**
+
+- Teachers can only edit attendance for their assigned classes
+- Admin/Principal can edit any attendance record
+- Updates a single student's attendance for a specific day
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "record": {
+      "id": "uuid",
+      "status": "present",
+      "remarks": "Student arrived on time",
+      "student": {
+        "full_name": "Student Name",
+        "admission_number": "ADM001"
+      },
+      "daily_attendance": {
+        "attendance_date": "2024-01-15",
+        "period": {
+          "name": "Morning"
+        }
+      }
+    }
+  },
+  "message": "Attendance record updated successfully"
+}
+```
+
+#### Delete Daily Attendance (Teachers, Admin, Principal)
+
+```http
+DELETE /api/attendance/daily/:daily_attendance_id
+```
+
+**Notes:**
+
+- Teachers can only delete attendance for their assigned classes
+- Admin/Principal can delete any attendance
+- Deletes the entire daily attendance record and all student records for that day
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Daily attendance deleted successfully"
+}
+```
+
+#### Get Attendance Status for Class (Automated)
+
+```http
+GET /api/attendance/status/:class_division_id?date=2024-01-15&period_id=uuid
+```
+
+**Query Parameters:**
+
+- `date`: Attendance date (YYYY-MM-DD, required)
+- `period_id`: Attendance period ID (optional)
+
+**Notes:**
+
+- **Automated Creation**: Creates attendance record if it doesn't exist
+- **Holiday Detection**: Automatically detects and marks holidays
+- **Default Absent**: All students marked as absent by default
+- Teachers can only access their assigned classes
+- Admin/Principal can access any class
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "daily_attendance": {
+      "id": "uuid",
+      "is_holiday": false,
+      "holiday_reason": null
+    },
+    "student_records": [
+      {
+        "id": "uuid",
+        "status": "absent",
+        "remarks": "Not marked by teacher",
+        "student": {
+          "full_name": "Student Name",
+          "admission_number": "ADM001"
+        }
+      }
+    ]
+  }
+}
+```
+
+### Automated Attendance Management
+
+#### Create Daily Attendance for All Classes (Admin/Principal Only)
+
+```http
+POST /api/attendance/create-daily
+```
+
+**Body:**
+
+```json
+{
+  "date": "2024-01-15",
+  "period_id": "uuid"
+}
+```
+
+**Notes:**
+
+- Creates attendance records for all active classes
+- Automatically handles holidays
+- Sets all students as absent by default
+- Useful for bulk attendance preparation
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "date": "2024-01-15",
+    "period_id": "uuid",
+    "total_classes": 12,
+    "created": 10,
+    "errors": 2,
+    "results": [
+      {
+        "class_division_id": "uuid",
+        "daily_attendance_id": "uuid",
+        "is_holiday": false,
+        "holiday_reason": null
+      }
+    ],
+    "errors": [
+      {
+        "class_division_id": "uuid",
+        "error": "Error message"
+      }
+    ]
+  },
+  "message": "Daily attendance created for 10 classes"
+}
+```
+
+#### Sync Calendar Events as Holidays (Admin/Principal Only)
+
+```http
+POST /api/attendance/sync-calendar-holidays
+```
+
+**Body:**
+
+```json
+{
+  "start_date": "2024-01-01",
+  "end_date": "2024-12-31"
+}
+```
+
+**Notes:**
+
+- Automatically creates attendance holidays from calendar events
+- Only syncs events with `event_category: "holiday"`
+- Supports both school-wide and class-specific holidays
+- Prevents duplicate holidays
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "date_range": {
+      "start_date": "2024-01-01",
+      "end_date": "2024-12-31"
+    },
+    "total_events": 15,
+    "synced": 12,
+    "errors": 3,
+    "synced_holidays": [
+      {
+        "event_id": "uuid",
+        "holiday_id": "uuid",
+        "status": "created"
+      }
+    ]
+  },
+  "message": "Synced 12 calendar events as holidays"
+}
+```
+
+### Student Attendance Records
+
+#### Get Student Attendance Summary (Parents, Teachers, Admin, Principal)
+
+```http
+GET /api/attendance/student/:student_id/summary?academic_year_id=uuid&start_date=2024-01-01&end_date=2024-01-31
+```
+
+**Query Parameters:**
+
+- `academic_year_id`: Academic year ID (optional, defaults to active year)
+- `start_date`: Start date for summary (YYYY-MM-DD, optional)
+- `end_date`: End date for summary (YYYY-MM-DD, optional)
+
+**Access Control:**
+
+- **Parents**: Can only view their own children's attendance
+- **Teachers**: Can view attendance for students in their assigned classes
+- **Admin/Principal**: Can view any student's attendance
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student": {
+      "full_name": "Student Name",
+      "admission_number": "ADM001"
+    },
+    "academic_year_id": "uuid",
+    "summary": {
+      "total_days": 25,
+      "present_days": 22,
+      "absent_days": 2,
+      "late_days": 1,
+      "half_days": 0,
+      "excused_days": 0,
+      "attendance_percentage": 88.0
+    }
+  }
+}
+```
+
+#### Get Student Attendance Details (Daily Records)
+
+```http
+GET /api/attendance/student/:student_id/details?academic_year_id=uuid&start_date=2024-01-01&end_date=2024-01-31&page=1&limit=30
+```
+
+**Query Parameters:**
+
+- `academic_year_id`: Academic year ID (optional, defaults to active year)
+- `start_date`: Start date filter (YYYY-MM-DD, optional)
+- `end_date`: End date filter (YYYY-MM-DD, optional)
+- `page`: Page number for pagination (default: 1)
+- `limit`: Number of records per page (default: 30)
+
+**Access Control:** Same as summary endpoint
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student_id": "uuid",
+    "academic_year_id": "uuid",
+    "records": [
+      {
+        "id": "uuid",
+        "status": "present",
+        "remarks": "On time",
+        "daily_attendance": {
+          "attendance_date": "2024-01-15",
+          "period": {
+            "name": "Morning",
+            "start_time": "08:00:00",
+            "end_time": "08:30:00"
+          },
+          "class_division": {
+            "division": "A",
+            "level": {
+              "name": "Grade 1",
+              "sequence_number": 1
+            }
+          }
+        }
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 30,
+      "total": 25
+    }
+  }
+}
+```
+
+### Attendance Holidays
+
+#### Get Attendance Holidays
+
+```http
+GET /api/attendance/holidays?year=2024&month=1&holiday_type=national
+```
+
+**Query Parameters:**
+
+- `year`: Filter by year (optional)
+- `month`: Filter by month (1-12, optional)
+- `holiday_type`: Filter by type (national, state, school, exam, optional)
+
+**Notes:**
+
+- Available for all authenticated users
+- Holidays marked as `is_attendance_holiday = true` are excluded from attendance calculations
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "holidays": [
+      {
+        "id": "uuid",
+        "holiday_date": "2024-01-26",
+        "holiday_name": "Republic Day",
+        "holiday_type": "national",
+        "description": "National holiday",
+        "is_attendance_holiday": true
+      }
+    ]
+  }
+}
+```
+
+#### Create Attendance Holiday (Admin, Principal Only)
+
+```http
+POST /api/attendance/holidays
+```
+
+**Body:**
+
+```json
+{
+  "holiday_date": "2024-01-26",
+  "holiday_name": "Republic Day",
+  "holiday_type": "national",
+  "description": "National holiday",
+  "is_attendance_holiday": true
+}
+```
+
+**Response:** Created holiday object
+
+#### Update Attendance Holiday (Admin, Principal Only)
+
+```http
+PUT /api/attendance/holidays/:holiday_id
+```
+
+**Body:**
+
+```json
+{
+  "holiday_date": "2024-01-26",
+  "holiday_name": "Republic Day 2024",
+  "holiday_type": "national",
+  "description": "Updated description",
+  "is_attendance_holiday": true
+}
+```
+
+**Response:** Updated holiday object
+
+#### Delete Attendance Holiday (Admin, Principal Only)
+
+```http
+DELETE /api/attendance/holidays/:holiday_id
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Holiday deleted successfully"
+}
+```
+
+### Attendance Reports
+
+#### Get Class Attendance Report
+
+```http
+GET /api/attendance/reports/class/:class_division_id?start_date=2024-01-01&end_date=2024-01-31&period_id=uuid
+```
+
+**Query Parameters:**
+
+- `start_date`: Start date for report (YYYY-MM-DD, required)
+- `end_date`: End date for report (YYYY-MM-DD, required)
+- `period_id`: Filter by specific period (optional)
+
+**Access Control:**
+
+- **Teachers**: Can only view reports for their assigned classes
+- **Admin/Principal**: Can view reports for any class
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "class_details": {
+      "id": "uuid",
+      "division": "A",
+      "level": {
+        "name": "Grade 1",
+        "sequence_number": 1
+      },
+      "teacher": {
+        "full_name": "Teacher Name"
+      }
+    },
+    "academic_year": {
+      "id": "uuid",
+      "year_name": "2024-2025"
+    },
+    "date_range": {
+      "start_date": "2024-01-01",
+      "end_date": "2024-01-31"
+    },
+    "students": [
+      {
+        "student": {
+          "id": "uuid",
+          "full_name": "Student Name",
+          "admission_number": "ADM001"
+        },
+        "roll_number": "01",
+        "attendance": {
+          "total_days": 25,
+          "present_days": 22,
+          "absent_days": 2,
+          "late_days": 1,
+          "half_days": 0,
+          "excused_days": 0,
+          "attendance_percentage": 88.0
+        }
+      }
+    ]
+  }
+}
+```
+
+### Key Features
+
+#### Automated Attendance System
+
+- **Automatic Creation**: Daily attendance records are created automatically for all classes
+- **Default Absent Status**: All students are marked as "absent" by default
+- **Teacher-Friendly Workflow**: Teachers only need to mark present students
+- **Holiday Detection**: Automatically detects holidays from calendar events and attendance_holidays table
+- **Class-Specific Holidays**: Supports holidays specific to certain classes
+
+#### Attendance Statuses
+
+- **Present**: Student attended the full period (marked by teacher)
+- **Absent**: Student did not attend (default status)
+- **Late**: Student arrived after the period started
+- **Half Day**: Student attended for part of the period
+- **Excused**: Student absent with valid excuse (e.g., medical certificate)
+
+#### Attendance Periods
+
+- **Morning**: Early morning attendance (e.g., 8:00 AM - 8:30 AM)
+- **Afternoon**: Afternoon attendance (e.g., 1:00 PM - 1:30 PM)
+- **Full Day**: Complete day attendance (e.g., 8:00 AM - 3:00 PM)
+
+#### Holiday Integration
+
+- **Calendar Event Sync**: Automatically syncs calendar events marked as holidays
+- **Multiple Sources**: Checks both attendance_holidays table and calendar events
+- **Class-Specific**: Supports holidays specific to certain classes
+- **School-Wide**: Supports national, state, and school holidays
+- **Automatic Detection**: Holidays are automatically detected and marked
+
+#### Teacher Workflow
+
+1. **Daily Preparation**: Admin/Principal can create attendance for all classes
+2. **Teacher Marking**: Teachers only mark students who are present
+3. **Automatic Updates**: System automatically updates absent students
+4. **Holiday Handling**: System automatically detects and marks holidays
+
+#### Role-Based Access Control
+
+- **Teachers**: Can mark/edit attendance for their assigned classes only
+- **Parents**: Can view attendance for their own children only
+- **Admin/Principal**: Full access to all attendance data and automation features
+- **Students**: No direct access (data accessed through parents)
+
+#### Data Privacy
+
+- Row Level Security (RLS) ensures data isolation
+- Parents can only see their children's attendance
+- Teachers can only see attendance for their assigned classes
+- All access is logged and audited
+- Holiday information is properly isolated by class

@@ -298,6 +298,128 @@ router.get('/:id',
     }
 );
 
+// Update homework (Teacher only)
+router.put('/:id',
+    authenticate,
+    authorize('teacher'),
+    [
+        body('subject').optional().notEmpty().trim().withMessage('Subject cannot be empty'),
+        body('title').optional().notEmpty().trim().withMessage('Title cannot be empty'),
+        body('description').optional().notEmpty().trim().withMessage('Description cannot be empty'),
+        body('due_date').optional().isISO8601().toDate().withMessage('Valid due date is required')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    errors: errors.array()
+                });
+            }
+
+            const { id } = req.params;
+            const {
+                subject,
+                title,
+                description,
+                due_date
+            } = req.body;
+
+            // Verify homework exists and belongs to teacher
+            const { data: existingHomework, error: fetchError } = await adminSupabase
+                .from('homework')
+                .select('id, teacher_id')
+                .eq('id', id)
+                .single();
+
+            if (fetchError || !existingHomework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            if (existingHomework.teacher_id !== req.user.id) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Not authorized to update this homework'
+                });
+            }
+
+            // Update homework
+            const updateData = {};
+            if (subject !== undefined) updateData.subject = subject;
+            if (title !== undefined) updateData.title = title;
+            if (description !== undefined) updateData.description = description;
+            if (due_date !== undefined) updateData.due_date = due_date;
+
+            const { data: updatedHomework, error } = await adminSupabase
+                .from('homework')
+                .update(updateData)
+                .eq('id', id)
+                .select()
+                .single();
+
+            if (error) throw error;
+
+            res.json({
+                status: 'success',
+                data: { homework: updatedHomework }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Delete homework (Teacher only)
+router.delete('/:id',
+    authenticate,
+    authorize('teacher'),
+    async (req, res, next) => {
+        try {
+            const { id } = req.params;
+
+            // Verify homework exists and belongs to teacher
+            const { data: homework, error: fetchError } = await adminSupabase
+                .from('homework')
+                .select('id, teacher_id')
+                .eq('id', id)
+                .single();
+
+            if (fetchError || !homework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            if (homework.teacher_id !== req.user.id) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Not authorized to delete this homework'
+                });
+            }
+
+            // Delete homework (attachments will be deleted via CASCADE)
+            const { error } = await adminSupabase
+                .from('homework')
+                .delete()
+                .eq('id', id);
+
+            if (error) throw error;
+
+            res.json({
+                status: 'success',
+                message: 'Homework deleted successfully'
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Add homework attachments
 router.post('/:id/attachments',
     authenticate,
