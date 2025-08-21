@@ -397,6 +397,7 @@ router.put('/:id',
             const updateData = {};
             if (subject !== undefined) updateData.subject = subject;
             if (summary !== undefined) updateData.summary = summary;
+            if (topics_covered !== undefined) updateData.topics_covered = topics_covered;
             if (is_shared_with_parents !== undefined) updateData.is_shared_with_parents = is_shared_with_parents;
 
             const { data: updatedClasswork, error } = await adminSupabase
@@ -407,11 +408,6 @@ router.put('/:id',
                 .single();
 
             if (error) throw error;
-
-            // Update topics_covered field directly (assuming it's a JSONB or TEXT[] field)
-            if (topics_covered !== undefined) {
-                updateData.topics_covered = topics_covered;
-            }
 
             res.json({
                 status: 'success',
