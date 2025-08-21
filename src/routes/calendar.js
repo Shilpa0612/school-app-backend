@@ -58,17 +58,30 @@ router.post('/events',
 
                 // Check if teacher is assigned to this class
                 if (req.user.role === 'teacher') {
+                    // Check both new teacher assignment system and legacy system
                     const { data: teacherAssignment, error: assignmentError } = await supabase
                         .from('teacher_class_assignments')
                         .select('*')
                         .eq('teacher_id', req.user.id)
+                        .eq('class_division_id', class_division_id)
+                        .eq('is_active', true)
                         .single();
 
+                    // If not found in new system, check legacy system
                     if (assignmentError || !teacherAssignment) {
-                        return res.status(403).json({
-                            status: 'error',
-                            message: 'You can only create events for your assigned classes'
-                        });
+                        const { data: legacyAssignment, error: legacyError } = await supabase
+                            .from('class_divisions')
+                            .select('teacher_id')
+                            .eq('id', class_division_id)
+                            .eq('teacher_id', req.user.id)
+                            .single();
+
+                        if (legacyError || !legacyAssignment) {
+                            return res.status(403).json({
+                                status: 'error',
+                                message: 'You can only create events for your assigned classes'
+                            });
+                        }
                     }
                 } else if (!['admin', 'principal'].includes(req.user.role)) {
                     return res.status(403).json({

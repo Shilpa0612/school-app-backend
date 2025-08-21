@@ -16,6 +16,72 @@ https://school-app-backend-d143b785b631.herokuapp.com/
 **Real-time**: WebSocket + Supabase Realtime implemented
 **Push Notifications**: Firebase SDK installed, implementation in progress
 
+## 🔄 **Edit/Update Endpoints Summary**
+
+### **Parent Management**
+
+- `PUT /api/parents/:parent_id` - Update parent details (Admin/Principal only)
+- `PUT /api/parent-student/parents/:parent_id` - Update parent via parent-student route
+
+### **Student Management**
+
+- `PUT /api/students-management/:student_id` - Update student details (Admin/Principal only)
+- `PUT /api/students/:student_id` - Update student via students route
+
+### **Parent-Student Relationships**
+
+- `PUT /api/academic/update-parent-access/:mapping_id` - Update parent-student relationship
+- `PUT /api/parent-student/mappings/:mapping_id` - Update mapping via parent-student route
+
+### **User Management**
+
+- `PUT /users/profile` - Update user profile (self only)
+
+### **Academic Management**
+
+- `PUT /api/academic/years/:id` - Update academic year (Admin/Principal only)
+- `PUT /api/academic/class-levels/:id` - Update class level (Admin/Principal only)
+- `PUT /api/academic/class-divisions/:id` - Update class division (Admin/Principal only)
+- `PUT /api/academic/subjects/:id` - Update subject (Admin/Principal only)
+- `PUT /api/academic/class-divisions/:id/teacher-assignment/:assignment_id` - Update teacher assignment
+
+### **Content Management**
+
+- `PUT /homework/:id` - Update homework (Teacher only)
+- `PUT /classwork/:id` - Update classwork (Teacher only)
+- `PUT /messages/:id/approve` - Approve message (Admin/Principal only)
+- `PUT /messages/:id/reject` - Reject message (Admin/Principal only)
+- `PUT /calendar/events/:id` - Update calendar event
+- `PUT /leave-requests/:id/status` - Update leave request status
+- `PUT /activities/:id` - Update activity (Creator only)
+- `PUT /feedback/:id` - Update feedback (Submitter only)
+- `PUT /feedback/:id/status` - Update feedback status (Admin/Principal only)
+- `POST /api/students/:student_id/profile-photo` - Upload student profile photo (Admin/Principal/Teacher/Parent)
+
+### **Chat System**
+
+- `PUT /api/chat/messages/:id` - Update chat message (Sender only, within 5 minutes)
+
+### **Lists Management**
+
+- `PUT /api/lists/uniforms/:id` - Update uniform (Admin/Principal only)
+- `PUT /api/lists/books/:id` - Update book (Admin/Principal only)
+- `PUT /api/lists/staff/:id` - Update staff member (Admin/Principal only)
+
+### **Attendance System**
+
+- `PUT /api/attendance/daily/:daily_attendance_id` - Update daily attendance
+- `PUT /api/attendance/student-record/:record_id` - Update individual student attendance
+- `PUT /api/attendance/periods/:period_id` - Update attendance period (Admin/Principal only)
+- `PUT /api/attendance/holidays/:holiday_id` - Update attendance holiday (Admin/Principal only)
+
+### **Timetable Management**
+
+- `PUT /api/timetable/entries/:id` - Update timetable entry (Admin/Principal only)
+- `PUT /api/timetable/templates/:template_id/entries/:entry_id` - Update template entry (Admin/Principal only)
+
+**Note**: All update endpoints support partial updates - you only need to include the fields you want to change!
+
 ### Authentication
 
 #### Create Parent Record (Admin/Principal Only)
@@ -199,7 +265,31 @@ PUT /users/profile
 }
 ```
 
-**Response:** Updated user profile
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `preferred_language` must be one of: english, hindi, marathi
+- Users can only update their own profile
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "user": {
+      "id": "uuid",
+      "full_name": "John Doe",
+      "phone_number": "1234567890",
+      "email": "john@example.com",
+      "role": "parent",
+      "preferred_language": "english",
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Profile updated successfully"
+}
+```
 
 #### Get Children (Parents Only)
 
@@ -1297,7 +1387,40 @@ Query:
 PUT /api/academic/subjects/:id
 ```
 
-Body: any of `{ name, code, is_active }`
+**Body:**
+
+```json
+{
+  "name": "Updated Subject Name",
+  "code": "UPD",
+  "is_active": true
+}
+```
+
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `name` must be unique if provided
+- `code` must be unique if provided
+- `is_active` is a boolean
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "subject": {
+      "id": "uuid",
+      "name": "Updated Subject Name",
+      "code": "UPD",
+      "is_active": true,
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Subject updated successfully"
+}
+```
 
 ```http
 DELETE /api/academic/subjects/:id
@@ -1452,7 +1575,81 @@ PUT /api/academic/update-parent-access/:mapping_id
 }
 ```
 
-**Response:** Updated mapping details
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `is_primary_guardian` is a boolean
+- `access_level` must be one of: full, restricted, readonly
+- `relationship` must be one of: father, mother, guardian
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "mapping": {
+      "id": "uuid",
+      "parent_id": "uuid",
+      "student_id": "uuid",
+      "relationship": "father",
+      "is_primary_guardian": true,
+      "access_level": "full",
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Parent-student relationship updated successfully"
+}
+```
+
+#### Update Parent-Student Mapping via Parent-Student Route
+
+```http
+PUT /api/parent-student/mappings/:mapping_id
+```
+
+**Body:**
+
+```json
+{
+  "relationship": "father",
+  "is_primary_guardian": true,
+  "access_level": "full"
+}
+```
+
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `is_primary_guardian` is a boolean
+- `access_level` must be one of: full, restricted, readonly
+- `relationship` must be one of: father, mother, guardian
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "mapping": {
+      "id": "uuid",
+      "relationship": "father",
+      "is_primary_guardian": true,
+      "access_level": "full",
+      "parent": {
+        "id": "uuid",
+        "full_name": "Parent Name",
+        "phone_number": "1234567890"
+      },
+      "student": {
+        "id": "uuid",
+        "full_name": "Student Name",
+        "admission_number": "2024001"
+      }
+    }
+  }
+}
+```
 
 ### Academic Year Management
 
@@ -1541,14 +1738,39 @@ PUT /api/academic/years/:id
 
 ```json
 {
-  "year_name": "2024-2025", // Optional
-  "start_date": "2024-06-01", // Optional
-  "end_date": "2025-03-31", // Optional
-  "is_active": true // Optional
+  "year_name": "2024-2025",
+  "start_date": "2024-06-01",
+  "end_date": "2025-03-31",
+  "is_active": true
 }
 ```
 
-**Response:** Updated academic year object
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `year_name` must be in format YYYY-YYYY
+- `start_date` and `end_date` must be in YYYY-MM-DD format
+- `is_active` is a boolean
+- If setting as active, other years will be deactivated
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "academic_year": {
+      "id": "uuid",
+      "year_name": "2024-2025",
+      "start_date": "2024-06-01",
+      "end_date": "2025-03-31",
+      "is_active": true,
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Academic year updated successfully"
+}
+```
 
 #### Delete Academic Year (Admin Only)
 
@@ -1931,6 +2153,64 @@ GET /api/academic/class-levels
 }
 ```
 
+#### Update Class Level (Admin/Principal Only)
+
+```http
+PUT /api/academic/class-levels/:id
+```
+
+**Body:**
+
+```json
+{
+  "name": "Updated Grade Name",
+  "sequence_number": 2
+}
+```
+
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `name` must be unique if provided
+- `sequence_number` must be unique if provided
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "class_level": {
+      "id": "uuid",
+      "name": "Updated Grade Name",
+      "sequence_number": 2,
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Class level updated successfully"
+}
+```
+
+#### Delete Class Level (Admin/Principal Only)
+
+```http
+DELETE /api/academic/class-levels/:id
+```
+
+**Notes:**
+
+- Cannot delete if class divisions are using this level
+- Returns error if level is in use
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Class level deleted successfully"
+}
+```
+
 #### Create Class Division (Admin/Principal Only)
 
 ```http
@@ -1994,11 +2274,42 @@ PUT /api/academic/class-divisions/:id
 
 ```json
 {
-  "teacher_id": "uuid" // Optional
+  "teacher_id": "uuid"
 }
 ```
 
-**Response:** Updated class division object
+**Notes:**
+
+- `teacher_id` is optional (partial updates supported)
+- Updates the legacy teacher assignment for the class division
+- For new teacher assignment system, use the teacher assignment endpoints
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "class_division": {
+      "id": "uuid",
+      "academic_year": {
+        "year_name": "2024-2025"
+      },
+      "class_level": {
+        "name": "Grade 1",
+        "sequence_number": 1
+      },
+      "division": "A",
+      "teacher": {
+        "id": "uuid",
+        "full_name": "Teacher Name"
+      },
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Class division updated successfully"
+}
+```
 
 #### Teacher-Class Assignments (Many-to-Many)
 
@@ -2032,12 +2343,38 @@ DELETE /api/academic/class-divisions/:id/remove-teacher/:teacher_id?assignment_t
 PUT /api/academic/class-divisions/:id/teacher-assignment/:assignment_id
 ```
 
-Body:
+**Body:**
 
 ```json
 {
   "assignment_type": "class_teacher | subject_teacher | assistant_teacher | substitute_teacher",
   "is_primary": true
+}
+```
+
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `assignment_type` must be one of: class_teacher, subject_teacher, assistant_teacher, substitute_teacher
+- `is_primary` is a boolean
+- Only one primary teacher is allowed per class
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "assignment": {
+      "id": "uuid",
+      "class_division_id": "uuid",
+      "teacher_id": "uuid",
+      "assignment_type": "class_teacher",
+      "is_primary": true,
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Teacher assignment updated successfully"
 }
 ```
 
@@ -2348,12 +2685,78 @@ PUT /api/parents/:parent_id
 ```json
 {
   "full_name": "Updated Parent Name",
+  "phone_number": "9876543210",
   "email": "updated@example.com",
   "initial_password": "NewTemp@1234"
 }
 ```
 
-**Response:** Updated parent object
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `phone_number` must be exactly 10 digits
+- `email` must be valid email format
+- `initial_password` is stored in plaintext for onboarding
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "parent": {
+      "id": "uuid",
+      "full_name": "Updated Parent Name",
+      "phone_number": "9876543210",
+      "email": "updated@example.com",
+      "role": "parent",
+      "is_registered": false,
+      "created_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Parent updated successfully"
+}
+```
+
+#### Update Parent via Parent-Student Route (Admin/Principal Only)
+
+```http
+PUT /api/parent-student/parents/:parent_id
+```
+
+**Body:**
+
+```json
+{
+  "full_name": "Updated Parent Name",
+  "phone_number": "9876543210",
+  "email": "updated@example.com"
+}
+```
+
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `phone_number` must be exactly 10 digits
+- `email` must be valid email format
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "parent": {
+      "id": "uuid",
+      "full_name": "Updated Parent Name",
+      "phone_number": "9876543210",
+      "email": "updated@example.com",
+      "role": "parent",
+      "created_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
 
 #### Delete Parent (Admin/Principal Only)
 
@@ -2655,6 +3058,7 @@ PUT /api/students-management/:student_id
 ```json
 {
   "full_name": "Updated Student Name",
+  "date_of_birth": "2018-01-01",
   "gender": "female",
   "address": "456 New St",
   "emergency_contact": "9876543210",
@@ -2662,7 +3066,77 @@ PUT /api/students-management/:student_id
 }
 ```
 
-**Response:** Updated student object
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `date_of_birth` must be in YYYY-MM-DD format
+- `gender` must be one of: male, female, other
+- `emergency_contact` must be exactly 10 digits
+- `status` must be one of: active, inactive, transferred, graduated
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student": {
+      "id": "uuid",
+      "admission_number": "2024001",
+      "full_name": "Updated Student Name",
+      "date_of_birth": "2018-01-01",
+      "admission_date": "2024-01-01",
+      "gender": "female",
+      "address": "456 New St",
+      "emergency_contact": "9876543210",
+      "status": "active",
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  },
+  "message": "Student updated successfully"
+}
+```
+
+#### Update Student via Students Route (Admin/Principal Only)
+
+```http
+PUT /api/students/:student_id
+```
+
+**Body:**
+
+```json
+{
+  "full_name": "Updated Student Name",
+  "date_of_birth": "2018-01-01",
+  "status": "active"
+}
+```
+
+**Notes:**
+
+- All fields are optional (partial updates supported)
+- `date_of_birth` must be in YYYY-MM-DD format
+- `status` must be one of: active, inactive, transferred, graduated
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student": {
+      "id": "uuid",
+      "admission_number": "2024001",
+      "full_name": "Updated Student Name",
+      "date_of_birth": "2018-01-01",
+      "admission_date": "2024-01-01",
+      "status": "active",
+      "updated_at": "2024-01-15T10:00:00Z"
+    }
+  }
+}
+```
 
 #### Delete Student (Admin/Principal Only)
 

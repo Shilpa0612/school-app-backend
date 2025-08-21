@@ -1638,10 +1638,10 @@ async function checkStudentAccess(userId, userRole, studentId) {
 
 export default router;
 
-// Upload student profile photo (Admin/Principal/Teacher)
+// Upload student profile photo (Admin/Principal/Teacher/Parent)
 router.post('/:student_id/profile-photo',
     authenticate,
-    authorize(['admin', 'principal', 'teacher']),
+    authorize(['admin', 'principal', 'teacher', 'parent']),
     safeUploadPhoto,
     async (req, res, next) => {
         try {
@@ -1659,6 +1659,23 @@ router.post('/:student_id/profile-photo',
                 .single();
             if (studentError || !student) {
                 return res.status(404).json({ status: 'error', message: 'Student not found' });
+            }
+
+            // For parents, verify they are linked to this student
+            if (req.user.role === 'parent') {
+                const { data: parentMapping, error: mappingError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select('id')
+                    .eq('parent_id', req.user.id)
+                    .eq('student_id', student_id)
+                    .single();
+                
+                if (mappingError || !parentMapping) {
+                    return res.status(403).json({ 
+                        status: 'error', 
+                        message: 'You can only upload photos for your own children' 
+                    });
+                }
             }
 
             // Upload to Supabase Storage
