@@ -18,7 +18,7 @@ router.post('/',
         body('class_division_id').isUUID().withMessage('Valid class division ID is required'),
         body('roll_number').notEmpty().trim().withMessage('Roll number is required'),
         body('gender').optional().isIn(['male', 'female', 'other']).withMessage('Invalid gender'),
-        body('address').optional().trim().withMessage('Address must be a string'),
+        body('address').optional().isString().trim().withMessage('Address must be a string'),
         body('emergency_contact').optional().matches(/^[0-9]{10}$/).withMessage('Emergency contact must be 10 digits')
     ],
     async (req, res, next) => {
