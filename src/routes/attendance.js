@@ -1,5 +1,5 @@
 import express from 'express';
-import { supabase } from '../config/supabase.js';
+import { authenticate } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -8,7 +8,7 @@ const router = express.Router();
 async function isTeacherForClass(teacherId, classDivisionId) {
     try {
         // Check both legacy teacher_id and new class_teacher_assignments
-        const { data: legacyCheck, error: legacyError } = await supabase
+        const { data: legacyCheck, error: legacyError } = await adminSupabase
             .from('class_divisions')
             .select('id')
             .eq('id', classDivisionId)
@@ -17,7 +17,7 @@ async function isTeacherForClass(teacherId, classDivisionId) {
 
         if (legacyCheck) return true;
 
-        const { data: assignmentCheck, error: assignmentError } = await supabase
+        const { data: assignmentCheck, error: assignmentError } = await adminSupabase
             .from('class_teacher_assignments')
             .select('id')
             .eq('class_division_id', classDivisionId)
@@ -35,7 +35,7 @@ async function isTeacherForClass(teacherId, classDivisionId) {
 // Helper function to check if user is parent of a specific student
 async function isParentOfStudent(parentId, studentId) {
     try {
-        const { data, error } = await supabase
+        const { data, error } = await adminSupabase
             .from('parent_student_mappings')
             .select('id')
             .eq('parent_id', parentId)
@@ -53,7 +53,7 @@ async function isParentOfStudent(parentId, studentId) {
 // Helper function to get active academic year
 async function getActiveAcademicYear() {
     try {
-        const { data, error } = await supabase
+        const { data, error } = await adminSupabase
             .from('academic_years')
             .select('id, year_name')
             .eq('is_active', true)
@@ -70,7 +70,7 @@ async function getActiveAcademicYear() {
 // Helper function to check if date is a holiday (from attendance_holidays table)
 async function isAttendanceHoliday(date, classDivisionId = null) {
     try {
-        let query = supabase
+        let query = adminSupabase
             .from('attendance_holidays')
             .select('*')
             .eq('holiday_date', date)
@@ -252,7 +252,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, periodId = null
 // ============================================================================
 
 // Get all attendance periods
-router.get('/periods', auth, async (req, res) => {
+router.get('/periods', authenticate, async (req, res) => {
     try {
         const { data: periods, error } = await supabase
             .from('attendance_periods')
@@ -276,7 +276,7 @@ router.get('/periods', auth, async (req, res) => {
 });
 
 // Create new attendance period (Admin/Principal only)
-router.post('/periods', auth, async (req, res) => {
+router.post('/periods', authenticate, async (req, res) => {
     try {
         // Check if user is admin or principal
         if (!['admin', 'principal'].includes(req.user.role)) {
@@ -321,7 +321,7 @@ router.post('/periods', auth, async (req, res) => {
 // ============================================================================
 
 // Mark daily attendance for a class (Automated - Teachers only mark present students)
-router.post('/daily', auth, async (req, res) => {
+router.post('/daily', authenticate, async (req, res) => {
     try {
         const { class_division_id, attendance_date, period_id, present_students } = req.body;
 
