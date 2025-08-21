@@ -2200,6 +2200,570 @@ GET /api/students
 }
 ```
 
+### **NEW: Separate Parent and Student Management**
+
+#### Create Parent (Admin/Principal Only)
+
+```http
+POST /api/parents
+```
+
+**Body:**
+
+```json
+{
+  "full_name": "Parent Name",
+  "phone_number": "1234567890",
+  "email": "parent@example.com",
+  "initial_password": "Temp@1234"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "parent": {
+      "id": "uuid",
+      "full_name": "Parent Name",
+      "phone_number": "1234567890",
+      "email": "parent@example.com",
+      "role": "parent",
+      "is_registered": false
+    },
+    "registration_instructions": {
+      "message": "Parent can now register using their phone number",
+      "endpoint": "POST /api/auth/register",
+      "required_fields": ["phone_number", "password", "role: \"parent\""]
+    },
+    "initial_password": "Temp@1234",
+    "note": "Use /api/parents/:parent_id/link-students to link this parent to students"
+  },
+  "message": "Parent created successfully. Parent can now register using their phone number."
+}
+```
+
+#### Get All Parents (Admin/Principal Only)
+
+```http
+GET /api/parents?page=1&limit=20&search=parent
+```
+
+**Query Parameters:**
+
+- `page`: Page number (default: 1)
+- `limit`: Items per page (default: 20)
+- `search`: Search by name, phone, or email
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "parents": [
+      {
+        "id": "uuid",
+        "full_name": "Parent Name",
+        "phone_number": "1234567890",
+        "email": "parent@example.com",
+        "role": "parent",
+        "is_registered": false,
+        "created_at": "2024-01-15T10:00:00Z",
+        "students": [
+          {
+            "relationship": "father",
+            "is_primary_guardian": true,
+            "student": {
+              "id": "uuid",
+              "full_name": "Student Name",
+              "admission_number": "2024001"
+            }
+          }
+        ]
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 45,
+      "total_pages": 3,
+      "has_next": true,
+      "has_prev": false
+    }
+  }
+}
+```
+
+#### Get Specific Parent (Admin/Principal Only)
+
+```http
+GET /api/parents/:parent_id
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "parent": {
+      "id": "uuid",
+      "full_name": "Parent Name",
+      "phone_number": "1234567890",
+      "email": "parent@example.com",
+      "role": "parent",
+      "is_registered": false,
+      "created_at": "2024-01-15T10:00:00Z"
+    },
+    "students": [
+      {
+        "id": "uuid",
+        "relationship": "father",
+        "is_primary_guardian": true,
+        "access_level": "full",
+        "student": {
+          "id": "uuid",
+          "full_name": "Student Name",
+          "admission_number": "2024001",
+          "date_of_birth": "2018-01-01",
+          "status": "active"
+        }
+      }
+    ]
+  }
+}
+```
+
+#### Update Parent (Admin/Principal Only)
+
+```http
+PUT /api/parents/:parent_id
+```
+
+**Body:**
+
+```json
+{
+  "full_name": "Updated Parent Name",
+  "email": "updated@example.com",
+  "initial_password": "NewTemp@1234"
+}
+```
+
+**Response:** Updated parent object
+
+#### Delete Parent (Admin/Principal Only)
+
+```http
+DELETE /api/parents/:parent_id
+```
+
+**Notes:**
+
+- Cannot delete parent with linked students
+- Must unlink all students first
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Parent deleted successfully"
+}
+```
+
+#### Link Students to Parent (Admin/Principal Only)
+
+```http
+POST /api/parents/:parent_id/link-students
+```
+
+**Body:**
+
+```json
+{
+  "students": [
+    {
+      "student_id": "uuid",
+      "relationship": "father",
+      "is_primary_guardian": true,
+      "access_level": "full"
+    },
+    {
+      "student_id": "uuid",
+      "relationship": "father",
+      "is_primary_guardian": false,
+      "access_level": "full"
+    }
+  ]
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "parent_id": "uuid",
+    "mappings": [
+      {
+        "id": "uuid",
+        "relationship": "father",
+        "is_primary_guardian": true,
+        "access_level": "full",
+        "student": {
+          "id": "uuid",
+          "full_name": "Student Name",
+          "admission_number": "2024001"
+        }
+      }
+    ]
+  },
+  "message": "Students linked to parent successfully"
+}
+```
+
+#### Unlink Student from Parent (Admin/Principal Only)
+
+```http
+DELETE /api/parents/:parent_id/unlink-student/:student_id
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Student unlinked from parent successfully",
+  "data": {
+    "was_primary_guardian": true
+  }
+}
+```
+
+#### Create Student (Admin/Principal Only)
+
+```http
+POST /api/students-management
+```
+
+**Body:**
+
+```json
+{
+  "admission_number": "2024001",
+  "full_name": "Student Name",
+  "date_of_birth": "2018-01-01",
+  "admission_date": "2024-01-01",
+  "class_division_id": "uuid",
+  "roll_number": "01",
+  "gender": "male",
+  "address": "123 Main St",
+  "emergency_contact": "9876543210"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student": {
+      "id": "uuid",
+      "admission_number": "2024001",
+      "full_name": "Student Name",
+      "date_of_birth": "2018-01-01",
+      "admission_date": "2024-01-01",
+      "gender": "male",
+      "address": "123 Main St",
+      "emergency_contact": "9876543210",
+      "status": "active"
+    },
+    "academic_record": {
+      "id": "uuid",
+      "roll_number": "01",
+      "status": "active",
+      "class_division": {
+        "id": "uuid",
+        "division": "A",
+        "level": {
+          "name": "Grade 1",
+          "sequence_number": 1
+        }
+      }
+    },
+    "note": "Use /api/students-management/:student_id/link-parents to link this student to parents"
+  },
+  "message": "Student created successfully"
+}
+```
+
+#### Get All Students (Admin/Principal Only)
+
+```http
+GET /api/students-management?page=1&limit=20&search=student&class_division_id=uuid&status=active
+```
+
+**Query Parameters:**
+
+- `page`: Page number (default: 1)
+- `limit`: Items per page (default: 20)
+- `search`: Search by name or admission number
+- `class_division_id`: Filter by class division
+- `status`: Filter by status (default: active)
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "students": [
+      {
+        "id": "uuid",
+        "admission_number": "2024001",
+        "full_name": "Student Name",
+        "date_of_birth": "2018-01-01",
+        "admission_date": "2024-01-01",
+        "gender": "male",
+        "address": "123 Main St",
+        "emergency_contact": "9876543210",
+        "status": "active",
+        "created_at": "2024-01-15T10:00:00Z",
+        "academic_records": [
+          {
+            "id": "uuid",
+            "roll_number": "01",
+            "status": "active",
+            "class_division": {
+              "id": "uuid",
+              "division": "A",
+              "level": {
+                "name": "Grade 1",
+                "sequence_number": 1
+              }
+            }
+          }
+        ],
+        "parents": [
+          {
+            "relationship": "father",
+            "is_primary_guardian": true,
+            "access_level": "full",
+            "parent": {
+              "id": "uuid",
+              "full_name": "Parent Name",
+              "phone_number": "1234567890",
+              "email": "parent@example.com"
+            }
+          }
+        ]
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 45,
+      "total_pages": 3,
+      "has_next": true,
+      "has_prev": false
+    }
+  }
+}
+```
+
+#### Get Specific Student (Admin/Principal Only)
+
+```http
+GET /api/students-management/:student_id
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student": {
+      "id": "uuid",
+      "admission_number": "2024001",
+      "full_name": "Student Name",
+      "date_of_birth": "2018-01-01",
+      "admission_date": "2024-01-01",
+      "gender": "male",
+      "address": "123 Main St",
+      "emergency_contact": "9876543210",
+      "status": "active",
+      "created_at": "2024-01-15T10:00:00Z",
+      "academic_records": [
+        {
+          "id": "uuid",
+          "roll_number": "01",
+          "status": "active",
+          "class_division": {
+            "id": "uuid",
+            "division": "A",
+            "level": {
+              "name": "Grade 1",
+              "sequence_number": 1
+            },
+            "teacher": {
+              "id": "uuid",
+              "full_name": "Teacher Name"
+            }
+          },
+          "academic_year": {
+            "id": "uuid",
+            "year_name": "2024-2025"
+          }
+        }
+      ]
+    },
+    "parents": [
+      {
+        "id": "uuid",
+        "relationship": "father",
+        "is_primary_guardian": true,
+        "access_level": "full",
+        "created_at": "2024-01-15T10:00:00Z",
+        "parent": {
+          "id": "uuid",
+          "full_name": "Parent Name",
+          "phone_number": "1234567890",
+          "email": "parent@example.com",
+          "is_registered": true
+        }
+      }
+    ]
+  }
+}
+```
+
+#### Update Student (Admin/Principal Only)
+
+```http
+PUT /api/students-management/:student_id
+```
+
+**Body:**
+
+```json
+{
+  "full_name": "Updated Student Name",
+  "gender": "female",
+  "address": "456 New St",
+  "emergency_contact": "9876543210",
+  "status": "active"
+}
+```
+
+**Response:** Updated student object
+
+#### Delete Student (Admin/Principal Only)
+
+```http
+DELETE /api/students-management/:student_id
+```
+
+**Notes:**
+
+- Cannot delete student with linked parents
+- Must unlink all parents first
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Student deleted successfully",
+  "data": {
+    "admission_number": "2024001"
+  }
+}
+```
+
+#### Link Parents to Student (Admin/Principal Only)
+
+```http
+POST /api/students-management/:student_id/link-parents
+```
+
+**Body:**
+
+```json
+{
+  "parents": [
+    {
+      "parent_id": "uuid",
+      "relationship": "father",
+      "is_primary_guardian": true,
+      "access_level": "full"
+    },
+    {
+      "parent_id": "uuid",
+      "relationship": "mother",
+      "is_primary_guardian": false,
+      "access_level": "full"
+    }
+  ]
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student": {
+      "id": "uuid",
+      "full_name": "Student Name",
+      "admission_number": "2024001"
+    },
+    "mappings": [
+      {
+        "id": "uuid",
+        "relationship": "father",
+        "is_primary_guardian": true,
+        "access_level": "full",
+        "parent": {
+          "id": "uuid",
+          "full_name": "Parent Name",
+          "phone_number": "1234567890",
+          "email": "parent@example.com"
+        }
+      }
+    ]
+  },
+  "message": "Parents linked to student successfully"
+}
+```
+
+#### Unlink Parent from Student (Admin/Principal Only)
+
+```http
+DELETE /api/students-management/:student_id/unlink-parent/:parent_id
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Parent unlinked from student successfully",
+  "data": {
+    "was_primary_guardian": true
+  }
+}
+```
+
+### **LEGACY: Combined Student Management (Still Available)**
+
 #### Create New Student (Admin/Principal Only)
 
 ```http

@@ -33,6 +33,8 @@ app.use('/api/leave-requests', (await import('./routes/leaveRequests.js')).defau
 app.use('/api/parent-student', (await import('./routes/parentStudent.js')).default);
 app.use('/api/academic', (await import('./routes/academic.js')).default);
 app.use('/api/students', (await import('./routes/students.js')).default); // Add new students route
+app.use('/api/parents', (await import('./routes/parents.js')).default); // Add new parents route
+app.use('/api/students-management', (await import('./routes/students-management.js')).default); // Add new students management route
 app.use('/api/birthdays', (await import('./routes/birthdays.js')).default); // Add birthday routes
 app.use('/api/classwork', (await import('./routes/classwork.js')).default); // Add classwork routes
 app.use('/api/alerts', (await import('./routes/alerts.js')).default); // Add alerts routes
@@ -41,7 +43,7 @@ app.use('/api/lists', (await import('./routes/lists.js')).default); // Add lists
 app.use('/api/analytics', (await import('./routes/analytics.js')).default); // Add analytics routes
 app.use('/api/activities', (await import('./routes/activities.js')).default); // Add activities routes
 app.use('/api/feedback', (await import('./routes/feedback.js')).default); // Add feedback routes
-app.use('/api/timetable', (await import('./routes/timetable.js')).default); // Add timetable routes
+// app.use('/api/timetable', (await import('./routes/timetable.js')).default); // Add timetable routes
 app.use('/api/attendance', (await import('./routes/attendance.js')).default); // Add attendance routes
 
 // Health check endpoint
