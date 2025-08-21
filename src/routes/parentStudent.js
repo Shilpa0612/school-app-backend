@@ -396,7 +396,7 @@ router.get('/parents',
 
             // Apply search filter
             if (search) {
-                query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%`);
+                query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%,email.ilike.%${search}%`);
             }
 
             // Get filtered parent IDs based on class/division/student filters
@@ -491,6 +491,10 @@ router.get('/parents',
 
             if (filteredParentIds) {
                 countQuery = countQuery.in('id', filteredParentIds);
+            }
+
+            if (search) {
+                countQuery = countQuery.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%,email.ilike.%${search}%`);
             }
 
             const { count, error: countError } = await countQuery;
@@ -721,7 +725,7 @@ router.get('/parents/class/:class_id',
 
             // Apply search filter
             if (search) {
-                query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%`);
+                query = query.or(`full_name.ilike.%${search}%,phone_number.ilike.%${search}%,email.ilike.%${search}%`);
             }
 
             // Get total count for this class (simplified)
@@ -811,8 +815,7 @@ router.get('/parents/:parent_id',
                             id,
                             full_name,
                             admission_number,
-                            date_of_birth,
-                            gender
+                            date_of_birth
                         )
                     )
                 `)
@@ -840,7 +843,6 @@ router.get('/parents/:parent_id',
                     full_name: mapping.student.full_name,
                     admission_number: mapping.student.admission_number,
                     date_of_birth: mapping.student.date_of_birth,
-                    gender: mapping.student.gender,
                     relationship: mapping.relationship,
                     is_primary_guardian: mapping.is_primary_guardian
                 }))
