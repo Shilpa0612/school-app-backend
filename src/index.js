@@ -49,6 +49,18 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok' });
 });
 
+// Temporary debugging endpoint
+app.get('/test-db', async (req, res) => {
+    try {
+        const { adminSupabase } = await import('./config/supabase.js');
+        const { data, error } = await adminSupabase.from('users').select('count').limit(1);
+        if (error) throw error;
+        res.json({ status: 'success', message: 'Database connection working' });
+    } catch (error) {
+        res.status(500).json({ status: 'error', message: error.message });
+    }
+});
+
 // Error handling
 app.use(errorHandler);
 

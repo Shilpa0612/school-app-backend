@@ -1,8 +1,8 @@
-const express = require('express');
+import express from 'express';
+import { supabase } from '../config/supabase.js';
+import { logger } from '../utils/logger.js';
+
 const router = express.Router();
-const { supabase } = require('../config/supabase');
-const auth = require('../middleware/auth');
-const logger = require('../utils/logger');
 
 // Helper function to check if user is teacher for a specific class
 async function isTeacherForClass(teacherId, classDivisionId) {
@@ -1548,4 +1548,4 @@ router.get('/reports/class/:class_division_id', auth, async (req, res) => {
     }
 });
 
-module.exports = router;
+export default router;
