@@ -1,140 +1,77 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { adminSupabase } from '../src/config/supabase.js';
 import { logger } from '../src/utils/logger.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+/**
+ * Run migration to add missing fields to students_master table
+ */
 async function runMigration() {
     try {
-        logger.info('Starting teacher-class many-to-many migration...');
+        logger.info('Starting migration: Add missing fields to students_master table');
 
-        // Read the migration SQL file
-        const migrationPath = path.join(__dirname, '../migrations/add_teacher_class_many_to_many.sql');
-        const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+        // Add gender column
+        const { error: genderError } = await adminSupabase.rpc('exec_sql', {
+            sql: `
+                ALTER TABLE public.students_master 
+                ADD COLUMN IF NOT EXISTS gender text CHECK (gender IN ('male', 'female', 'other'));
+            `
+        });
 
-        // Split into individual statements (basic approach)
-        const statements = migrationSQL
-            .split(';')
-            .map(stmt => stmt.trim())
-            .filter(stmt => stmt.length > 0 && !stmt.startsWith('--'));
-
-        logger.info(`Found ${statements.length} SQL statements to execute`);
-
-        // Execute each statement
-        for (let i = 0; i < statements.length; i++) {
-            const statement = statements[i];
-            if (statement.toLowerCase().includes('comment on')) {
-                // Skip comment statements as they might not be supported
-                logger.info(`Skipping comment statement ${i + 1}`);
-                continue;
-            }
-
-            try {
-                logger.info(`Executing statement ${i + 1}/${statements.length}...`);
-                
-                // For complex statements like function creation, use rpc
-                if (statement.toLowerCase().includes('create or replace function')) {
-                    // Extract function name and execute as RPC
-                    const funcMatch = statement.match(/create or replace function (\w+)/i);
-                    if (funcMatch) {
-                        logger.info(`Creating function: ${funcMatch[1]}`);
-                    }
-                }
-
-                const { error } = await adminSupabase.rpc('exec_sql', { sql_statement: statement });
-                
-                if (error) {
-                    // Try direct query for simpler statements
-                    const { error: directError } = await adminSupabase.from('_temp').select('1').limit(0);
-                    if (directError) {
-                        logger.error(`Error executing statement ${i + 1}:`, error);
-                        // Continue with other statements
-                    }
-                } else {
-                    logger.info(`✓ Statement ${i + 1} executed successfully`);
-                }
-            } catch (statementError) {
-                logger.error(`Error in statement ${i + 1}:`, statementError);
-                // Continue with migration
-            }
-        }
-
-        // Verify the migration worked
-        logger.info('Verifying migration...');
-        
-        // Check if junction table exists
-        const { data: tables, error: tableError } = await adminSupabase
-            .from('information_schema.tables')
-            .select('table_name')
-            .eq('table_schema', 'public')
-            .eq('table_name', 'class_teacher_assignments');
-
-        if (tableError) {
-            logger.error('Error checking for junction table:', tableError);
-        } else if (tables && tables.length > 0) {
-            logger.info('✓ Junction table class_teacher_assignments exists');
-            
-            // Check if data was migrated
-            const { count, error: countError } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select('*', { count: 'exact', head: true });
-
-            if (countError) {
-                logger.error('Error counting migrated records:', countError);
-            } else {
-                logger.info(`✓ Migration completed! ${count || 0} teacher assignments migrated to junction table`);
-            }
+        if (genderError) {
+            logger.error('Error adding gender column:', genderError);
         } else {
-            logger.error('❌ Junction table was not created successfully');
+            logger.info('✅ Gender column added successfully');
         }
 
-        // Check original class_divisions for comparison
-        const { count: originalCount, error: originalError } = await adminSupabase
-            .from('class_divisions')
-            .select('teacher_id', { count: 'exact', head: true })
-            .not('teacher_id', 'is', null);
+        // Add address column
+        const { error: addressError } = await adminSupabase.rpc('exec_sql', {
+            sql: `
+                ALTER TABLE public.students_master 
+                ADD COLUMN IF NOT EXISTS address text;
+            `
+        });
 
-        if (!originalError) {
-            logger.info(`Original class_divisions has ${originalCount || 0} teacher assignments`);
+        if (addressError) {
+            logger.error('Error adding address column:', addressError);
+        } else {
+            logger.info('✅ Address column added successfully');
         }
 
-        logger.info('Migration process completed!');
-        
-        return {
-            success: true,
-            migratedRecords: count || 0,
-            originalRecords: originalCount || 0
-        };
+        // Add emergency_contact column
+        const { error: contactError } = await adminSupabase.rpc('exec_sql', {
+            sql: `
+                ALTER TABLE public.students_master 
+                ADD COLUMN IF NOT EXISTS emergency_contact text CHECK (emergency_contact ~ '^[0-9]{10}$' OR emergency_contact IS NULL);
+            `
+        });
+
+        if (contactError) {
+            logger.error('Error adding emergency_contact column:', contactError);
+        } else {
+            logger.info('✅ Emergency contact column added successfully');
+        }
+
+        // Update existing records to have default gender
+        const { error: updateError } = await adminSupabase.rpc('exec_sql', {
+            sql: `
+                UPDATE public.students_master 
+                SET gender = 'other' 
+                WHERE gender IS NULL;
+            `
+        });
+
+        if (updateError) {
+            logger.error('Error updating existing records:', updateError);
+        } else {
+            logger.info('✅ Existing records updated with default gender');
+        }
+
+        logger.info('🎉 Migration completed successfully!');
 
     } catch (error) {
         logger.error('Migration failed:', error);
-        return {
-            success: false,
-            error: error.message
-        };
+        process.exit(1);
     }
 }
 
-// Run migration if called directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-    runMigration()
-        .then(result => {
-            if (result.success) {
-                console.log('✅ Migration completed successfully!');
-                console.log(`📊 Migrated ${result.migratedRecords} records from ${result.originalRecords} original assignments`);
-                process.exit(0);
-            } else {
-                console.error('❌ Migration failed:', result.error);
-                process.exit(1);
-            }
-        })
-        .catch(error => {
-            console.error('❌ Migration script error:', error);
-            process.exit(1);
-        });
-}
-
-export { runMigration };
+// Run the migration
+runMigration();

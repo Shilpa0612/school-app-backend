@@ -25,6 +25,8 @@ export class EnhancedErrorHandler {
                 return this.handleCheckConstraintError(error, context);
             case 'PGRST116': // No rows returned (Supabase)
                 return this.handleNoRowsError(error, context);
+            case 'PGRST204': // Column not found (Supabase)
+                return this.handleColumnNotFoundError(error, context);
             default:
                 return this.handleGenericDatabaseError(error, context);
         }
@@ -202,6 +204,24 @@ export class EnhancedErrorHandler {
                 message: 'Record not found',
                 details: 'The requested record does not exist',
                 suggestion: 'Please verify the ID or search criteria'
+            }
+        };
+    }
+
+    /**
+     * Handle column not found errors (Supabase)
+     */
+    static handleColumnNotFoundError(error, context) {
+        const columnMatch = error.message.match(/column "([^"]+)" does not exist/);
+        const column = columnMatch ? columnMatch[1] : 'unknown column';
+
+        return {
+            status: 500,
+            error: {
+                message: 'Database schema issue',
+                details: `The column "${column}" does not exist in the database table`,
+                field: column,
+                suggestion: 'This is a database configuration issue. Please contact the administrator.'
             }
         };
     }

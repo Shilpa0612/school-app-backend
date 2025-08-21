@@ -189,10 +189,11 @@ router.post('/',
                     full_name,
                     date_of_birth,
                     admission_date,
-                    gender,
-                    address,
-                    emergency_contact,
                     status: 'active'
+                    // Note: gender, address, emergency_contact fields will be added after migration
+                    // gender,
+                    // address,
+                    // emergency_contact,
                 }])
                 .select()
                 .single();
@@ -286,10 +287,11 @@ router.post('/',
                         full_name: student.full_name,
                         date_of_birth: student.date_of_birth,
                         admission_date: student.admission_date,
-                        gender: student.gender,
-                        address: student.address,
-                        emergency_contact: student.emergency_contact,
                         status: student.status
+                        // Note: gender, address, emergency_contact will be available after migration
+                        // gender: student.gender,
+                        // address: student.address,
+                        // emergency_contact: student.emergency_contact,
                     },
                     academic_record: academicRecord,
                     note: 'Use /api/students-management/:student_id/link-parents to link this student to parents'
