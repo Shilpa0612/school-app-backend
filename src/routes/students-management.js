@@ -411,7 +411,7 @@ router.put('/:student_id',
         body('full_name').optional().notEmpty().trim().withMessage('Full name cannot be empty'),
         body('date_of_birth').optional().isDate().withMessage('Valid date of birth is required'),
         body('gender').optional().isIn(['male', 'female', 'other']).withMessage('Invalid gender'),
-        body('address').optional().trim().withMessage('Address must be a string'),
+        body('address').optional().isString().trim().withMessage('Address must be a string'),
         body('emergency_contact').optional().matches(/^[0-9]{10}$/).withMessage('Emergency contact must be 10 digits'),
         body('status').optional().isIn(['active', 'inactive', 'transferred', 'graduated']).withMessage('Invalid status')
     ],
