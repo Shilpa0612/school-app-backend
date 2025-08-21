@@ -11,15 +11,47 @@ router.post('/',
     authenticate,
     authorize(['admin', 'principal']),
     [
-        body('admission_number').notEmpty().trim().withMessage('Admission number is required'),
-        body('full_name').notEmpty().trim().withMessage('Full name is required'),
-        body('date_of_birth').isDate().withMessage('Valid date of birth is required'),
-        body('admission_date').isDate().withMessage('Valid admission date is required'),
-        body('class_division_id').isUUID().withMessage('Valid class division ID is required'),
-        body('roll_number').notEmpty().trim().withMessage('Roll number is required'),
-        body('gender').optional().isIn(['male', 'female', 'other']).withMessage('Invalid gender'),
-        body('address').optional().isString().trim().withMessage('Address must be a string'),
-        body('emergency_contact').optional().matches(/^[0-9]{10}$/).withMessage('Emergency contact must be 10 digits')
+        body('admission_number')
+            .notEmpty().withMessage('Admission number is required')
+            .trim()
+            .isLength({ min: 1, max: 50 }).withMessage('Admission number must be between 1 and 50 characters'),
+        body('full_name')
+            .notEmpty().withMessage('Full name is required')
+            .trim()
+            .isLength({ min: 2, max: 100 }).withMessage('Full name must be between 2 and 100 characters'),
+        body('date_of_birth')
+            .notEmpty().withMessage('Date of birth is required')
+            .isDate().withMessage('Date of birth must be a valid date (YYYY-MM-DD format)')
+            .custom((value) => {
+                const birthDate = new Date(value);
+                const today = new Date();
+                const age = today.getFullYear() - birthDate.getFullYear();
+                if (age < 2 || age > 25) {
+                    throw new Error('Student age must be between 2 and 25 years');
+                }
+                return true;
+            }),
+        body('admission_date')
+            .notEmpty().withMessage('Admission date is required')
+            .isDate().withMessage('Admission date must be a valid date (YYYY-MM-DD format)'),
+        body('class_division_id')
+            .notEmpty().withMessage('Class division ID is required')
+            .isUUID().withMessage('Class division ID must be a valid UUID'),
+        body('roll_number')
+            .notEmpty().withMessage('Roll number is required')
+            .trim()
+            .isLength({ min: 1, max: 10 }).withMessage('Roll number must be between 1 and 10 characters'),
+        body('gender')
+            .optional()
+            .isIn(['male', 'female', 'other']).withMessage('Gender must be male, female, or other'),
+        body('address')
+            .optional()
+            .isString().withMessage('Address must be a string')
+            .trim()
+            .isLength({ max: 500 }).withMessage('Address must not exceed 500 characters'),
+        body('emergency_contact')
+            .optional()
+            .matches(/^[0-9]{10}$/).withMessage('Emergency contact must be exactly 10 digits')
     ],
     async (req, res, next) => {
         try {
@@ -27,7 +59,13 @@ router.post('/',
             if (!errors.isEmpty()) {
                 return res.status(400).json({
                     status: 'error',
-                    errors: errors.array()
+                    message: 'Validation failed',
+                    errors: errors.array().map(error => ({
+                        field: error.path,
+                        message: error.msg,
+                        value: error.value
+                    })),
+                    suggestion: 'Please correct the validation errors and try again'
                 });
             }
 
@@ -44,49 +82,102 @@ router.post('/',
             } = req.body;
 
             // Check if admission number already exists
-            const { data: existingStudent } = await adminSupabase
+            const { data: existingStudent, error: existingError } = await adminSupabase
                 .from('students_master')
-                .select('id, admission_number')
+                .select('id, admission_number, full_name')
                 .eq('admission_number', admission_number)
                 .single();
+
+            if (existingError && existingError.code !== 'PGRST116') { // PGRST116 = no rows returned
+                logger.error('Error checking existing student:', existingError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Database error while checking admission number',
+                    details: 'Unable to verify if admission number exists',
+                    suggestion: 'Please try again later'
+                });
+            }
 
             if (existingStudent) {
                 return res.status(400).json({
                     status: 'error',
-                    message: 'Student with this admission number already exists',
-                    data: {
-                        student_id: existingStudent.id,
+                    message: 'Admission number already exists',
+                    details: `Student "${existingStudent.full_name}" already has admission number "${admission_number}"`,
+                    field: 'admission_number',
+                    existing_student: {
+                        id: existingStudent.id,
+                        full_name: existingStudent.full_name,
                         admission_number: existingStudent.admission_number
-                    }
+                    },
+                    suggestion: 'Please use a different admission number'
                 });
             }
 
             // Verify class division exists
             const { data: classDivision, error: divisionError } = await adminSupabase
                 .from('class_divisions')
-                .select('id, division, level:class_level_id(name, sequence_number)')
+                .select(`
+                    id, 
+                    division, 
+                    level:class_level_id(name, sequence_number),
+                    academic_year_id
+                `)
                 .eq('id', class_division_id)
                 .single();
 
-            if (divisionError || !classDivision) {
-                return res.status(404).json({
+            if (divisionError) {
+                logger.error('Error fetching class division:', divisionError);
+                if (divisionError.code === 'PGRST116') {
+                    return res.status(404).json({
+                        status: 'error',
+                        message: 'Class division not found',
+                        details: `No class division found with ID: ${class_division_id}`,
+                        field: 'class_division_id',
+                        suggestion: 'Please verify the class division ID or create the class division first'
+                    });
+                }
+                return res.status(500).json({
                     status: 'error',
-                    message: 'Class division not found'
+                    message: 'Database error while fetching class division',
+                    details: 'Unable to verify class division',
+                    suggestion: 'Please try again later'
                 });
             }
 
             // Check if roll number is already taken in this class
-            const { data: existingRoll } = await adminSupabase
+            const { data: existingRoll, error: rollError } = await adminSupabase
                 .from('student_academic_records')
-                .select('id')
+                .select('id, student:student_id(full_name, admission_number)')
                 .eq('class_division_id', class_division_id)
                 .eq('roll_number', roll_number)
                 .single();
 
+            if (rollError && rollError.code !== 'PGRST116') {
+                logger.error('Error checking existing roll number:', rollError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Database error while checking roll number',
+                    details: 'Unable to verify if roll number is available',
+                    suggestion: 'Please try again later'
+                });
+            }
+
             if (existingRoll) {
                 return res.status(400).json({
                     status: 'error',
-                    message: `Roll number ${roll_number} is already taken in this class`
+                    message: 'Roll number already taken in this class',
+                    details: `Roll number "${roll_number}" is already assigned to student "${existingRoll.student.full_name}" (${existingRoll.student.admission_number}) in class ${classDivision.division}`,
+                    field: 'roll_number',
+                    existing_student: {
+                        id: existingRoll.student.id,
+                        full_name: existingRoll.student.full_name,
+                        admission_number: existingRoll.student.admission_number
+                    },
+                    class_info: {
+                        division: classDivision.division,
+                        level: classDivision.level.name
+                    },
+                    suggestion: 'Please use a different roll number for this class'
                 });
             }
 
@@ -108,7 +199,27 @@ router.post('/',
 
             if (studentError) {
                 logger.error('Error creating student:', studentError);
-                throw studentError;
+
+                // Handle specific database errors
+                if (studentError.code === '23505') { // Unique constraint violation
+                    if (studentError.message.includes('admission_number')) {
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Admission number already exists',
+                            details: 'This admission number was just created by another request',
+                            field: 'admission_number',
+                            suggestion: 'Please use a different admission number'
+                        });
+                    }
+                }
+
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create student record',
+                    details: studentError.message,
+                    error_code: studentError.code || 'UNKNOWN_ERROR',
+                    suggestion: 'Please check your input data and try again'
+                });
             }
 
             // Create academic record
@@ -138,12 +249,32 @@ router.post('/',
 
             if (academicError) {
                 logger.error('Error creating academic record:', academicError);
+
                 // Rollback student creation
                 await adminSupabase
                     .from('students_master')
                     .delete()
                     .eq('id', student.id);
-                throw academicError;
+
+                if (academicError.code === '23505') { // Unique constraint violation
+                    if (academicError.message.includes('roll_number')) {
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Roll number already taken in this class',
+                            details: 'This roll number was just assigned by another request',
+                            field: 'roll_number',
+                            suggestion: 'Please use a different roll number for this class'
+                        });
+                    }
+                }
+
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create academic record',
+                    details: academicError.message,
+                    error_code: academicError.code || 'UNKNOWN_ERROR',
+                    suggestion: 'Student was created but academic record failed. Please try again.'
+                });
             }
 
             res.status(201).json({
@@ -161,14 +292,22 @@ router.post('/',
                         status: student.status
                     },
                     academic_record: academicRecord,
-                    note: 'Use /api/students/:student_id/link-parents to link this student to parents'
+                    note: 'Use /api/students-management/:student_id/link-parents to link this student to parents'
                 },
                 message: 'Student created successfully'
             });
 
         } catch (error) {
             logger.error('Error in create student endpoint:', error);
-            next(error);
+
+            // Handle unexpected errors
+            res.status(500).json({
+                status: 'error',
+                message: 'Unexpected error occurred',
+                details: error.message,
+                error_code: error.code || 'UNKNOWN_ERROR',
+                suggestion: 'Please contact support if this error persists'
+            });
         }
     }
 );

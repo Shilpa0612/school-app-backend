@@ -11,10 +11,20 @@ router.post('/',
     authenticate,
     authorize(['admin', 'principal']),
     [
-        body('full_name').notEmpty().trim().withMessage('Full name is required'),
-        body('phone_number').matches(/^[0-9]{10}$/).withMessage('Invalid phone number format (10 digits)'),
-        body('email').optional().isEmail().withMessage('Invalid email format'),
-        body('initial_password').optional().isLength({ min: 6 }).withMessage('Initial password must be at least 6 characters')
+        body('full_name')
+            .notEmpty().withMessage('Full name is required')
+            .trim()
+            .isLength({ min: 2, max: 100 }).withMessage('Full name must be between 2 and 100 characters'),
+        body('phone_number')
+            .notEmpty().withMessage('Phone number is required')
+            .matches(/^[0-9]{10}$/).withMessage('Phone number must be exactly 10 digits'),
+        body('email')
+            .optional()
+            .isEmail().withMessage('Email must be a valid email address')
+            .normalizeEmail(),
+        body('initial_password')
+            .optional()
+            .isLength({ min: 6 }).withMessage('Initial password must be at least 6 characters')
     ],
     async (req, res, next) => {
         try {
@@ -22,27 +32,50 @@ router.post('/',
             if (!errors.isEmpty()) {
                 return res.status(400).json({
                     status: 'error',
-                    errors: errors.array()
+                    message: 'Validation failed',
+                    errors: errors.array().map(error => ({
+                        field: error.path,
+                        message: error.msg,
+                        value: error.value
+                    })),
+                    suggestion: 'Please correct the validation errors and try again'
                 });
             }
 
             const { full_name, phone_number, email, initial_password } = req.body;
 
             // Check if parent already exists
-            const { data: existingParent } = await adminSupabase
+            const { data: existingParent, error: existingError } = await adminSupabase
                 .from('users')
-                .select('id, is_registered')
+                .select('id, full_name, phone_number, is_registered')
                 .eq('phone_number', phone_number)
                 .single();
+
+            if (existingError && existingError.code !== 'PGRST116') { // PGRST116 = no rows returned
+                logger.error('Error checking existing parent:', existingError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Database error while checking phone number',
+                    details: 'Unable to verify if phone number exists',
+                    suggestion: 'Please try again later'
+                });
+            }
 
             if (existingParent) {
                 return res.status(400).json({
                     status: 'error',
-                    message: 'Parent with this phone number already exists',
-                    data: {
-                        parent_id: existingParent.id,
+                    message: 'Phone number already registered',
+                    details: `Phone number "${phone_number}" is already registered by "${existingParent.full_name}"`,
+                    field: 'phone_number',
+                    existing_parent: {
+                        id: existingParent.id,
+                        full_name: existingParent.full_name,
+                        phone_number: existingParent.phone_number,
                         is_registered: existingParent.is_registered
-                    }
+                    },
+                    suggestion: existingParent.is_registered
+                        ? 'This parent is already registered. Please use a different phone number.'
+                        : 'This parent exists but is not registered yet. They can register using their phone number.'
                 });
             }
 
@@ -64,7 +97,36 @@ router.post('/',
 
             if (parentError) {
                 logger.error('Error creating parent:', parentError);
-                throw parentError;
+
+                // Handle specific database errors
+                if (parentError.code === '23505') { // Unique constraint violation
+                    if (parentError.message.includes('phone_number')) {
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Phone number already exists',
+                            details: 'This phone number was just registered by another request',
+                            field: 'phone_number',
+                            suggestion: 'Please use a different phone number'
+                        });
+                    }
+                    if (parentError.message.includes('email') && email) {
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Email already exists',
+                            details: 'This email address is already registered',
+                            field: 'email',
+                            suggestion: 'Please use a different email address or leave it empty'
+                        });
+                    }
+                }
+
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create parent record',
+                    details: parentError.message,
+                    error_code: parentError.code || 'UNKNOWN_ERROR',
+                    suggestion: 'Please check your input data and try again'
+                });
             }
 
             res.status(201).json({
@@ -91,7 +153,15 @@ router.post('/',
 
         } catch (error) {
             logger.error('Error in create parent endpoint:', error);
-            next(error);
+
+            // Handle unexpected errors
+            res.status(500).json({
+                status: 'error',
+                message: 'Unexpected error occurred',
+                details: error.message,
+                error_code: error.code || 'UNKNOWN_ERROR',
+                suggestion: 'Please contact support if this error persists'
+            });
         }
     }
 );
