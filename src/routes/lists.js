@@ -607,6 +607,24 @@ router.get('/staff', authenticate, async (req, res) => {
         console.log('All class divisions:', allClassDivisions);
         console.log('All class divisions error:', allClassDivisionsError);
 
+        // Debug: Check if there are any class divisions with teachers
+        const { data: classDivisionsWithTeachers, error: classDivisionsWithTeachersError } = await supabase
+            .from('class_divisions')
+            .select('id, division, teacher_id')
+            .not('teacher_id', 'is', null)
+            .limit(10);
+
+        console.log('Class divisions with teachers:', classDivisionsWithTeachers);
+        console.log('Class divisions with teachers error:', classDivisionsWithTeachersError);
+
+        // Debug: Check if there are any class divisions at all
+        const { data: allClassDivisionsCount, error: allClassDivisionsCountError } = await supabase
+            .from('class_divisions')
+            .select('id', { count: 'exact' });
+
+        console.log('Total class divisions count:', allClassDivisionsCount);
+        console.log('Total class divisions count error:', allClassDivisionsCountError);
+
         // Debug: Check staff data structure
         console.log('Staff data structure:');
         staffData.forEach((staff, index) => {
