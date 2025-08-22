@@ -37,7 +37,7 @@ router.get('/',
     authorize(['admin', 'principal']),
     async (req, res, next) => {
         try {
-            const {
+            let {
                 page = 1,
                 limit = 20,
                 search,
@@ -124,7 +124,7 @@ router.get('/',
                 .from('students_master')
                 .select(`
                     *,
-                    student_academic_records!inner (
+                    student_academic_records (
                         id,
                         roll_number,
                         status,
