@@ -165,14 +165,13 @@ router.get('/events',
             }
 
             if (use_ist === 'true') {
-                // Use the custom function for IST timezone
+                // Use the custom function for IST timezone (without status filter for now)
                 query = supabase.rpc('get_events_with_ist', {
                     p_start_date: start_date,
                     p_end_date: end_date,
                     p_class_division_id: class_division_id,
                     p_event_type: event_type,
-                    p_event_category: event_category,
-                    p_status: statusFilter
+                    p_event_category: event_category
                 });
             } else {
                 // Use regular query
@@ -219,9 +218,15 @@ router.get('/events',
 
             if (error) throw error;
 
+            // Post-process to filter by status if using IST functions
+            let filteredEvents = data || [];
+            if (use_ist === 'true' && statusFilter) {
+                filteredEvents = filteredEvents.filter(event => event.status === statusFilter);
+            }
+
             res.json({
                 status: 'success',
-                data: { events: data }
+                data: { events: filteredEvents }
             });
         } catch (error) {
             next(error);
@@ -292,8 +297,7 @@ router.get('/events/parent',
                     p_start_date: start_date,
                     p_end_date: end_date,
                     p_event_category: event_category,
-                    p_class_division_ids: classDivisionIds,
-                    p_status: 'approved' // Parents only see approved events
+                    p_class_division_ids: classDivisionIds
                 });
             } else {
                 // Use regular query with parent-specific filtering
@@ -338,10 +342,16 @@ router.get('/events/parent',
 
             if (error) throw error;
 
+            // Post-process to filter by status if using IST functions
+            let filteredEvents = data || [];
+            if (use_ist === 'true') {
+                filteredEvents = filteredEvents.filter(event => event.status === 'approved');
+            }
+
             res.json({
                 status: 'success',
                 data: {
-                    events: data,
+                    events: filteredEvents,
                     child_classes: childClasses?.map(record => record.class_divisions) || []
                 }
             });
@@ -439,10 +449,16 @@ router.get('/events/teacher',
                 const { data, error } = await query;
                 if (error) throw error;
 
+                // Post-process to filter by status if using IST functions
+                let filteredEvents = data || [];
+                if (use_ist === 'true') {
+                    filteredEvents = filteredEvents.filter(event => event.status === 'approved');
+                }
+
                 return res.json({
                     status: 'success',
                     data: {
-                        events: data || [],
+                        events: filteredEvents,
                         assigned_classes: []
                     }
                 });
@@ -512,10 +528,16 @@ router.get('/events/teacher',
             const { data, error } = await query;
             if (error) throw error;
 
+            // Post-process to filter by status if using IST functions
+            let filteredEvents = data || [];
+            if (use_ist === 'true') {
+                filteredEvents = filteredEvents.filter(event => event.status === 'approved');
+            }
+
             res.json({
                 status: 'success',
                 data: {
-                    events: data || [],
+                    events: filteredEvents,
                     assigned_classes: assignedClasses.map(assignment => ({
                         class_division_id: assignment.class_division_id,
                         assignment_type: assignment.assignment_type,
@@ -551,6 +573,7 @@ router.get('/events/:id',
                     .select(`
                         *,
                         creator:created_by (id, full_name, role),
+                        approver:approved_by (id, full_name, role),
                         class:class_division_id (
                             id,
                             division,
