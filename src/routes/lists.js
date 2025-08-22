@@ -546,8 +546,8 @@ router.get('/staff', authenticate, async (req, res) => {
             });
         }
 
-        // Get teacher assignments using the exact same approach as divisions summary endpoint
-        // First get all class divisions
+        // Get teacher assignments data
+        // 1. Get all class divisions with their details
         const { data: allDivisions, error: divisionsError } = await supabase
             .from('class_divisions')
             .select(`
@@ -567,18 +567,20 @@ router.get('/staff', authenticate, async (req, res) => {
             `);
 
         if (divisionsError) {
-            console.error('Error fetching divisions:', divisionsError);
+            logger.error('Error fetching divisions:', divisionsError);
         }
 
         const divisionIds = allDivisions?.map(div => div.id) || [];
 
-        // Get subject teachers for all divisions (exact same query as divisions summary)
-        const { data: subjectTeachers, error: subjectTeachersError } = await supabase
+        // 2. Get all teacher assignments from the new system
+        const { data: teacherAssignments, error: assignmentsError } = await supabase
             .from('class_teacher_assignments')
             .select(`
                 id,
                 class_division_id,
                 teacher_id,
+                assignment_type,
+                is_primary,
                 subject,
                 is_active,
                 teacher:teacher_id (
@@ -589,25 +591,19 @@ router.get('/staff', authenticate, async (req, res) => {
             .in('class_division_id', divisionIds)
             .eq('is_active', true);
 
-        if (subjectTeachersError) {
-            console.error('Error fetching subject teachers:', subjectTeachersError);
+        if (assignmentsError) {
+            logger.error('Error fetching teacher assignments:', assignmentsError);
         }
-
-        // Debug: Check what we're getting
-        console.log('=== DEBUG INFO ===');
-        console.log('All divisions:', allDivisions?.length || 0);
-        console.log('Division IDs:', divisionIds);
-        console.log('Subject teachers:', subjectTeachers?.length || 0);
-        console.log('Subject teachers error:', subjectTeachersError);
 
         // Process and combine the data
         const staff = staffData.map(staffMember => {
-            console.log('Processing staff member:', staffMember.full_name, 'User ID:', staffMember.user_id);
             // Only process assignments for teachers
             if (staffMember.user?.role === 'teacher') {
-                // Get class teacher assignments (from class_divisions table)
+                const teacherId = staffMember.user_id;
+
+                // Get class teacher assignments (from legacy class_divisions table)
                 const classTeacherDivisions = allDivisions
-                    ?.filter(div => div.teacher_id === staffMember.user_id)
+                    ?.filter(div => div.teacher_id === teacherId)
                     .map(div => ({
                         class_division_id: div.id,
                         class_name: `${div.class_level.name} ${div.division}`,
@@ -616,49 +612,63 @@ router.get('/staff', authenticate, async (req, res) => {
                         is_legacy: true
                     })) || [];
 
-                // Get subject teacher assignments (from class_teacher_assignments table)
-                const subjectTeacherDetails = subjectTeachers
-                    ?.filter(st => st.teacher_id === staffMember.user_id)
-                    .map(st => {
-                        // Find the division details for this assignment
-                        const division = allDivisions?.find(d => d.id === st.class_division_id);
+                // Get teacher assignments from new system
+                const teacherAssignmentDetails = teacherAssignments
+                    ?.filter(ta => ta.teacher_id === teacherId)
+                    .map(ta => {
+                        const division = allDivisions?.find(d => d.id === ta.class_division_id);
                         return {
-                            class_division_id: st.class_division_id,
+                            assignment_id: ta.id,
+                            class_division_id: ta.class_division_id,
                             class_name: division ? `${division.class_level.name} ${division.division}` : 'Unknown Class',
                             academic_year: division?.academic_year.year_name || 'Unknown Year',
-                            subject: st.subject
+                            assignment_type: ta.assignment_type,
+                            is_primary: ta.is_primary,
+                            subject: ta.subject // Add subject to the response
                         };
                     }) || [];
 
-                // Get unique subjects taught
-                const subjects = [...new Set(subjectTeacherDetails
-                    .map(s => s.subject)
-                    .filter(Boolean))];
+                // Get subjects taught by this teacher
+                const subjectsTaught = [];
 
-                console.log('Staff member:', staffMember.full_name);
-                console.log('Class teacher divisions found:', classTeacherDivisions.length);
-                console.log('Subject teacher assignments found:', subjectTeacherDetails.length);
-                console.log('Subjects taught:', subjects);
+                // Check if teacher is assigned as subject teacher in any division
+                const teacherSubjectAssignments = teacherAssignments
+                    ?.filter(ta => ta.teacher_id === teacherId && ta.assignment_type === 'subject_teacher' && ta.subject) || [];
+
+                teacherSubjectAssignments.forEach(assignment => {
+                    subjectsTaught.push(assignment.subject);
+                });
+
+                // Remove duplicate subjects
+                const uniqueSubjects = [...new Set(subjectsTaught)];
 
                 return {
                     ...staffMember,
                     teaching_details: {
                         class_teacher_of: classTeacherDivisions,
-                        subject_teacher_of: subjectTeacherDetails,
-                        subjects_taught: subjects
+                        subject_teacher_of: teacherAssignmentDetails
+                            .filter(ta => ta.assignment_type === 'subject_teacher')
+                            .map(ta => ({
+                                class_division_id: ta.class_division_id,
+                                class_name: ta.class_name,
+                                academic_year: ta.academic_year,
+                                subject: ta.subject
+                            })),
+                        subjects_taught: uniqueSubjects
                     }
                 };
             }
-            return staffMember;
-        });
 
-        if (staffError) {
-            logger.error('Error fetching staff:', staffError);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to fetch staff'
-            });
-        }
+            // For non-teachers, return staff member without teaching details
+            return {
+                ...staffMember,
+                teaching_details: {
+                    class_teacher_of: [],
+                    subject_teacher_of: [],
+                    subjects_taught: []
+                }
+            };
+        });
 
         res.json({
             status: 'success',
