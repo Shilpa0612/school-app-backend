@@ -623,8 +623,8 @@ router.get('/staff', authenticate, async (req, res) => {
             return staffMember;
         });
 
-        if (error) {
-            logger.error('Error fetching staff:', error);
+        if (staffError) {
+            logger.error('Error fetching staff:', staffError);
             return res.status(500).json({
                 status: 'error',
                 message: 'Failed to fetch staff'

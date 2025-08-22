@@ -105,7 +105,7 @@ router.get('/',
             }
 
             // Get the student IDs that match our filters
-            const studentIds = academicRecords.map(record => record.student_id);
+            const studentIds = academicRecords ? academicRecords.map(record => record.student_id) : [];
 
             // Now build the main query for students
             let query = adminSupabase
@@ -156,8 +156,37 @@ router.get('/',
                 query = query.eq('status', status);
             }
 
-            if (studentIds.length > 0) {
-                query = query.in('id', studentIds);
+            // Apply student IDs filter if we have academic year or class filters
+            if (academic_year_id || class_division_id || class_level_id) {
+                if (studentIds.length > 0) {
+                    query = query.in('id', studentIds);
+                } else {
+                    // If we have filters but no matching records, return empty result
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            students: [],
+                            count: 0,
+                            total_count: 0,
+                            pagination: {
+                                page: parseInt(page),
+                                limit: parseInt(limit),
+                                total: 0,
+                                total_pages: 0,
+                                has_next: false,
+                                has_prev: false
+                            },
+                            filters: {
+                                search: search || null,
+                                class_division_id: class_division_id || null,
+                                class_level_id: class_level_id || null,
+                                academic_year_id: academic_year_id || null,
+                                status: status || 'active',
+                                unlinked_only: unlinked_only === 'true'
+                            }
+                        }
+                    });
+                }
             }
 
             // Get students with filters
@@ -1486,13 +1515,16 @@ router.get('/:student_id',
         try {
             const { student_id } = req.params;
 
-            // Check access permission
-            const canAccess = await checkStudentAccess(req.user.id, req.user.role, student_id);
-            if (!canAccess) {
-                return res.status(403).json({
-                    status: 'error',
-                    message: 'You do not have permission to view this student\'s details'
-                });
+            // Admin and principal can access all students
+            if (!['admin', 'principal'].includes(req.user.role)) {
+                // For other roles, check specific permissions
+                const canAccess = await checkStudentAccess(req.user.id, req.user.role, student_id);
+                if (!canAccess) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You do not have permission to view this student\'s details'
+                    });
+                }
             }
 
             const { data: student, error } = await adminSupabase
@@ -1540,10 +1572,20 @@ router.get('/:student_id',
                 .eq('id', student_id)
                 .single();
 
-            if (error || !student) {
+            if (error) {
+                logger.error('Error fetching student:', error);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch student details',
+                    details: error.message
+                });
+            }
+
+            if (!student) {
                 return res.status(404).json({
                     status: 'error',
-                    message: 'Student not found'
+                    message: 'Student not found',
+                    details: `No student found with ID: ${student_id}`
                 });
             }
 
@@ -1668,14 +1710,10 @@ router.delete('/:student_id',
 // Helper function to check if user can access student
 async function checkStudentAccess(userId, userRole, studentId) {
     try {
-        // Admin and principal can access all students
-        if (userRole === 'admin' || userRole === 'principal') {
-            return true;
-        }
-
-        // Teachers can access students in their assigned classes
+        // Teachers can access students in their assigned classes (both legacy and many-to-many)
         if (userRole === 'teacher') {
-            const { data: student, error } = await adminSupabase
+            // First check legacy class teacher assignment
+            const { data: legacyAssignment, error: legacyError } = await adminSupabase
                 .from('students_master')
                 .select(`
                     student_academic_records!inner (
@@ -1688,19 +1726,42 @@ async function checkStudentAccess(userId, userRole, studentId) {
                 .eq('student_academic_records.class_division.teacher_id', userId)
                 .single();
 
-            return !error && student;
+            if (!legacyError && legacyAssignment) {
+                return true;
+            }
+
+            // Check many-to-many assignments
+            const { data: mmAssignment, error: mmError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    student_academic_records!inner (
+                        class_division:class_division_id (
+                            id,
+                            class_teacher_assignments!inner (
+                                teacher_id,
+                                is_active
+                            )
+                        )
+                    )
+                `)
+                .eq('id', studentId)
+                .eq('student_academic_records.class_division.class_teacher_assignments.teacher_id', userId)
+                .eq('student_academic_records.class_division.class_teacher_assignments.is_active', true)
+                .single();
+
+            return !mmError && mmAssignment;
         }
 
         // Parents can access their linked students
         if (userRole === 'parent') {
             const { data: mapping, error } = await adminSupabase
                 .from('parent_student_mappings')
-                .select('id')
+                .select('id, access_level')
                 .eq('student_id', studentId)
                 .eq('parent_id', userId)
                 .single();
 
-            return !error && mapping;
+            return !error && mapping && mapping.access_level !== 'none';
         }
 
         return false;
