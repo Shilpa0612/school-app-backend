@@ -1594,4 +1594,144 @@ router.get('/test-db', async (req, res) => {
     }
 });
 
+// Test endpoint to create sample data
+router.post('/create-test-data', async (req, res) => {
+    try {
+        console.log('=== CREATING TEST DATA ===');
+
+        // First, check if we have any academic years
+        const { data: academicYears, error: academicYearsError } = await supabase
+            .from('academic_years')
+            .select('id, year_name')
+            .eq('is_active', true)
+            .limit(1);
+
+        if (academicYearsError || !academicYears || academicYears.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'No active academic year found. Please create an academic year first.'
+            });
+        }
+
+        const academicYearId = academicYears[0].id;
+        console.log('Using academic year:', academicYearId);
+
+        // Check if we have any class levels
+        const { data: classLevels, error: classLevelsError } = await supabase
+            .from('class_levels')
+            .select('id, name')
+            .limit(2);
+
+        if (classLevelsError || !classLevels || classLevels.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'No class levels found. Please create class levels first.'
+            });
+        }
+
+        console.log('Found class levels:', classLevels);
+
+        // Create test class divisions
+        const testDivisions = [
+            {
+                division: 'A',
+                class_level_id: classLevels[0].id,
+                academic_year_id: academicYearId
+            },
+            {
+                division: 'B',
+                class_level_id: classLevels[0].id,
+                academic_year_id: academicYearId
+            }
+        ];
+
+        const { data: createdDivisions, error: divisionsError } = await supabase
+            .from('class_divisions')
+            .insert(testDivisions)
+            .select('id, division, class_level_id, academic_year_id');
+
+        if (divisionsError) {
+            console.error('Error creating divisions:', divisionsError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to create class divisions',
+                error: divisionsError.message
+            });
+        }
+
+        console.log('Created divisions:', createdDivisions);
+
+        // Get first teacher from staff
+        const { data: teachers, error: teachersError } = await supabase
+            .from('staff')
+            .select('user_id')
+            .eq('role', 'teacher')
+            .limit(1);
+
+        if (teachersError || !teachers || teachers.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'No teachers found in staff table'
+            });
+        }
+
+        const teacherId = teachers[0].user_id;
+        console.log('Using teacher ID:', teacherId);
+
+        // Create teacher assignments
+        const testAssignments = [
+            {
+                class_division_id: createdDivisions[0].id,
+                teacher_id: teacherId,
+                assignment_type: 'class_teacher',
+                is_primary: true,
+                is_active: true
+            },
+            {
+                class_division_id: createdDivisions[1].id,
+                teacher_id: teacherId,
+                assignment_type: 'subject_teacher',
+                subject: 'Mathematics',
+                is_primary: false,
+                is_active: true
+            }
+        ];
+
+        const { data: createdAssignments, error: assignmentsError } = await supabase
+            .from('class_teacher_assignments')
+            .insert(testAssignments)
+            .select('id, class_division_id, teacher_id, assignment_type, subject');
+
+        if (assignmentsError) {
+            console.error('Error creating assignments:', assignmentsError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to create teacher assignments',
+                error: assignmentsError.message
+            });
+        }
+
+        console.log('Created assignments:', createdAssignments);
+
+        res.json({
+            status: 'success',
+            message: 'Test data created successfully',
+            data: {
+                academic_year: academicYears[0],
+                class_levels: classLevels,
+                divisions: createdDivisions,
+                assignments: createdAssignments
+            }
+        });
+
+    } catch (error) {
+        console.error('Create test data error:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Failed to create test data',
+            error: error.message
+        });
+    }
+});
+
 export default router; 
