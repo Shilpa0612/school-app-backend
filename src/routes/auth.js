@@ -319,7 +319,7 @@ router.post('/register', registerValidation, async (req, res, next) => {
     }
 });
 
-// Login route
+// Login route - OPTIMIZED for performance
 router.post('/login', async (req, res, next) => {
     try {
         const { phone_number, password } = req.body;
@@ -332,11 +332,12 @@ router.post('/login', async (req, res, next) => {
             });
         }
 
-        // Find user by phone number
+        // OPTIMIZATION: Only select essential fields for login
         const { data: user, error: userError } = await supabase
             .from('users')
-            .select('*')
+            .select('id, phone_number, password_hash, role, full_name, email, preferred_language')
             .eq('phone_number', phone_number)
+            .eq('is_registered', true) // Only allow registered users
             .single();
 
         if (userError || !user) {
@@ -346,7 +347,7 @@ router.post('/login', async (req, res, next) => {
             });
         }
 
-        // Verify password
+        // OPTIMIZATION: Verify password first before any database operations
         const isValidPassword = await bcrypt.compare(password, user.password_hash);
         if (!isValidPassword) {
             return res.status(401).json({
@@ -355,39 +356,7 @@ router.post('/login', async (req, res, next) => {
             });
         }
 
-        // Update last login
-        await supabase
-            .from('users')
-            .update({ last_login: new Date().toISOString() })
-            .eq('id', user.id);
-
-        // Auto-sync teacher to staff table if they don't exist
-        if (user.role === 'teacher') {
-            const { data: existingStaff } = await supabase
-                .from('staff')
-                .select('*')
-                .eq('user_id', user.id)
-                .single();
-
-            if (!existingStaff) {
-                // Create staff record for teacher
-                const staffData = {
-                    user_id: user.id,
-                    full_name: user.full_name,
-                    phone_number: user.phone_number,
-                    email: user.email,
-                    role: 'teacher',
-                    is_active: true,
-                    created_by: user.id // Self-created
-                };
-
-                await supabase
-                    .from('staff')
-                    .insert(staffData);
-            }
-        }
-
-        // Generate JWT token
+        // OPTIMIZATION: Generate JWT token immediately after password verification
         const token = jwt.sign(
             {
                 userId: user.id,
@@ -397,6 +366,51 @@ router.post('/login', async (req, res, next) => {
             { expiresIn: '24h' }
         );
 
+        // OPTIMIZATION: Update last_login asynchronously (don't block response)
+        supabase
+            .from('users')
+            .update({ last_login: new Date().toISOString() })
+            .eq('id', user.id)
+            .then(() => {
+                // Successfully updated last_login
+            })
+            .catch(err => {
+                // Log error but don't fail login
+                console.error('Failed to update last_login:', err);
+            });
+
+        // OPTIMIZATION: Handle teacher staff sync asynchronously (don't block login)
+        if (user.role === 'teacher') {
+            // Fire and forget - don't block login response
+            supabase
+                .from('staff')
+                .select('id')
+                .eq('user_id', user.id)
+                .single()
+                .then(({ data: existingStaff }) => {
+                    if (!existingStaff) {
+                        const staffData = {
+                            user_id: user.id,
+                            full_name: user.full_name,
+                            phone_number: user.phone_number,
+                            email: user.email,
+                            role: 'teacher',
+                            is_active: true,
+                            created_by: user.id
+                        };
+
+                        return supabase.from('staff').insert(staffData);
+                    }
+                })
+                .then(() => {
+                    console.log(`Staff record created for teacher ${user.id}`);
+                })
+                .catch(err => {
+                    console.error(`Failed to create staff record for teacher ${user.id}:`, err);
+                });
+        }
+
+        // Return response immediately
         res.json({
             status: 'success',
             data: {

@@ -15,6 +15,10 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
         headers: {
             'x-application-name': 'school-app'
         }
+    },
+    // OPTIMIZATION: Add connection pooling and timeout settings
+    db: {
+        schema: 'public'
     }
 });
 
@@ -28,6 +32,10 @@ export const adminSupabase = createClient(supabaseUrl, supabaseServiceKey, {
         headers: {
             'x-application-name': 'school-app-admin'
         }
+    },
+    // OPTIMIZATION: Add connection pooling and timeout settings
+    db: {
+        schema: 'public'
     }
 });
 

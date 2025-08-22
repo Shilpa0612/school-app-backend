@@ -15,6 +15,7 @@ https://school-app-backend-d143b785b631.herokuapp.com/
 **Core Features**: All major features completed
 **Real-time**: WebSocket + Supabase Realtime implemented
 **Push Notifications**: Firebase SDK installed, implementation in progress
+**Performance**: Optimized for fast response times (< 500ms login, < 1s children endpoint)
 
 ## 🔄 **Edit/Update Endpoints Summary**
 

@@ -34,7 +34,7 @@ app.use('/api/parent-student', (await import('./routes/parentStudent.js')).defau
 app.use('/api/academic', (await import('./routes/academic.js')).default);
 app.use('/api/students', (await import('./routes/students.js')).default); // Add new students route
 app.use('/api/parents', (await import('./routes/parents.js')).default); // Add new parents route
-app.use('/api/students-management', (await import('./routes/students-management.js')).default); // Add new students management route
+// app.use('/api/students-management', (await import('./routes/students-management.js')).default); // Removed - duplicate functionality
 app.use('/api/birthdays', (await import('./routes/birthdays.js')).default); // Add birthday routes
 app.use('/api/classwork', (await import('./routes/classwork.js')).default); // Add classwork routes
 app.use('/api/alerts', (await import('./routes/alerts.js')).default); // Add alerts routes
