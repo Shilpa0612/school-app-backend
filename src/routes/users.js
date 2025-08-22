@@ -247,7 +247,7 @@ router.put('/parents/:parent_id',
     }
 );
 
-// Get children with class and teacher information (for parents) - OPTIMIZED
+// Get children with class and teacher information (for parents)
 router.get('/children',
     authenticate,
     authorize('parent'),
@@ -260,119 +260,128 @@ router.get('/children',
                 role: req.user.role
             });
 
-            // OPTIMIZATION: Single query with joins to get all data at once
-            const { data: childrenData, error: childrenError } = await adminSupabase
+            // Get parent-student mappings
+            const { data: mappings, error: mappingsError } = await adminSupabase
                 .from('parent_student_mappings')
                 .select(`
                     student_id,
                     relationship,
-                    is_primary_guardian,
-                    students:students_master (
+                    is_primary_guardian
+                `)
+                .eq('parent_id', req.user.id);
+
+            if (mappingsError) {
+                console.error('Error fetching mappings:', mappingsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch student mappings'
+                });
+            }
+
+            if (!mappings || mappings.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        children: []
+                    }
+                });
+            }
+
+            // Get student details with academic records
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    admission_number,
+                    student_academic_records (
                         id,
-                        full_name,
-                        admission_number
-                    ),
-                    student_academic_records!inner (
-                        id,
-                        class_division_id,
                         roll_number,
-                        status
-                    ),
-                    class_divisions!student_academic_records.class_division_id (
-                        id,
-                        division,
-                        teacher_id,
-                        academic_year_id,
-                        class_level_id
-                    ),
-                    class_levels!class_divisions.class_level_id (
-                        name,
-                        sequence_number
-                    ),
-                    academic_years!class_divisions.academic_year_id (
-                        year_name
-                    ),
-                    teachers:users!class_divisions.teacher_id (
-                        id,
-                        full_name,
-                        phone_number,
-                        email
-                    ),
-                    staff!teachers.user_id (
-                        department,
-                        designation
+                        status,
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name),
+                            teacher:teacher_id (
+                                id,
+                                full_name,
+                                phone_number,
+                                email
+                            )
+                        )
                     )
                 `)
-                .eq('parent_id', req.user.id)
-                .eq('student_academic_records.status', 'ongoing');
+                .in('id', mappings.map(m => m.student_id));
 
-            if (childrenError) throw childrenError;
+            if (studentsError) {
+                console.error('Error fetching students:', studentsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch student details'
+                });
+            }
 
-            // Debug: Log the data found
-            console.log('Children data found:', childrenData?.length || 0);
+            // Format the response
+            const children = students.map(student => {
+                // Find the mapping for this student to get relationship info
+                const mapping = mappings.find(m => m.student_id === student.id);
 
-            // Process the data
-            const childrenWithClassInfo = (childrenData || []).map(mapping => {
-                const child = {
-                    ...mapping.students,
-                    relationship: mapping.relationship,
-                    is_primary_guardian: mapping.is_primary_guardian
+                // Find current academic record
+                const currentAcademicRecord = student.student_academic_records?.find(r => r.status === 'ongoing');
+
+                // Build the response object
+                const childInfo = {
+                    id: student.id,
+                    name: student.full_name,
+                    admission_number: student.admission_number,
+                    relationship: mapping?.relationship,
+                    is_primary_guardian: mapping?.is_primary_guardian
                 };
 
-                // Check if we have academic record and class info
-                if (mapping.student_academic_records && mapping.class_divisions) {
-                    const academicRecord = mapping.student_academic_records;
-                    const classDivision = mapping.class_divisions;
-                    const classLevel = mapping.class_levels;
-                    const academicYear = mapping.academic_years;
-                    const teacher = mapping.teachers;
-                    const staff = mapping.staff;
-
-                    // Build teacher info
-                    let teacherInfo = null;
-                    if (teacher) {
-                        teacherInfo = {
-                            id: teacher.id,
-                            full_name: teacher.full_name,
-                            phone_number: teacher.phone_number,
-                            email: teacher.email,
-                            department: staff?.department || null,
-                            designation: staff?.designation || null
-                        };
-                    }
-
-                    // Add class information to child
-                    child.class_info = {
+                // Add class information if available
+                if (currentAcademicRecord?.class_division) {
+                    const classDivision = currentAcademicRecord.class_division;
+                    childInfo.class_info = {
                         class_division_id: classDivision.id,
-                        class_name: `${classLevel?.name || 'Unknown'} ${classDivision.division}`,
-                        class_level: classLevel?.name || 'Unknown',
+                        class_name: `${classDivision.class_level?.name || 'Unknown'} ${classDivision.division}`,
                         division: classDivision.division,
-                        sequence_number: classLevel?.sequence_number || 0,
-                        academic_year: academicYear?.year_name || 'Unknown',
-                        roll_number: academicRecord.roll_number,
-                        teacher: teacherInfo,
-                        has_teacher: !!teacherInfo
+                        academic_year: classDivision.academic_year?.year_name,
+                        roll_number: currentAcademicRecord.roll_number,
+                        teacher: classDivision.teacher ? {
+                            id: classDivision.teacher.id,
+                            name: classDivision.teacher.full_name,
+                            phone_number: classDivision.teacher.phone_number,
+                            email: classDivision.teacher.email
+                        } : null
                     };
                 } else {
-                    // No current academic record found
-                    child.class_info = null;
+                    childInfo.class_info = null;
                 }
 
-                return child;
+                return childInfo;
+            });
+
+            // Debug: Log success
+            console.log('Successfully fetched children data:', {
+                total_children: children.length,
+                with_class_info: children.filter(c => c.class_info).length
             });
 
             res.json({
                 status: 'success',
                 data: {
-                    children: childrenWithClassInfo,
+                    children,
                     debug: {
                         authenticated_user_id: req.user.id,
-                        mappings_count: childrenData?.length || 0,
-                        optimization: 'single_query_with_joins'
+                        mappings_count: mappings.length,
+                        students_found: students.length
                     }
                 }
             });
+
         } catch (error) {
+            console.error('Error in /children endpoint:', error);
             next(error);
         }
     }
