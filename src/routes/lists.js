@@ -546,45 +546,9 @@ router.get('/staff', authenticate, async (req, res) => {
             });
         }
 
-        // Get class assignments for teachers
-        const teacherIds = staffData
-            .filter(s => s.user?.role === 'teacher')
-            .map(s => s.user_id)
-            .filter(Boolean);
-
-        // Get teacher assignments using the same approach as divisions summary endpoint
-        // First get all active assignments, then filter by teacher
-        const { data: allTeacherAssignments, error: assignmentError } = await supabase
-            .from('class_teacher_assignments')
-            .select(`
-                id,
-                teacher_id,
-                assignment_type,
-                subject,
-                is_primary,
-                assigned_date,
-                is_active,
-                class_division:class_division_id (
-                    id,
-                    division,
-                    academic_year:academic_year_id (
-                        id,
-                        year_name,
-                        is_active
-                    ),
-                    class_level:class_level_id (
-                        id,
-                        name,
-                        sequence_number
-                    )
-                )
-            `)
-            .eq('is_active', true)
-            .order('is_primary', { ascending: false })
-            .order('assigned_date', { ascending: true });
-
-        // Get legacy assignments (from class_divisions table)
-        const { data: legacyAssignments, error: legacyError } = await supabase
+        // Get teacher assignments using the exact same approach as divisions summary endpoint
+        // First get all class divisions
+        const { data: allDivisions, error: divisionsError } = await supabase
             .from('class_divisions')
             .select(`
                 id,
@@ -600,94 +564,86 @@ router.get('/staff', authenticate, async (req, res) => {
                     name,
                     sequence_number
                 )
-            `)
-            .not('teacher_id', 'is', null);
+            `);
 
-        // Debug: Check all assignments without filtering
-        const { data: allAssignments, error: allAssignmentsError } = await supabase
-            .from('class_teacher_assignments')
-            .select('teacher_id, assignment_type, subject, is_active')
-            .eq('is_active', true);
-
-        // Test: Try to fetch assignments for a specific teacher ID from your data
-        const testTeacherId = 'af68c9d4-7825-476f-9f3d-7863339442dd'; // Vaishnavi's ID
-        const { data: testAssignments, error: testError } = await supabase
-            .from('class_teacher_assignments')
-            .select('*')
-            .eq('teacher_id', testTeacherId)
-            .eq('is_active', true);
-
-        console.log('=== DEBUG INFO ===');
-        console.log('Teacher IDs from staff:', teacherIds);
-        console.log('All active assignments in table:', allAssignments);
-        console.log('All assignments error:', allAssignmentsError);
-        console.log('Test assignments for Vaishnavi:', testAssignments);
-        console.log('Test error:', testError);
-        console.log('All teacher assignments (unfiltered):', allTeacherAssignments);
-        console.log('Assignment error:', assignmentError);
-        console.log('Legacy assignments:', legacyAssignments);
-        console.log('Legacy error:', legacyError);
-
-        if (assignmentError) {
-            logger.error('Error fetching teacher assignments:', assignmentError);
+        if (divisionsError) {
+            console.error('Error fetching divisions:', divisionsError);
         }
+
+        const divisionIds = allDivisions?.map(div => div.id) || [];
+
+        // Get subject teachers for all divisions (exact same query as divisions summary)
+        const { data: subjectTeachers, error: subjectTeachersError } = await supabase
+            .from('class_teacher_assignments')
+            .select(`
+                id,
+                class_division_id,
+                teacher_id,
+                subject,
+                is_active,
+                teacher:teacher_id (
+                    id,
+                    full_name
+                )
+            `)
+            .in('class_division_id', divisionIds)
+            .eq('is_active', true);
+
+        if (subjectTeachersError) {
+            console.error('Error fetching subject teachers:', subjectTeachersError);
+        }
+
+        // Debug: Check what we're getting
+        console.log('=== DEBUG INFO ===');
+        console.log('All divisions:', allDivisions?.length || 0);
+        console.log('Division IDs:', divisionIds);
+        console.log('Subject teachers:', subjectTeachers?.length || 0);
+        console.log('Subject teachers error:', subjectTeachersError);
 
         // Process and combine the data
         const staff = staffData.map(staffMember => {
             console.log('Processing staff member:', staffMember.full_name, 'User ID:', staffMember.user_id);
             // Only process assignments for teachers
             if (staffMember.user?.role === 'teacher') {
-                // Get teacher assignments for this specific teacher (filter from all assignments)
-                const teacherAssignmentsForThisTeacher = allTeacherAssignments
-                    ?.filter(a => a.teacher_id === staffMember.user_id) || [];
-
-                // Get legacy class teacher assignments
-                const legacyClassTeacher = legacyAssignments
-                    ?.filter(a => a.teacher_id === staffMember.user_id)
-                    .map(a => ({
-                        class_division_id: a.id,
-                        class_name: `${a.class_level.name} ${a.division}`,
-                        academic_year: a.academic_year.year_name,
+                // Get class teacher assignments (from class_divisions table)
+                const classTeacherDivisions = allDivisions
+                    ?.filter(div => div.teacher_id === staffMember.user_id)
+                    .map(div => ({
+                        class_division_id: div.id,
+                        class_name: `${div.class_level.name} ${div.division}`,
+                        academic_year: div.academic_year.year_name,
                         is_primary: true,
                         is_legacy: true
                     })) || [];
 
-                console.log('Staff member:', staffMember.full_name);
-                console.log('Legacy assignments found:', legacyClassTeacher.length);
-                console.log('Teacher assignments found:', teacherAssignmentsForThisTeacher.length);
-
-                // Group assignments by type
-                const newClassTeacherDivisions = teacherAssignmentsForThisTeacher
-                    .filter(a => a.assignment_type === 'class_teacher')
-                    .map(a => ({
-                        class_division_id: a.class_division.id,
-                        class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
-                        academic_year: a.class_division.academic_year.year_name,
-                        is_primary: a.is_primary,
-                        is_legacy: false
-                    }));
-
-                const subjectTeacherDetails = teacherAssignmentsForThisTeacher
-                    .filter(a => a.assignment_type === 'subject_teacher')
-                    .map(a => ({
-                        class_division_id: a.class_division.id,
-                        class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
-                        academic_year: a.class_division.academic_year.year_name,
-                        subject: a.subject
-                    }));
-
-                // Combine legacy and new class teacher assignments
-                const allClassTeacherDivisions = [...legacyClassTeacher, ...newClassTeacherDivisions];
+                // Get subject teacher assignments (from class_teacher_assignments table)
+                const subjectTeacherDetails = subjectTeachers
+                    ?.filter(st => st.teacher_id === staffMember.user_id)
+                    .map(st => {
+                        // Find the division details for this assignment
+                        const division = allDivisions?.find(d => d.id === st.class_division_id);
+                        return {
+                            class_division_id: st.class_division_id,
+                            class_name: division ? `${division.class_level.name} ${division.division}` : 'Unknown Class',
+                            academic_year: division?.academic_year.year_name || 'Unknown Year',
+                            subject: st.subject
+                        };
+                    }) || [];
 
                 // Get unique subjects taught
                 const subjects = [...new Set(subjectTeacherDetails
                     .map(s => s.subject)
                     .filter(Boolean))];
 
+                console.log('Staff member:', staffMember.full_name);
+                console.log('Class teacher divisions found:', classTeacherDivisions.length);
+                console.log('Subject teacher assignments found:', subjectTeacherDetails.length);
+                console.log('Subjects taught:', subjects);
+
                 return {
                     ...staffMember,
                     teaching_details: {
-                        class_teacher_of: allClassTeacherDivisions,
+                        class_teacher_of: classTeacherDivisions,
                         subject_teacher_of: subjectTeacherDetails,
                         subjects_taught: subjects
                     }
