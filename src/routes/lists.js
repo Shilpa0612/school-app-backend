@@ -576,12 +576,6 @@ router.get('/staff', authenticate, async (req, res) => {
                         name,
                         sequence_number
                     )
-                ),
-                teacher:teacher_id (
-                    id,
-                    full_name,
-                    phone_number,
-                    email
                 )
             `)
             .in('teacher_id', teacherIds)
@@ -669,10 +663,9 @@ router.get('/staff', authenticate, async (req, res) => {
                 const allClassTeacherDivisions = [...legacyClassTeacher, ...newClassTeacherDivisions];
 
                 // Get unique subjects taught
-                const subjects = [...new Set(allClassTeacherDivisions
-                    .map(a => a.subject)
-                    .filter(Boolean)
-                    .concat(subjectTeacherDetails.map(s => s.subject).filter(Boolean)))];
+                const subjects = [...new Set(subjectTeacherDetails
+                    .map(s => s.subject)
+                    .filter(Boolean))];
 
                 return {
                     ...staffMember,
