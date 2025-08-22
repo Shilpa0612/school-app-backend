@@ -552,8 +552,9 @@ router.get('/staff', authenticate, async (req, res) => {
             .map(s => s.user_id)
             .filter(Boolean);
 
-        // Get teacher assignments using the same approach as class details endpoint
-        const { data: teacherAssignments, error: assignmentError } = await supabase
+        // Get teacher assignments using the same approach as divisions summary endpoint
+        // First get all active assignments, then filter by teacher
+        const { data: allTeacherAssignments, error: assignmentError } = await supabase
             .from('class_teacher_assignments')
             .select(`
                 id,
@@ -578,7 +579,6 @@ router.get('/staff', authenticate, async (req, res) => {
                     )
                 )
             `)
-            .in('teacher_id', teacherIds)
             .eq('is_active', true)
             .order('is_primary', { ascending: false })
             .order('assigned_date', { ascending: true });
@@ -601,7 +601,6 @@ router.get('/staff', authenticate, async (req, res) => {
                     sequence_number
                 )
             `)
-            .in('teacher_id', teacherIds)
             .not('teacher_id', 'is', null);
 
         // Debug: Check all assignments without filtering
@@ -610,11 +609,21 @@ router.get('/staff', authenticate, async (req, res) => {
             .select('teacher_id, assignment_type, subject, is_active')
             .eq('is_active', true);
 
+        // Test: Try to fetch assignments for a specific teacher ID from your data
+        const testTeacherId = 'af68c9d4-7825-476f-9f3d-7863339442dd'; // Vaishnavi's ID
+        const { data: testAssignments, error: testError } = await supabase
+            .from('class_teacher_assignments')
+            .select('*')
+            .eq('teacher_id', testTeacherId)
+            .eq('is_active', true);
+
         console.log('=== DEBUG INFO ===');
         console.log('Teacher IDs from staff:', teacherIds);
         console.log('All active assignments in table:', allAssignments);
         console.log('All assignments error:', allAssignmentsError);
-        console.log('Filtered teacher assignments:', teacherAssignments);
+        console.log('Test assignments for Vaishnavi:', testAssignments);
+        console.log('Test error:', testError);
+        console.log('All teacher assignments (unfiltered):', allTeacherAssignments);
         console.log('Assignment error:', assignmentError);
         console.log('Legacy assignments:', legacyAssignments);
         console.log('Legacy error:', legacyError);
@@ -628,8 +637,8 @@ router.get('/staff', authenticate, async (req, res) => {
             console.log('Processing staff member:', staffMember.full_name, 'User ID:', staffMember.user_id);
             // Only process assignments for teachers
             if (staffMember.user?.role === 'teacher') {
-                // Get teacher assignments for this specific teacher
-                const teacherAssignmentsForThisTeacher = teacherAssignments
+                // Get teacher assignments for this specific teacher (filter from all assignments)
+                const teacherAssignmentsForThisTeacher = allTeacherAssignments
                     ?.filter(a => a.teacher_id === staffMember.user_id) || [];
 
                 // Get legacy class teacher assignments
