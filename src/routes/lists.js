@@ -552,15 +552,20 @@ router.get('/staff', authenticate, async (req, res) => {
             .map(s => s.user_id)
             .filter(Boolean);
 
-        // Get both legacy and new assignments
-        const [{ data: legacyAssignments, error: legacyError }, { data: assignments, error: assignError }] = await Promise.all([
-            // Legacy assignments (from class_divisions table)
-            supabase
-                .from('class_divisions')
-                .select(`
+        // Get teacher assignments using the same approach as class details endpoint
+        const { data: teacherAssignments, error: assignmentError } = await supabase
+            .from('class_teacher_assignments')
+            .select(`
+                id,
+                teacher_id,
+                assignment_type,
+                subject,
+                is_primary,
+                assigned_date,
+                is_active,
+                class_division:class_division_id (
                     id,
                     division,
-                    teacher_id,
                     academic_year:academic_year_id (
                         id,
                         year_name,
@@ -571,48 +576,49 @@ router.get('/staff', authenticate, async (req, res) => {
                         name,
                         sequence_number
                     )
-                `)
-                .in('teacher_id', teacherIds)
-                .not('teacher_id', 'is', null),
-
-            // New assignments (from class_teacher_assignments table)
-            supabase
-                .from('class_teacher_assignments')
-                .select(`
+                ),
+                teacher:teacher_id (
                     id,
-                    teacher_id,
-                    assignment_type,
-                    subject,
-                    is_primary,
-                    is_active,
-                    class_division:class_division_id (
-                        id,
-                        division,
-                        academic_year:academic_year_id (
-                            id,
-                            year_name,
-                            is_active
-                        ),
-                        class_level:class_level_id (
-                            id,
-                            name,
-                            sequence_number
-                        )
-                    )
-                `)
-                .in('teacher_id', teacherIds)
-                .eq('is_active', true)
-        ]);
+                    full_name,
+                    phone_number,
+                    email
+                )
+            `)
+            .in('teacher_id', teacherIds)
+            .eq('is_active', true)
+            .order('is_primary', { ascending: false })
+            .order('assigned_date', { ascending: true });
+
+        // Get legacy assignments (from class_divisions table)
+        const { data: legacyAssignments, error: legacyError } = await supabase
+            .from('class_divisions')
+            .select(`
+                id,
+                division,
+                teacher_id,
+                academic_year:academic_year_id (
+                    id,
+                    year_name,
+                    is_active
+                ),
+                class_level:class_level_id (
+                    id,
+                    name,
+                    sequence_number
+                )
+            `)
+            .in('teacher_id', teacherIds)
+            .not('teacher_id', 'is', null);
 
         // Log for debugging
         console.log('Teacher IDs:', teacherIds);
+        console.log('Teacher assignments:', teacherAssignments);
         console.log('Legacy assignments:', legacyAssignments);
-        console.log('New assignments:', assignments);
+        console.log('Assignment error:', assignmentError);
         console.log('Legacy error:', legacyError);
-        console.log('New assignments error:', assignError);
 
-        if (assignError) {
-            logger.error('Error fetching teacher assignments:', assignError);
+        if (assignmentError) {
+            logger.error('Error fetching teacher assignments:', assignmentError);
         }
 
         // Process and combine the data
@@ -620,6 +626,10 @@ router.get('/staff', authenticate, async (req, res) => {
             console.log('Processing staff member:', staffMember.full_name, 'User ID:', staffMember.user_id);
             // Only process assignments for teachers
             if (staffMember.user?.role === 'teacher') {
+                // Get teacher assignments for this specific teacher
+                const teacherAssignmentsForThisTeacher = teacherAssignments
+                    ?.filter(a => a.teacher_id === staffMember.user_id) || [];
+
                 // Get legacy class teacher assignments
                 const legacyClassTeacher = legacyAssignments
                     ?.filter(a => a.teacher_id === staffMember.user_id)
@@ -631,16 +641,12 @@ router.get('/staff', authenticate, async (req, res) => {
                         is_legacy: true
                     })) || [];
 
-                // Get new assignments
-                const teacherAssignments = assignments
-                    ?.filter(a => a.teacher_id === staffMember.user_id) || [];
-
                 console.log('Staff member:', staffMember.full_name);
                 console.log('Legacy assignments found:', legacyClassTeacher.length);
-                console.log('New assignments found:', teacherAssignments.length);
+                console.log('Teacher assignments found:', teacherAssignmentsForThisTeacher.length);
 
                 // Group assignments by type
-                const newClassTeacherDivisions = teacherAssignments
+                const newClassTeacherDivisions = teacherAssignmentsForThisTeacher
                     .filter(a => a.assignment_type === 'class_teacher')
                     .map(a => ({
                         class_division_id: a.class_division.id,
@@ -650,7 +656,7 @@ router.get('/staff', authenticate, async (req, res) => {
                         is_legacy: false
                     }));
 
-                const subjectTeacherDetails = teacherAssignments
+                const subjectTeacherDetails = teacherAssignmentsForThisTeacher
                     .filter(a => a.assignment_type === 'subject_teacher')
                     .map(a => ({
                         class_division_id: a.class_division.id,
@@ -663,7 +669,7 @@ router.get('/staff', authenticate, async (req, res) => {
                 const allClassTeacherDivisions = [...legacyClassTeacher, ...newClassTeacherDivisions];
 
                 // Get unique subjects taught
-                const subjects = [...new Set(teacherAssignments
+                const subjects = [...new Set(teacherAssignmentsForThisTeacher
                     .filter(a => a.subject)
                     .map(a => a.subject))];
 

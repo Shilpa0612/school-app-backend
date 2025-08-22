@@ -31,9 +31,9 @@ ON public.calendar_events(status);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_approved_by 
 ON public.calendar_events(approved_by);
 
--- Update existing events to be approved (for backward compatibility)
+-- Update existing events to be pending (for proper approval workflow)
 UPDATE public.calendar_events 
-SET status = 'approved' 
+SET status = 'pending' 
 WHERE status IS NULL;
 
 -- Log the migration

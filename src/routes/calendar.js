@@ -100,14 +100,18 @@ router.post('/events',
             }
 
             // Determine event status based on user role and event type
-            let eventStatus = 'approved'; // Default for admin/principal
-            if (!['admin', 'principal'].includes(req.user.role)) {
-                // Teachers need approval for school-wide events
-                if (event_type === 'school_wide') {
-                    eventStatus = 'pending';
-                } else {
-                    // Class-specific events by teachers are auto-approved
+            let eventStatus = 'pending'; // Default status for all events
+
+            // Auto-approve certain events
+            if (['admin', 'principal'].includes(req.user.role)) {
+                // Admin/Principal events are auto-approved
+                eventStatus = 'approved';
+            } else if (req.user.role === 'teacher') {
+                // Teachers: class-specific events are auto-approved, school-wide need approval
+                if (event_type === 'class_specific') {
                     eventStatus = 'approved';
+                } else {
+                    eventStatus = 'pending';
                 }
             }
 
@@ -127,14 +131,37 @@ router.post('/events',
                     status: eventStatus,
                     created_by: req.user.id
                 }])
-                .select()
+                .select(`
+                    *,
+                    creator:created_by (id, full_name, role),
+                    approver:approved_by (id, full_name, role),
+                    class:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
+                `)
                 .single();
 
             if (error) throw error;
 
+            // Add status message based on the event status
+            let statusMessage = 'Event created successfully';
+            if (data.status === 'pending') {
+                statusMessage = 'Event created successfully and is pending approval';
+            } else if (data.status === 'approved') {
+                statusMessage = 'Event created and approved successfully';
+            }
+
             res.status(201).json({
                 status: 'success',
-                data: { event: data }
+                message: statusMessage,
+                data: {
+                    event: data,
+                    approval_status: data.status,
+                    requires_approval: data.status === 'pending'
+                }
             });
         } catch (error) {
             next(error);
@@ -222,6 +249,17 @@ router.get('/events',
             let filteredEvents = data || [];
             if (use_ist === 'true' && statusFilter) {
                 filteredEvents = filteredEvents.filter(event => event.status === statusFilter);
+            }
+
+            // Add status fields to IST function response if they're missing
+            if (use_ist === 'true') {
+                filteredEvents = filteredEvents.map(event => ({
+                    ...event,
+                    status: event.status || 'approved', // Default to approved if missing
+                    approved_by: event.approved_by || null,
+                    approved_at: event.approved_at || null,
+                    rejection_reason: event.rejection_reason || null
+                }));
             }
 
             res.json({
