@@ -4,6 +4,22 @@ import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = express.Router();
 
+/**
+ * BIRTHDAYS API ENDPOINTS
+ * 
+ * Date Range Filtering:
+ * - /upcoming now supports custom date ranges via start_date and end_date query parameters
+ * - Format: YYYY-MM-DD (e.g., 2024-01-01)
+ * - Alternative: Use days_ahead parameter to specify number of days from today
+ * - Default behavior: next 7 days if no date parameters provided
+ * 
+ * Examples:
+ * - /upcoming?start_date=2024-01-01&end_date=2024-01-31 (January 2024)
+ * - /upcoming?days_ahead=30 (next 30 days)
+ * - /upcoming?start_date=2024-12-01&end_date=2024-12-31 (December 2024)
+ * - /upcoming (default: next 7 days)
+ */
+
 // Get today's birthdays (Admin/Principal/Teacher)
 router.get('/today',
     authenticate,
@@ -88,7 +104,7 @@ router.get('/today',
     }
 );
 
-// Get upcoming birthdays (next 7 days)
+// Get upcoming birthdays with date range support
 router.get('/upcoming',
     authenticate,
     authorize(['admin', 'principal', 'teacher']),
@@ -98,7 +114,7 @@ router.get('/upcoming',
             const page = parseInt(req.query.page) || 1;
             const limit = parseInt(req.query.limit) || 20;
             const offset = (page - 1) * limit;
-            const { class_division_id } = req.query; // Add division filter
+            const { class_division_id, start_date, end_date, days_ahead } = req.query;
             const upcoming = [];
 
             // Build query
@@ -132,11 +148,45 @@ router.get('/upcoming',
 
             if (allStudentsError) throw allStudentsError;
 
-            // Get birthdays for next 7 days
-            for (let i = 0; i < 7; i++) {
-                const date = new Date(today);
-                date.setDate(today.getDate() + i);
+            let startDate, endDate;
 
+            if (start_date && end_date) {
+                // Use custom date range
+                startDate = new Date(start_date);
+                endDate = new Date(end_date);
+
+                if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid date format. Use YYYY-MM-DD'
+                    });
+                }
+
+                if (startDate > endDate) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'start_date cannot be after end_date'
+                    });
+                }
+            } else {
+                // Use default behavior (next 7 days or custom days_ahead)
+                const daysToCheck = parseInt(days_ahead) || 7;
+                startDate = new Date(today);
+                endDate = new Date(today);
+                endDate.setDate(today.getDate() + daysToCheck - 1);
+            }
+
+            // Generate all dates in the range
+            const datesInRange = [];
+            const currentDate = new Date(startDate);
+
+            while (currentDate <= endDate) {
+                datesInRange.push(new Date(currentDate));
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+
+            // Get birthdays for each date in the range
+            for (const date of datesInRange) {
                 // Filter students with birthdays on this date and current academic records
                 const activeStudents = allStudents.filter(student => {
                     // Check if student has current academic records
@@ -169,6 +219,11 @@ router.get('/upcoming',
                     upcoming_birthdays: paginatedUpcoming,
                     total_count: totalUpcoming,
                     class_division_id: class_division_id || null,
+                    date_range: {
+                        start_date: startDate.toISOString().split('T')[0],
+                        end_date: endDate.toISOString().split('T')[0],
+                        total_days: datesInRange.length
+                    },
                     pagination: {
                         page,
                         limit,
