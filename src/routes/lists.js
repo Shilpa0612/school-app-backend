@@ -590,11 +590,13 @@ router.get('/staff', authenticate, async (req, res) => {
             .order('assigned_date', { ascending: true });
 
         // Debug: Check all assignments in the table
+        console.log('=== STARTING DEBUG QUERIES ===');
         const { data: allAssignments, error: allAssignmentsError } = await supabase
             .from('class_teacher_assignments')
             .select('teacher_id, assignment_type, is_active')
             .limit(10);
 
+        console.log('=== DEBUG QUERY 1 COMPLETED ===');
         console.log('All assignments in table:', allAssignments);
         console.log('All assignments error:', allAssignmentsError);
 
@@ -604,6 +606,7 @@ router.get('/staff', authenticate, async (req, res) => {
             .select('id, division, teacher_id')
             .limit(10);
 
+        console.log('=== DEBUG QUERY 2 COMPLETED ===');
         console.log('All class divisions:', allClassDivisions);
         console.log('All class divisions error:', allClassDivisionsError);
 
@@ -614,6 +617,7 @@ router.get('/staff', authenticate, async (req, res) => {
             .not('teacher_id', 'is', null)
             .limit(10);
 
+        console.log('=== DEBUG QUERY 3 COMPLETED ===');
         console.log('Class divisions with teachers:', classDivisionsWithTeachers);
         console.log('Class divisions with teachers error:', classDivisionsWithTeachersError);
 
@@ -622,14 +626,17 @@ router.get('/staff', authenticate, async (req, res) => {
             .from('class_divisions')
             .select('id', { count: 'exact' });
 
+        console.log('=== DEBUG QUERY 4 COMPLETED ===');
         console.log('Total class divisions count:', allClassDivisionsCount);
         console.log('Total class divisions count error:', allClassDivisionsCountError);
 
         // Debug: Check staff data structure
+        console.log('=== DEBUG QUERY 5 COMPLETED ===');
         console.log('Staff data structure:');
         staffData.forEach((staff, index) => {
             console.log(`${index}: ${staff.full_name} - user_id: ${staff.user_id}, user.id: ${staff.user?.id}`);
         });
+        console.log('=== ALL DEBUG QUERIES COMPLETED ===');
 
         // Get legacy assignments (from class_divisions table)
         const { data: legacyAssignments, error: legacyError } = await supabase
@@ -1534,6 +1541,56 @@ router.post('/staff/backfill-user-ids', authenticate, async (req, res) => {
     } catch (error) {
         logger.error('Error in backfill-user-ids:', error);
         res.status(500).json({ status: 'error', message: 'Internal server error' });
+    }
+});
+
+// Test endpoint to check database structure
+router.get('/test-db', async (req, res) => {
+    try {
+        console.log('=== TESTING DATABASE STRUCTURE ===');
+
+        // Test 1: Check if class_teacher_assignments table exists
+        const { data: tableTest1, error: error1 } = await supabase
+            .from('class_teacher_assignments')
+            .select('id')
+            .limit(1);
+
+        console.log('Table test 1 result:', tableTest1);
+        console.log('Table test 1 error:', error1);
+
+        // Test 2: Check if class_divisions table exists
+        const { data: tableTest2, error: error2 } = await supabase
+            .from('class_divisions')
+            .select('id')
+            .limit(1);
+
+        console.log('Table test 2 result:', tableTest2);
+        console.log('Table test 2 error:', error2);
+
+        // Test 3: Check table structure
+        const { data: tableInfo, error: error3 } = await supabase
+            .rpc('get_table_info', { table_name: 'class_teacher_assignments' });
+
+        console.log('Table info result:', tableInfo);
+        console.log('Table info error:', error3);
+
+        res.json({
+            status: 'success',
+            message: 'Database structure test completed',
+            data: {
+                class_teacher_assignments: { data: tableTest1, error: error1 },
+                class_divisions: { data: tableTest2, error: error2 },
+                table_info: { data: tableInfo, error: error3 }
+            }
+        });
+
+    } catch (error) {
+        console.error('Test endpoint error:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Test failed',
+            error: error.message
+        });
     }
 });
 
