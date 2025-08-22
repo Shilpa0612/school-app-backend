@@ -80,6 +80,18 @@ router.get('/',
                         teacher:teacher_id (
                             id,
                             full_name
+                        ),
+                        class_teacher_assignments (
+                            id,
+                            teacher_id,
+                            assignment_type,
+                            subject,
+                            is_primary,
+                            is_active,
+                            teacher:teacher_id (
+                                id,
+                                full_name
+                            )
                         )
                     )
                 `)
@@ -1537,8 +1549,6 @@ router.get('/:student_id',
                     admission_date,
                     status,
                     profile_photo_path,
-                    gender,
-                    blood_group,
                     student_academic_records (
                         id,
                         roll_number,
