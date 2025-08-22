@@ -604,11 +604,19 @@ router.get('/staff', authenticate, async (req, res) => {
             .in('teacher_id', teacherIds)
             .not('teacher_id', 'is', null);
 
-        // Log for debugging
-        console.log('Teacher IDs:', teacherIds);
-        console.log('Teacher assignments:', teacherAssignments);
-        console.log('Legacy assignments:', legacyAssignments);
+        // Debug: Check all assignments without filtering
+        const { data: allAssignments, error: allAssignmentsError } = await supabase
+            .from('class_teacher_assignments')
+            .select('teacher_id, assignment_type, subject, is_active')
+            .eq('is_active', true);
+
+        console.log('=== DEBUG INFO ===');
+        console.log('Teacher IDs from staff:', teacherIds);
+        console.log('All active assignments in table:', allAssignments);
+        console.log('All assignments error:', allAssignmentsError);
+        console.log('Filtered teacher assignments:', teacherAssignments);
         console.log('Assignment error:', assignmentError);
+        console.log('Legacy assignments:', legacyAssignments);
         console.log('Legacy error:', legacyError);
 
         if (assignmentError) {
