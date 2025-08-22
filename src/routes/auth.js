@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
-import { adminSupabase, supabase } from '../config/supabase.js';
+import { adminSupabase, monitoredSupabase } from '../config/supabase.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -332,8 +332,8 @@ router.post('/login', async (req, res, next) => {
             });
         }
 
-        // OPTIMIZATION: Only select essential fields for login
-        const { data: user, error: userError } = await supabase
+        // OPTIMIZATION: Only select essential fields for login with query optimization
+        const { data: user, error: userError } = await monitoredSupabase
             .from('users')
             .select('id, phone_number, password_hash, role, full_name, email, preferred_language')
             .eq('phone_number', phone_number)
@@ -367,7 +367,7 @@ router.post('/login', async (req, res, next) => {
         );
 
         // OPTIMIZATION: Update last_login asynchronously (don't block response)
-        supabase
+        monitoredSupabase
             .from('users')
             .update({ last_login: new Date().toISOString() })
             .eq('id', user.id)
@@ -382,7 +382,7 @@ router.post('/login', async (req, res, next) => {
         // OPTIMIZATION: Handle teacher staff sync asynchronously (don't block login)
         if (user.role === 'teacher') {
             // Fire and forget - don't block login response
-            supabase
+            monitoredSupabase
                 .from('staff')
                 .select('id')
                 .eq('user_id', user.id)
@@ -399,7 +399,7 @@ router.post('/login', async (req, res, next) => {
                             created_by: user.id
                         };
 
-                        return supabase.from('staff').insert(staffData);
+                        return monitoredSupabase.from('staff').insert(staffData);
                     }
                 })
                 .then(() => {
@@ -431,6 +431,46 @@ router.post('/login', async (req, res, next) => {
         res.status(500).json({
             status: 'error',
             message: 'Internal server error'
+        });
+    }
+});
+
+// OPTIMIZATION: Performance monitoring endpoint for scale testing
+router.get('/performance-stats', async (req, res) => {
+    try {
+        const optimizerStats = queryOptimizer.getStats();
+
+        // Get database performance metrics
+        const startTime = Date.now();
+        const { data: userCount, error: countError } = await monitoredSupabase
+            .from('users')
+            .select('id', { count: 'exact' });
+
+        const queryTime = Date.now() - startTime;
+
+        res.json({
+            status: 'success',
+            data: {
+                query_optimizer: optimizerStats,
+                database_performance: {
+                    total_users: userCount?.length || 0,
+                    query_time_ms: queryTime,
+                    performance_rating: queryTime < 100 ? 'excellent' :
+                        queryTime < 300 ? 'good' :
+                            queryTime < 1000 ? 'fair' : 'poor'
+                },
+                recommendations: [
+                    queryTime > 1000 ? 'Consider adding more database indexes' : null,
+                    optimizerStats.cacheSize > 100 ? 'Consider increasing cache timeout' : null,
+                    'Ensure phone_number index exists on users table'
+                ].filter(Boolean)
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            message: 'Failed to get performance stats',
+            error: error.message
         });
     }
 });
