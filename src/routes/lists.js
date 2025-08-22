@@ -489,6 +489,189 @@ router.delete('/books/:id', authenticate, async (req, res) => {
     }
 });
 
+// Get staff with teaching details (using proven working queries)
+router.get('/staff-teaching', authenticate, async (req, res) => {
+    try {
+        const { page = 1, limit = 20, role, department, is_active } = req.query;
+        const offset = (page - 1) * limit;
+
+        // First get staff with user information
+        let query = supabase
+            .from('staff')
+            .select(`
+                *,
+                user:user_id (
+                    id,
+                    full_name,
+                    email,
+                    phone_number,
+                    role
+                )
+            `)
+            .order('created_at', { ascending: false });
+
+        // Apply filters
+        if (role) {
+            query = query.eq('role', role);
+        }
+
+        if (department) {
+            query = query.eq('department', department);
+        }
+
+        if (is_active !== undefined) {
+            query = query.eq('is_active', is_active === 'true');
+        }
+
+        // Get total count
+        const { count, error: countError } = await supabase
+            .from('staff')
+            .select('*', { count: 'exact', head: true });
+
+        if (countError) {
+            logger.error('Error getting staff count:', countError);
+        }
+
+        // Get paginated staff results
+        const { data: staffData, error: staffError } = await query
+            .range(offset, offset + limit - 1);
+
+        if (staffError) {
+            logger.error('Error fetching staff:', staffError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch staff'
+            });
+        }
+
+        // Get teacher assignments using the exact working query structure
+        const { data: teacherAssignments, error: assignmentsError } = await supabase
+            .from('class_teacher_assignments')
+            .select(`
+                id,
+                class_division_id,
+                teacher_id,
+                assignment_type,
+                subject,
+                is_primary,
+                is_active,
+                teacher:teacher_id (
+                    id,
+                    full_name,
+                    role
+                ),
+                class_division:class_division_id (
+                    division,
+                    class_level:class_level_id (
+                        name
+                    ),
+                    academic_year:academic_year_id (
+                        year_name
+                    )
+                )
+            `)
+            .eq('is_active', true);
+
+        if (assignmentsError) {
+            logger.error('Error fetching teacher assignments:', assignmentsError);
+        }
+
+        // Get legacy class teacher assignments from class_divisions
+        const { data: legacyClassTeachers, error: legacyError } = await supabase
+            .from('class_divisions')
+            .select(`
+                id,
+                division,
+                teacher_id,
+                class_level:class_level_id (
+                    name
+                ),
+                academic_year:academic_year_id (
+                    year_name
+                )
+            `)
+            .not('teacher_id', 'is', null);
+
+        if (legacyError) {
+            logger.error('Error fetching legacy class teachers:', legacyError);
+        }
+
+        // Process and combine the data
+        const staff = staffData.map(staffMember => {
+            // Only process assignments for teachers
+            if (staffMember.user?.role === 'teacher') {
+                const teacherId = staffMember.user_id;
+
+                // Get class teacher assignments (from legacy class_divisions table)
+                const classTeacherDivisions = legacyClassTeachers
+                    ?.filter(div => div.teacher_id === teacherId)
+                    .map(div => ({
+                        class_division_id: div.id,
+                        class_name: `${div.class_level.name} ${div.division}`,
+                        academic_year: div.academic_year.year_name,
+                        is_primary: true,
+                        is_legacy: true
+                    })) || [];
+
+                // Get teacher assignments from new system
+                const teacherAssignmentDetails = teacherAssignments
+                    ?.filter(ta => ta.teacher_id === teacherId)
+                    .map(ta => ({
+                        class_division_id: ta.class_division_id,
+                        class_name: ta.class_division ? `${ta.class_division.class_level.name} ${ta.class_division.division}` : 'Unknown Class',
+                        academic_year: ta.class_division?.academic_year.year_name || 'Unknown Year',
+                        subject: ta.subject
+                    })) || [];
+
+                // Get subjects taught by this teacher
+                const subjectsTaught = teacherAssignments
+                    ?.filter(ta => ta.teacher_id === teacherId && ta.assignment_type === 'subject_teacher' && ta.subject)
+                    .map(ta => ta.subject)
+                    .filter((subject, index, self) => self.indexOf(subject) === index) || [];
+
+                return {
+                    ...staffMember,
+                    teaching_details: {
+                        class_teacher_of: classTeacherDivisions,
+                        subject_teacher_of: teacherAssignmentDetails.filter(ta => ta.subject),
+                        subjects_taught: subjectsTaught
+                    }
+                };
+            }
+
+            // For non-teachers, return staff member without teaching details
+            return {
+                ...staffMember,
+                teaching_details: {
+                    class_teacher_of: [],
+                    subject_teacher_of: [],
+                    subjects_taught: []
+                }
+            };
+        });
+
+        res.json({
+            status: 'success',
+            data: {
+                staff,
+                pagination: {
+                    page: parseInt(page),
+                    limit: parseInt(limit),
+                    total: count || 0,
+                    total_pages: Math.ceil((count || 0) / limit)
+                }
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in staff teaching:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
 // ==================== STAFF ====================
 
 // List staff
@@ -556,7 +739,16 @@ router.get('/staff', authenticate, async (req, res) => {
                 assignment_type,
                 is_primary,
                 subject,
-                is_active
+                is_active,
+                class_division:class_division_id (
+                    division,
+                    class_level:class_level_id (
+                        name
+                    ),
+                    academic_year:academic_year_id (
+                        year_name
+                    )
+                )
             `)
             .eq('is_active', true);
 
@@ -564,7 +756,7 @@ router.get('/staff', authenticate, async (req, res) => {
             logger.error('Error fetching teacher assignments:', assignmentsError);
         }
 
-        // Get all class divisions for context
+        // Get all class divisions for context (legacy class teachers)
         const { data: allDivisions, error: divisionsError } = await supabase
             .from('class_divisions')
             .select(`
@@ -581,11 +773,8 @@ router.get('/staff', authenticate, async (req, res) => {
                     name,
                     sequence_number
                 )
-            `);
-
-        if (divisionsError) {
-            logger.error('Error fetching divisions:', divisionsError);
-        }
+            `)
+            .not('teacher_id', 'is', null);
 
         // Process and combine the data
         const staff = staffData.map(staffMember => {
