@@ -67,10 +67,26 @@ router.post('/',
                 });
             }
 
-            // Verify the student exists in students_master table
+            // Verify the student exists in students_master table with class division info
             const { data: student, error: studentError } = await adminSupabase
                 .from('students_master')
-                .select('id, full_name, admission_number')
+                .select(`
+                    id, 
+                    full_name, 
+                    admission_number,
+                    student_academic_records (
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            level:class_level_id (
+                                id,
+                                name,
+                                sequence_number
+                            )
+                        ),
+                        roll_number
+                    )
+                `)
                 .eq('id', student_id)
                 .single();
 
@@ -95,9 +111,15 @@ router.post('/',
 
             if (error) throw error;
 
+            // Enhance the response with student and class division information
+            const enhancedLeaveRequest = {
+                ...data,
+                student: student
+            };
+
             res.status(201).json({
                 status: 'success',
-                data: { leave_request: data }
+                data: { leave_request: enhancedLeaveRequest }
             });
         } catch (error) {
             next(error);
@@ -117,7 +139,19 @@ router.get('/',
                     student:student_id (
                         id,
                         full_name,
-                        admission_number
+                        admission_number,
+                        student_academic_records (
+                            class_division:class_division_id (
+                                id,
+                                division,
+                                level:class_level_id (
+                                    id,
+                                    name,
+                                    sequence_number
+                                )
+                            ),
+                            roll_number
+                        )
                     )
                 `);
 
@@ -312,7 +346,26 @@ router.put('/:id/status',
                     reviewed_by: req.user.id
                 })
                 .eq('id', id)
-                .select()
+                .select(`
+                    *,
+                    student:student_id (
+                        id,
+                        full_name,
+                        admission_number,
+                        student_academic_records (
+                            class_division:class_division_id (
+                                id,
+                                division,
+                                level:class_level_id (
+                                    id,
+                                    name,
+                                    sequence_number
+                                )
+                            ),
+                            roll_number
+                        )
+                    )
+                `)
                 .single();
 
             if (error) throw error;

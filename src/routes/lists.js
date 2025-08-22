@@ -558,9 +558,36 @@ router.get('/staff', authenticate, async (req, res) => {
             supabase
                 .from('class_divisions')
                 .select(`
+                    id,
+                    division,
+                    teacher_id,
+                    academic_year:academic_year_id (
+                        id,
+                        year_name,
+                        is_active
+                    ),
+                    class_level:class_level_id (
+                        id,
+                        name,
+                        sequence_number
+                    )
+                `)
+                .in('teacher_id', teacherIds)
+                .not('teacher_id', 'is', null),
+
+            // New assignments (from class_teacher_assignments table)
+            supabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    is_active,
+                    class_division:class_division_id (
                         id,
                         division,
-                        teacher_id,
                         academic_year:academic_year_id (
                             id,
                             year_name,
@@ -571,37 +598,18 @@ router.get('/staff', authenticate, async (req, res) => {
                             name,
                             sequence_number
                         )
-                    `)
-                .in('teacher_id', teacherIds),
-
-            // New assignments (from class_teacher_assignments table)
-            supabase
-                .from('class_teacher_assignments')
-                .select(`
-                        id,
-                        teacher_id,
-                        assignment_type,
-                        subject,
-                        is_primary,
-                        is_active,
-                        class_division:class_division_id (
-                            id,
-                            division,
-                            academic_year:academic_year_id (
-                                id,
-                                year_name,
-                                is_active
-                            ),
-                            class_level:class_level_id (
-                                id,
-                                name,
-                                sequence_number
-                            )
-                        )
-                    `)
+                    )
+                `)
                 .in('teacher_id', teacherIds)
                 .eq('is_active', true)
         ]);
+
+        // Log for debugging
+        console.log('Teacher IDs:', teacherIds);
+        console.log('Legacy assignments:', legacyAssignments);
+        console.log('New assignments:', assignments);
+        console.log('Legacy error:', legacyError);
+        console.log('New assignments error:', assignError);
 
         if (assignError) {
             logger.error('Error fetching teacher assignments:', assignError);
@@ -609,6 +617,7 @@ router.get('/staff', authenticate, async (req, res) => {
 
         // Process and combine the data
         const staff = staffData.map(staffMember => {
+            console.log('Processing staff member:', staffMember.full_name, 'User ID:', staffMember.user_id);
             // Only process assignments for teachers
             if (staffMember.user?.role === 'teacher') {
                 // Get legacy class teacher assignments
@@ -625,6 +634,10 @@ router.get('/staff', authenticate, async (req, res) => {
                 // Get new assignments
                 const teacherAssignments = assignments
                     ?.filter(a => a.teacher_id === staffMember.user_id) || [];
+
+                console.log('Staff member:', staffMember.full_name);
+                console.log('Legacy assignments found:', legacyClassTeacher.length);
+                console.log('New assignments found:', teacherAssignments.length);
 
                 // Group assignments by type
                 const newClassTeacherDivisions = teacherAssignments

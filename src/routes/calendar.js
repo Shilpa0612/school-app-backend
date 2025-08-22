@@ -99,6 +99,18 @@ router.post('/events',
                 utcEventDate = new Date(utcEventDate.getTime() - istOffset);
             }
 
+            // Determine event status based on user role and event type
+            let eventStatus = 'approved'; // Default for admin/principal
+            if (!['admin', 'principal'].includes(req.user.role)) {
+                // Teachers need approval for school-wide events
+                if (event_type === 'school_wide') {
+                    eventStatus = 'pending';
+                } else {
+                    // Class-specific events by teachers are auto-approved
+                    eventStatus = 'approved';
+                }
+            }
+
             const { data, error } = await adminSupabase
                 .from('calendar_events')
                 .insert([{
@@ -112,6 +124,7 @@ router.post('/events',
                     end_time,
                     event_category,
                     timezone,
+                    status: eventStatus,
                     created_by: req.user.id
                 }])
                 .select()
@@ -145,6 +158,12 @@ router.get('/events',
 
             let query;
 
+            // Filter events based on user role
+            let statusFilter = 'approved'; // Default: only show approved events
+            if (['admin', 'principal'].includes(req.user.role)) {
+                statusFilter = null; // Admin/Principal can see all events
+            }
+
             if (use_ist === 'true') {
                 // Use the custom function for IST timezone
                 query = supabase.rpc('get_events_with_ist', {
@@ -152,7 +171,8 @@ router.get('/events',
                     p_end_date: end_date,
                     p_class_division_id: class_division_id,
                     p_event_type: event_type,
-                    p_event_category: event_category
+                    p_event_category: event_category,
+                    p_status: statusFilter
                 });
             } else {
                 // Use regular query
@@ -161,6 +181,7 @@ router.get('/events',
                     .select(`
                     *,
                         creator:created_by (id, full_name, role),
+                        approver:approved_by (id, full_name, role),
                         class:class_division_id (
                             id,
                             division,
@@ -168,6 +189,11 @@ router.get('/events',
                             class_level:class_level_id (name)
                         )
                     `);
+
+                // Apply status filter
+                if (statusFilter) {
+                    query = query.eq('status', statusFilter);
+                }
 
                 // Apply filters
                 if (start_date) {
@@ -266,7 +292,8 @@ router.get('/events/parent',
                     p_start_date: start_date,
                     p_end_date: end_date,
                     p_event_category: event_category,
-                    p_class_division_ids: classDivisionIds
+                    p_class_division_ids: classDivisionIds,
+                    p_status: 'approved' // Parents only see approved events
                 });
             } else {
                 // Use regular query with parent-specific filtering
@@ -275,13 +302,15 @@ router.get('/events/parent',
                     .select(`
                         *,
                         creator:created_by (id, full_name, role),
+                        approver:approved_by (id, full_name, role),
                         class:class_division_id (
                             id,
                             division,
                             academic_year:academic_year_id (year_name),
                             class_level:class_level_id (name)
                         )
-                    `);
+                    `)
+                    .eq('status', 'approved'); // Parents only see approved events
 
                 // Build the OR condition based on whether parent has children
                 if (classDivisionIds.length > 0) {
@@ -721,6 +750,219 @@ router.get('/events/class/:class_division_id',
             res.json({
                 status: 'success',
                 data: { events: data }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Approve event (Admin/Principal only)
+router.post('/events/:id/approve',
+    authenticate,
+    [
+        body('rejection_reason').optional().isString().trim()
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            // Check if user is admin or principal
+            if (!['admin', 'principal'].includes(req.user.role)) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Only admin and principal can approve events'
+                });
+            }
+
+            const { id } = req.params;
+            const { rejection_reason } = req.body;
+
+            // Check if event exists and is pending
+            const { data: event, error: fetchError } = await adminSupabase
+                .from('calendar_events')
+                .select('id, status, title')
+                .eq('id', id)
+                .single();
+
+            if (fetchError || !event) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Event not found'
+                });
+            }
+
+            if (event.status !== 'pending') {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Event is already ${event.status}`
+                });
+            }
+
+            // Approve the event
+            const { data: updatedEvent, error: updateError } = await adminSupabase
+                .from('calendar_events')
+                .update({
+                    status: 'approved',
+                    approved_by: req.user.id,
+                    approved_at: new Date().toISOString()
+                })
+                .eq('id', id)
+                .select(`
+                    *,
+                    creator:created_by (id, full_name, role),
+                    approver:approved_by (id, full_name, role),
+                    class:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
+                `)
+                .single();
+
+            if (updateError) throw updateError;
+
+            res.json({
+                status: 'success',
+                message: 'Event approved successfully',
+                data: { event: updatedEvent }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Reject event (Admin/Principal only)
+router.post('/events/:id/reject',
+    authenticate,
+    [
+        body('rejection_reason').notEmpty().withMessage('Rejection reason is required')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            // Check if user is admin or principal
+            if (!['admin', 'principal'].includes(req.user.role)) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Only admin and principal can reject events'
+                });
+            }
+
+            const { id } = req.params;
+            const { rejection_reason } = req.body;
+
+            // Check if event exists and is pending
+            const { data: event, error: fetchError } = await adminSupabase
+                .from('calendar_events')
+                .select('id, status, title')
+                .eq('id', id)
+                .single();
+
+            if (fetchError || !event) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Event not found'
+                });
+            }
+
+            if (event.status !== 'pending') {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Event is already ${event.status}`
+                });
+            }
+
+            // Reject the event
+            const { data: updatedEvent, error: updateError } = await adminSupabase
+                .from('calendar_events')
+                .update({
+                    status: 'rejected',
+                    approved_by: req.user.id,
+                    approved_at: new Date().toISOString(),
+                    rejection_reason: rejection_reason
+                })
+                .eq('id', id)
+                .select(`
+                    *,
+                    creator:created_by (id, full_name, role),
+                    approver:approved_by (id, full_name, role),
+                    class:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
+                `)
+                .single();
+
+            if (updateError) throw updateError;
+
+            res.json({
+                status: 'success',
+                message: 'Event rejected successfully',
+                data: { event: updatedEvent }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Get pending events for approval (Admin/Principal only)
+router.get('/events/pending',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            // Check if user is admin or principal
+            if (!['admin', 'principal'].includes(req.user.role)) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Only admin and principal can view pending events'
+                });
+            }
+
+            const { page = 1, limit = 20 } = req.query;
+            const offset = (page - 1) * limit;
+
+            const { data: events, error, count } = await adminSupabase
+                .from('calendar_events')
+                .select(`
+                    *,
+                    creator:created_by (id, full_name, role),
+                    class:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
+                `, { count: 'exact' })
+                .eq('status', 'pending')
+                .order('created_at', { ascending: false })
+                .range(offset, offset + limit - 1);
+
+            if (error) throw error;
+
+            res.json({
+                status: 'success',
+                data: {
+                    events: events || [],
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: count || 0,
+                        total_pages: Math.ceil((count || 0) / limit)
+                    }
+                }
             });
         } catch (error) {
             next(error);
