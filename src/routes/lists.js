@@ -497,9 +497,19 @@ router.get('/staff', authenticate, async (req, res) => {
         const { page = 1, limit = 20, role, department, is_active } = req.query;
         const offset = (page - 1) * limit;
 
+        // First get staff with user information
         let query = supabase
             .from('staff')
-            .select('*')
+            .select(`
+                *,
+                user:user_id (
+                    id,
+                    full_name,
+                    email,
+                    phone_number,
+                    role
+                )
+            `)
             .order('created_at', { ascending: false });
 
         // Apply filters
@@ -524,9 +534,94 @@ router.get('/staff', authenticate, async (req, res) => {
             logger.error('Error getting staff count:', countError);
         }
 
-        // Get paginated results
-        const { data: staff, error } = await query
+        // Get paginated staff results
+        const { data: staffData, error: staffError } = await query
             .range(offset, offset + limit - 1);
+
+        if (staffError) {
+            logger.error('Error fetching staff:', staffError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch staff'
+            });
+        }
+
+        // Get class assignments for teachers
+        const teacherIds = staffData
+            .filter(s => s.user?.role === 'teacher')
+            .map(s => s.user_id)
+            .filter(Boolean);
+
+        const { data: assignments, error: assignError } = await supabase
+            .from('class_teacher_assignments')
+            .select(`
+                id,
+                teacher_id,
+                assignment_type,
+                subject,
+                is_primary,
+                class_division:class_division_id (
+                    id,
+                    division,
+                    academic_year:academic_year_id (
+                        id,
+                        year_name
+                    ),
+                    class_level:class_level_id (
+                        id,
+                        name,
+                        sequence_number
+                    )
+                )
+            `)
+            .in('teacher_id', teacherIds)
+            .eq('is_active', true);
+
+        if (assignError) {
+            logger.error('Error fetching teacher assignments:', assignError);
+        }
+
+        // Process and combine the data
+        const staff = staffData.map(staffMember => {
+            // Only process assignments for teachers
+            if (staffMember.user?.role === 'teacher' && assignments) {
+                const teacherAssignments = assignments.filter(a => a.teacher_id === staffMember.user_id);
+
+                // Group assignments by type
+                const classTeacherDivisions = teacherAssignments
+                    .filter(a => a.assignment_type === 'class_teacher')
+                    .map(a => ({
+                        class_division_id: a.class_division.id,
+                        class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
+                        academic_year: a.class_division.academic_year.year_name,
+                        is_primary: a.is_primary
+                    }));
+
+                const subjectTeacherDetails = teacherAssignments
+                    .filter(a => a.assignment_type === 'subject_teacher')
+                    .map(a => ({
+                        class_division_id: a.class_division.id,
+                        class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
+                        academic_year: a.class_division.academic_year.year_name,
+                        subject: a.subject
+                    }));
+
+                // Get unique subjects taught
+                const subjects = [...new Set(teacherAssignments
+                    .filter(a => a.subject)
+                    .map(a => a.subject))];
+
+                return {
+                    ...staffMember,
+                    teaching_details: {
+                        class_teacher_of: classTeacherDivisions,
+                        subject_teacher_of: subjectTeacherDetails,
+                        subjects_taught: subjects
+                    }
+                };
+            }
+            return staffMember;
+        });
 
         if (error) {
             logger.error('Error fetching staff:', error);

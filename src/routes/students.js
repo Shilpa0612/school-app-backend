@@ -48,23 +48,97 @@ router.get('/',
                 unlinked_only = false
             } = req.query;
 
-            // Build query
+            // Get current academic year if not specified
+            if (!academic_year_id) {
+                const { data: currentYear } = await adminSupabase
+                    .from('academic_years')
+                    .select('id')
+                    .eq('is_active', true)
+                    .single();
+                academic_year_id = currentYear?.id;
+            }
+
+            // First get the academic records that match our filters
+            let academicRecordsQuery = adminSupabase
+                .from('student_academic_records')
+                .select(`
+                    student_id,
+                    roll_number,
+                    status,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        class_level:class_level_id (
+                            id,
+                            name,
+                            sequence_number
+                        ),
+                        academic_year:academic_year_id (
+                            id,
+                            year_name
+                        ),
+                        teacher:teacher_id (
+                            id,
+                            full_name
+                        )
+                    )
+                `)
+                .eq('status', 'ongoing');
+
+            if (academic_year_id) {
+                academicRecordsQuery = academicRecordsQuery.eq('class_division.academic_year_id', academic_year_id);
+            }
+
+            if (class_division_id) {
+                academicRecordsQuery = academicRecordsQuery.eq('class_division_id', class_division_id);
+            }
+
+            if (class_level_id) {
+                academicRecordsQuery = academicRecordsQuery.eq('class_division.class_level_id', class_level_id);
+            }
+
+            const { data: academicRecords, error: academicError } = await academicRecordsQuery;
+
+            if (academicError) {
+                logger.error('Error fetching academic records:', academicError);
+                throw academicError;
+            }
+
+            // Get the student IDs that match our filters
+            const studentIds = academicRecords.map(record => record.student_id);
+
+            // Now build the main query for students
             let query = adminSupabase
                 .from('students_master')
                 .select(`
                     *,
-                    student_academic_records(
-                        *,
-                        class_division:class_division_id(
-                            *,
-                            level:class_level_id(*),
-                            teacher:teacher_id(id, full_name),
-                            academic_year:academic_year_id(*)
+                    student_academic_records!inner (
+                        id,
+                        roll_number,
+                        status,
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            class_level:class_level_id (
+                                id,
+                                name,
+                                sequence_number
+                            ),
+                            academic_year:academic_year_id (
+                                id,
+                                year_name
+                            ),
+                            teacher:teacher_id (
+                                id,
+                                full_name
+                            )
                         )
                     ),
-                    parent_student_mappings(
-                        *,
-                        parent:parent_id(
+                    parent_student_mappings (
+                        id,
+                        relationship,
+                        is_primary_guardian,
+                        parent:parent_id (
                             id,
                             full_name,
                             phone_number,
@@ -82,19 +156,11 @@ router.get('/',
                 query = query.eq('status', status);
             }
 
-            if (class_division_id) {
-                query = query.eq('student_academic_records.class_division_id', class_division_id);
+            if (studentIds.length > 0) {
+                query = query.in('id', studentIds);
             }
 
-            if (class_level_id) {
-                query = query.eq('student_academic_records.class_division.level.id', class_level_id);
-            }
-
-            if (academic_year_id) {
-                query = query.eq('student_academic_records.class_division.academic_year_id', academic_year_id);
-            }
-
-            // Get all students first for filtering
+            // Get students with filters
             const { data: allStudents, error } = await query;
 
             if (error) {
@@ -192,7 +258,9 @@ router.post('/',
         body('date_of_birth').isDate().withMessage('Valid date of birth is required'),
         body('admission_date').isDate().withMessage('Valid admission date is required'),
         body('class_division_id').isUUID().withMessage('Valid class division ID is required'),
-        body('roll_number').notEmpty().withMessage('Roll number is required')
+        body('roll_number').notEmpty().withMessage('Roll number is required'),
+        body('gender').optional().isIn(['male', 'female', 'other']).withMessage('Invalid gender value'),
+        body('blood_group').optional().isIn(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']).withMessage('Invalid blood group value')
     ],
     async (req, res, next) => {
         try {
@@ -232,7 +300,9 @@ router.post('/',
                     full_name,
                     date_of_birth,
                     admission_date,
-                    status: 'active'
+                    status: 'active',
+                    gender: req.body.gender || null,
+                    blood_group: req.body.blood_group || null
                 }])
                 .select()
                 .single();
@@ -1435,6 +1505,8 @@ router.get('/:student_id',
                     admission_date,
                     status,
                     profile_photo_path,
+                    gender,
+                    blood_group,
                     student_academic_records (
                         id,
                         roll_number,
@@ -1499,7 +1571,9 @@ router.put('/:student_id',
     [
         body('full_name').optional().notEmpty().withMessage('Full name cannot be empty'),
         body('date_of_birth').optional().isDate().withMessage('Valid date of birth is required'),
-        body('status').optional().isIn(['active', 'inactive', 'transferred']).withMessage('Invalid status')
+        body('status').optional().isIn(['active', 'inactive', 'transferred']).withMessage('Invalid status'),
+        body('gender').optional().isIn(['male', 'female', 'other']).withMessage('Invalid gender value'),
+        body('blood_group').optional().isIn(['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']).withMessage('Invalid blood group value')
     ],
     async (req, res, next) => {
         try {
@@ -1669,11 +1743,11 @@ router.post('/:student_id/profile-photo',
                     .eq('parent_id', req.user.id)
                     .eq('student_id', student_id)
                     .single();
-                
+
                 if (mappingError || !parentMapping) {
-                    return res.status(403).json({ 
-                        status: 'error', 
-                        message: 'You can only upload photos for your own children' 
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You can only upload photos for your own children'
                     });
                 }
             }
