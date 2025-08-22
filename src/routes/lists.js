@@ -589,6 +589,30 @@ router.get('/staff', authenticate, async (req, res) => {
             .order('is_primary', { ascending: false })
             .order('assigned_date', { ascending: true });
 
+        // Debug: Check all assignments in the table
+        const { data: allAssignments, error: allAssignmentsError } = await supabase
+            .from('class_teacher_assignments')
+            .select('teacher_id, assignment_type, is_active')
+            .limit(10);
+
+        console.log('All assignments in table:', allAssignments);
+        console.log('All assignments error:', allAssignmentsError);
+
+        // Debug: Check all class divisions
+        const { data: allClassDivisions, error: allClassDivisionsError } = await supabase
+            .from('class_divisions')
+            .select('id, division, teacher_id')
+            .limit(10);
+
+        console.log('All class divisions:', allClassDivisions);
+        console.log('All class divisions error:', allClassDivisionsError);
+
+        // Debug: Check staff data structure
+        console.log('Staff data structure:');
+        staffData.forEach((staff, index) => {
+            console.log(`${index}: ${staff.full_name} - user_id: ${staff.user_id}, user.id: ${staff.user?.id}`);
+        });
+
         // Get legacy assignments (from class_divisions table)
         const { data: legacyAssignments, error: legacyError } = await supabase
             .from('class_divisions')
@@ -669,9 +693,10 @@ router.get('/staff', authenticate, async (req, res) => {
                 const allClassTeacherDivisions = [...legacyClassTeacher, ...newClassTeacherDivisions];
 
                 // Get unique subjects taught
-                const subjects = [...new Set(teacherAssignmentsForThisTeacher
-                    .filter(a => a.subject)
-                    .map(a => a.subject))];
+                const subjects = [...new Set(allClassTeacherDivisions
+                    .map(a => a.subject)
+                    .filter(Boolean)
+                    .concat(subjectTeacherDetails.map(s => s.subject).filter(Boolean)))];
 
                 return {
                     ...staffMember,
