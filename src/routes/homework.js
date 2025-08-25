@@ -24,7 +24,7 @@ const upload = multer({
 // Create homework
 router.post('/',
     authenticate,
-    authorize('teacher'),
+    authorize(['teacher', 'parent']),
     [
         body('class_division_id').isUUID(),
         body('subject').notEmpty().trim(),
@@ -55,19 +55,55 @@ router.post('/',
                 });
             }
 
-            // Verify teacher is assigned to this class division using new many-to-many system
-            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select('id, assignment_type, is_primary')
-                .eq('class_division_id', class_division_id)
-                .eq('teacher_id', req.user.id)
-                .eq('is_active', true)
-                .single();
+            let isAuthorized = false;
 
-            if (assignmentError || !teacherAssignment) {
+            if (req.user.role === 'teacher') {
+                // Verify teacher is assigned to this class division using new many-to-many system
+                const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, assignment_type, is_primary')
+                    .eq('class_division_id', class_division_id)
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true)
+                    .single();
+
+                if (!assignmentError && teacherAssignment) {
+                    isAuthorized = true;
+                }
+            } else if (req.user.role === 'parent') {
+                // Verify parent has children in this class division
+                const { data: childrenInClass, error: childrenError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        students:students_master (
+                            id
+                        ),
+                        student_academic_records (
+                            class_division_id
+                        )
+                    `)
+                    .eq('parent_id', req.user.id)
+                    .eq('student_academic_records.class_division_id', class_division_id);
+
+                if (!childrenError && childrenInClass && childrenInClass.length > 0) {
+                    // Check if any child is actually in this class
+                    const hasChildInClass = childrenInClass.some(mapping =>
+                        mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === class_division_id
+                        )
+                    );
+
+                    if (hasChildInClass) {
+                        isAuthorized = true;
+                    }
+                }
+            }
+
+            if (!isAuthorized) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'You are not assigned to this class division'
+                    message: 'You are not authorized to create homework for this class division'
                 });
             }
 
@@ -335,10 +371,10 @@ router.get('/:id',
     }
 );
 
-// Update homework (Teacher only)
+// Update homework (Teacher and Parent)
 router.put('/:id',
     authenticate,
-    authorize('teacher'),
+    authorize(['teacher', 'parent']),
     [
         body('subject').optional().notEmpty().trim().withMessage('Subject cannot be empty'),
         body('title').optional().notEmpty().trim().withMessage('Title cannot be empty'),
@@ -363,7 +399,7 @@ router.put('/:id',
                 due_date
             } = req.body;
 
-            // Verify homework exists and teacher is assigned to the class
+            // Verify homework exists and user is authorized
             const { data: existingHomework, error: fetchError } = await adminSupabase
                 .from('homework')
                 .select('id, class_division_id')
@@ -377,16 +413,52 @@ router.put('/:id',
                 });
             }
 
-            // Verify teacher is assigned to this class division using new many-to-many system
-            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select('id, assignment_type, is_primary')
-                .eq('class_division_id', existingHomework.class_division_id)
-                .eq('teacher_id', req.user.id)
-                .eq('is_active', true)
-                .single();
+            let isAuthorized = false;
 
-            if (assignmentError || !teacherAssignment) {
+            if (req.user.role === 'teacher') {
+                // Verify teacher is assigned to this class division using new many-to-many system
+                const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, assignment_type, is_primary')
+                    .eq('class_division_id', existingHomework.class_division_id)
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true)
+                    .single();
+
+                if (!assignmentError && teacherAssignment) {
+                    isAuthorized = true;
+                }
+            } else if (req.user.role === 'parent') {
+                // Verify parent has children in this class division
+                const { data: childrenInClass, error: childrenError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        students:students_master (
+                            id
+                        ),
+                        student_academic_records (
+                            class_division_id
+                        )
+                    `)
+                    .eq('parent_id', req.user.id)
+                    .eq('student_academic_records.class_division_id', existingHomework.class_division_id);
+
+                if (!childrenError && childrenInClass && childrenInClass.length > 0) {
+                    // Check if any child is actually in this class
+                    const hasChildInClass = childrenInClass.some(mapping =>
+                        mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === existingHomework.class_division_id
+                        )
+                    );
+
+                    if (hasChildInClass) {
+                        isAuthorized = true;
+                    }
+                }
+            }
+
+            if (!isAuthorized) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Not authorized to update this homework'
@@ -419,15 +491,15 @@ router.put('/:id',
     }
 );
 
-// Delete homework (Teacher only)
+// Delete homework (Teacher and Parent)
 router.delete('/:id',
     authenticate,
-    authorize('teacher'),
+    authorize(['teacher', 'parent']),
     async (req, res, next) => {
         try {
             const { id } = req.params;
 
-            // Verify homework exists and teacher is assigned to the class
+            // Verify homework exists and user is authorized
             const { data: homework, error: fetchError } = await adminSupabase
                 .from('homework')
                 .select('id, class_division_id')
@@ -441,16 +513,52 @@ router.delete('/:id',
                 });
             }
 
-            // Verify teacher is assigned to this class division using new many-to-many system
-            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select('id, assignment_type, is_primary')
-                .eq('class_division_id', homework.class_division_id)
-                .eq('teacher_id', req.user.id)
-                .eq('is_active', true)
-                .single();
+            let isAuthorized = false;
 
-            if (assignmentError || !teacherAssignment) {
+            if (req.user.role === 'teacher') {
+                // Verify teacher is assigned to this class division using new many-to-many system
+                const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, assignment_type, is_primary')
+                    .eq('class_division_id', homework.class_division_id)
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true)
+                    .single();
+
+                if (!assignmentError && teacherAssignment) {
+                    isAuthorized = true;
+                }
+            } else if (req.user.role === 'parent') {
+                // Verify parent has children in this class division
+                const { data: childrenInClass, error: childrenError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        students:students_master (
+                            id
+                        ),
+                        student_academic_records (
+                            class_division_id
+                        )
+                    `)
+                    .eq('parent_id', req.user.id)
+                    .eq('student_academic_records.class_division_id', homework.class_division_id);
+
+                if (!childrenError && childrenInClass && childrenInClass.length > 0) {
+                    // Check if any child is actually in this class
+                    const hasChildInClass = childrenInClass.some(mapping =>
+                        mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === homework.class_division_id
+                        )
+                    );
+
+                    if (hasChildInClass) {
+                        isAuthorized = true;
+                    }
+                }
+            }
+
+            if (!isAuthorized) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Not authorized to delete this homework'
@@ -478,7 +586,7 @@ router.delete('/:id',
 // Add homework attachments
 router.post('/:id/attachments',
     authenticate,
-    authorize('teacher'),
+    authorize(['teacher', 'parent']),
     upload.array('files', 5), // Maximum 5 files
     async (req, res, next) => {
         try {
@@ -498,16 +606,52 @@ router.post('/:id/attachments',
                 });
             }
 
-            // Verify teacher is assigned to this class division using new many-to-many system
-            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select('id, assignment_type, is_primary')
-                .eq('class_division_id', homework.class_division_id)
-                .eq('teacher_id', req.user.id)
-                .eq('is_active', true)
-                .single();
+            let isAuthorized = false;
 
-            if (assignmentError || !teacherAssignment) {
+            if (req.user.role === 'teacher') {
+                // Verify teacher is assigned to this class division using new many-to-many system
+                const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, assignment_type, is_primary')
+                    .eq('class_division_id', homework.class_division_id)
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true)
+                    .single();
+
+                if (!assignmentError && teacherAssignment) {
+                    isAuthorized = true;
+                }
+            } else if (req.user.role === 'parent') {
+                // Verify parent has children in this class division
+                const { data: childrenInClass, error: childrenError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        students:students_master (
+                            id
+                        ),
+                        student_academic_records (
+                            class_division_id
+                        )
+                    `)
+                    .eq('parent_id', req.user.id)
+                    .eq('student_academic_records.class_division_id', homework.class_division_id);
+
+                if (!childrenError && childrenInClass && childrenInClass.length > 0) {
+                    // Check if any child is actually in this class
+                    const hasChildInClass = childrenInClass.some(mapping =>
+                        mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === homework.class_division_id
+                        )
+                    );
+
+                    if (hasChildInClass) {
+                        isAuthorized = true;
+                    }
+                }
+            }
+
+            if (!isAuthorized) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Not authorized to add attachments to this homework'
@@ -604,9 +748,9 @@ router.get('/filters',
                     .from('class_teacher_assignments')
                     .select(`
                         class_division:class_division_id (
-                            id,
-                            division,
-                            level:class_level_id (name, sequence_number)
+                        id,
+                        division,
+                        level:class_level_id (name, sequence_number)
                         )
                     `)
                     .eq('teacher_id', req.user.id)
