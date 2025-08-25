@@ -54,7 +54,7 @@ class RealtimeService {
                 .on('postgres_changes', {
                     event: 'INSERT',
                     schema: 'public',
-                    table: 'chat_messages',
+                    table: 'messages',
                     filter: `thread_id=eq.${threadId}`
                 }, async (payload) => {
                     const message = payload.new;
@@ -62,12 +62,15 @@ class RealtimeService {
                     // Don't notify if message is from current user
                     if (message.sender_id === userId) return;
 
+                    // Only process chat messages (individual type)
+                    if (message.type !== 'individual') return;
+
                     // Get full message with sender info
                     const { data: fullMessage, error } = await supabase
-                        .from('chat_messages')
+                        .from('messages')
                         .select(`
                             *,
-                            sender:users(full_name, role)
+                            sender:users!messages_sender_id_fkey(full_name, role)
                         `)
                         .eq('id', message.id)
                         .single();
@@ -113,14 +116,15 @@ class RealtimeService {
 
             if (threadIds.length === 0) return [];
 
-            // Get messages since last check
+            // Get messages since last check from messages table
             const { data: messages, error } = await supabase
-                .from('chat_messages')
+                .from('messages')
                 .select(`
                     *,
-                    sender:users(full_name, role)
+                    sender:users!messages_sender_id_fkey(full_name, role)
                 `)
                 .in('thread_id', threadIds)
+                .eq('type', 'individual') // Only chat messages
                 .gt('created_at', lastCheckTime)
                 .neq('sender_id', userId) // Exclude user's own messages
                 .order('created_at', { ascending: true });

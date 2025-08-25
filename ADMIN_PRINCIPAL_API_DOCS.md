@@ -938,7 +938,93 @@ PUT /api/leave-requests/:id/status
 }
 ```
 
+### 3. Get All Teachers with Assignments
 
+```http
+GET /api/academic/teachers-with-assignments
+```
+
+**Access**: Admin, Principal only
+**Description**: Get all teachers with their complete assignment details including primary classes, subject teacher assignments, assistant assignments, and substitute assignments
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "teachers": [
+      {
+        "teacher_id": "uuid",
+        "full_name": "Teacher Name",
+        "phone_number": "+1234567890",
+        "email": "teacher@school.com",
+        "role": "teacher",
+        "staff_info": {
+          "staff_id": "uuid",
+          "department": "Mathematics",
+          "designation": "Senior Teacher",
+          "is_active": true
+        },
+        "assignments": {
+          "total": 3,
+          "primary_classes": [
+            {
+              "assignment_id": "uuid",
+              "class_division_id": "uuid",
+              "class_name": "Grade 10 A",
+              "academic_year": "2024-2025",
+              "assignment_type": "class_teacher",
+              "is_primary": true,
+              "assigned_date": "2024-06-01T00:00:00Z"
+            }
+          ],
+          "subject_teacher_assignments": [
+            {
+              "assignment_id": "uuid",
+              "class_division_id": "uuid",
+              "class_name": "Grade 9 B",
+              "academic_year": "2024-2025",
+              "subject": "Mathematics",
+              "assignment_type": "subject_teacher",
+              "is_primary": false,
+              "assigned_date": "2024-06-01T00:00:00Z"
+            }
+          ],
+          "assistant_assignments": [],
+          "substitute_assignments": []
+        },
+        "summary": {
+          "total_classes": 3,
+          "primary_teacher_for": 1,
+          "subject_teacher_for": 2,
+          "assistant_teacher_for": 0,
+          "substitute_teacher_for": 0,
+          "subjects_taught": ["Mathematics", "Physics"],
+          "has_assignments": true
+        }
+      }
+    ],
+    "total": 15,
+    "summary": {
+      "total_teachers": 15,
+      "teachers_with_assignments": 12,
+      "teachers_without_assignments": 3,
+      "total_primary_assignments": 12,
+      "total_subject_assignments": 25
+    }
+  }
+}
+```
+
+**Key Features**:
+
+- ✅ Complete teacher information with staff details
+- ✅ All assignment types (primary, subject teacher, assistant, substitute)
+- ✅ Subject information for subject teacher assignments
+- ✅ Summary statistics for each teacher
+- ✅ Overall summary for the school
+- ✅ Sorted alphabetically by teacher name
 
 ## Common Response Differences
 
@@ -1075,6 +1161,84 @@ GET /api/calendar/events
         }
       }
     ]
+  }
+}
+```
+
+## Staff Birthday Management
+
+### 1. Update Staff Date of Birth
+
+```http
+PUT /api/users/staff/:id/date-of-birth
+```
+
+**Access**: Admin only
+**Description**: Update date of birth for staff members (teachers, principals, admins)
+
+**Request Body**:
+
+```json
+{
+  "date_of_birth": "1985-03-15"
+}
+```
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "message": "Staff date of birth updated successfully",
+  "data": {
+    "staff": {
+      "id": "uuid",
+      "full_name": "John Smith",
+      "role": "teacher",
+      "date_of_birth": "1985-03-15"
+    }
+  }
+}
+```
+
+### 2. Get Staff Birthdays
+
+```http
+GET /api/users/staff/birthdays
+```
+
+**Access**: Admin, Principal
+**Description**: Get staff birthdays with upcoming birthday calculations
+
+**Query Parameters**:
+
+- `date` (optional): Filter by specific date (YYYY-MM-DD format)
+- `upcoming_days` (optional): Number of days to look ahead for upcoming birthdays (default: 30)
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "staff": [
+      {
+        "id": "uuid",
+        "full_name": "John Smith",
+        "role": "teacher",
+        "date_of_birth": "1985-03-15",
+        "email": "john.smith@school.com",
+        "phone_number": "+1234567890",
+        "days_until_birthday": 45,
+        "is_upcoming": true
+      }
+    ],
+    "summary": {
+      "total_staff": 5,
+      "upcoming_birthdays": 2,
+      "filter_date": null,
+      "upcoming_days": 30
+    }
   }
 }
 ```

@@ -16,6 +16,89 @@ Authorization: Bearer <your_jwt_token>
 
 ## Parent Endpoints
 
+### Birthday Management
+
+#### Get Teacher & Classmate Birthdays
+
+```http
+GET /api/birthdays/parent-view
+```
+
+**Access**: Parents only
+**Description**: Get birthdays of class teachers, subject teachers, and classmates for parent's children
+
+**Query Parameters**:
+- `days_ahead` (optional): Number of days to look ahead for upcoming birthdays (default: 30)
+- `specific_date` (optional): Specific date to check for birthdays (YYYY-MM-DD format)
+
+**Examples**:
+- `GET /api/birthdays/parent-view` - Next 30 days (default)
+- `GET /api/birthdays/parent-view?days_ahead=7` - Next 7 days
+- `GET /api/birthdays/parent-view?specific_date=2025-03-15` - Specific date
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "teachers": [
+      {
+        "teacher_id": "uuid",
+        "full_name": "John Smith",
+        "date_of_birth": "1985-03-15",
+        "assignments": [
+          {
+            "subject": "Mathematics",
+            "is_class_teacher": true
+          }
+        ],
+        "days_until_birthday": 45,
+        "is_upcoming": true
+      }
+    ],
+    "classmates": [
+      {
+        "student_id": "uuid",
+        "full_name": "Bob Wilson",
+        "date_of_birth": "2008-07-22",
+        "class_division": "Grade 10 A",
+        "days_until_birthday": 12,
+        "is_upcoming": true
+      }
+    ],
+    "summary": {
+      "total_teachers": 5,
+      "total_classmates": 25,
+      "upcoming_birthdays": 8,
+      "teachers_upcoming": 2,
+      "classmates_upcoming": 6,
+      "date_range": {
+        "days_ahead": 30,
+        "specific_date": null,
+        "filter_applied": "date_range"
+      }
+    }
+  }
+}
+```
+
+**Key Features**:
+
+- ✅ **Teacher birthdays** with contact info and assignments
+- ✅ **Classmate birthdays** with shared class information
+- ✅ **Upcoming birthdays** (next 30 days) highlighted
+- ✅ **Days until birthday** calculation
+- ✅ **Summary statistics** for quick overview
+- ✅ **Sorted by upcoming birthdays** (most recent first)
+
+**Use Cases**:
+
+- Parents can see teacher birthdays to send wishes
+- Parents can see classmate birthdays for their children
+- Parents can plan birthday celebrations
+- Parents can track upcoming birthdays
+
 ### 1. Fetch Children Details
 
 ```http
@@ -85,14 +168,14 @@ GET /api/users/children/:student_id
 }
 ```
 
-### 3. View Profile
+### 3. Get Children's Teachers (Enhanced for Messaging)
 
 ```http
-GET /api/users/profile
+GET /api/users/children/teachers
 ```
 
-**Access**: Parent
-**Description**: Get parent's profile information
+**Access**: Parents only
+**Description**: Get comprehensive information about children's teachers, classes, and contact details for messaging purposes
 
 **Response**:
 
@@ -100,19 +183,94 @@ GET /api/users/profile
 {
   "status": "success",
   "data": {
-    "user": {
+    "children": [
+      {
+        "student_id": "uuid",
+        "student_name": "Alex Johnson",
+        "admission_number": "ADM2024001",
+        "relationship": "father",
+        "is_primary_guardian": true,
+        "class_info": {
+          "class_division_id": "uuid",
+          "class_name": "Grade 10 A",
+          "division": "A",
+          "academic_year": "2024-2025",
+          "class_level": "Grade 10",
+          "roll_number": "001"
+        },
+        "teachers": [
+          {
+            "assignment_id": "uuid",
+            "teacher_id": "uuid",
+            "full_name": "Mrs. Sarah Wilson",
+            "phone_number": "+1234567890",
+            "email": "sarah.wilson@school.com",
+            "assignment_type": "class_teacher",
+            "subject": null,
+            "is_primary": true,
+            "assigned_date": "2024-06-01T00:00:00Z",
+            "contact_info": {
+              "phone": "+1234567890",
+              "email": "sarah.wilson@school.com"
+            }
+          },
+          {
+            "assignment_id": "uuid",
+            "teacher_id": "uuid",
+            "full_name": "Mr. John Smith",
+            "phone_number": "+1234567891",
+            "email": "john.smith@school.com",
+            "assignment_type": "subject_teacher",
+            "subject": "Mathematics",
+            "is_primary": false,
+            "assigned_date": "2024-06-01T00:00:00Z",
+            "contact_info": {
+              "phone": "+1234567891",
+              "email": "john.smith@school.com"
+            }
+          }
+        ]
+      }
+    ],
+    "principal": {
       "id": "uuid",
-      "full_name": "Parent Name",
-      "email": "parent@example.com",
-      "phone_number": "+1234567890",
-      "role": "parent",
-      "profile_photo": "path/to/photo",
-      "is_registered": true,
-      "created_at": "2024-03-15T10:00:00Z"
+      "full_name": "Dr. Michael Brown",
+      "email": "principal@school.com",
+      "phone_number": "+1234567899",
+      "role": "principal",
+      "contact_info": {
+        "phone": "+1234567899",
+        "email": "principal@school.com"
+      }
+    },
+    "summary": {
+      "total_children": 2,
+      "total_teachers": 5,
+      "total_classes": 2,
+      "children_with_teachers": 2,
+      "children_without_teachers": 0
     }
   }
 }
 ```
+
+**Key Features**:
+
+- ✅ **Complete child information** with admission number and relationship
+- ✅ **Detailed class information** including roll number and academic year
+- ✅ **All teacher assignments** (class teacher, subject teachers)
+- ✅ **Contact information** for all teachers and principal
+- ✅ **Assignment details** including subject and assignment type
+- ✅ **Summary statistics** for quick overview
+- ✅ **Sorted alphabetically** by child name
+
+**Use Cases**:
+
+- Parents can see all teachers for their children
+- Parents can contact specific subject teachers
+- Parents can message class teachers for general concerns
+- Parents can contact principal for school-wide issues
+- Parents can understand teacher roles and subjects
 
 ### 4. Update Profile
 

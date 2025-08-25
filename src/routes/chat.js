@@ -532,12 +532,12 @@ router.get('/messages', authenticate, async (req, res) => {
             });
         }
 
-        // Get messages
+        // Get messages from messages table (main storage)
         const { data: messages, error } = await adminSupabase
-            .from('chat_messages')
+            .from('messages')
             .select(`
                 *,
-                sender:users!chat_messages_sender_id_fkey(full_name, role),
+                sender:users!messages_sender_id_fkey(full_name, role),
                 attachments:chat_message_attachments(*)
             `)
             .eq('thread_id', thread_id)
@@ -559,9 +559,9 @@ router.get('/messages', authenticate, async (req, res) => {
             .eq('thread_id', thread_id)
             .eq('user_id', req.user.id);
 
-        // Get total count
+        // Get total count from messages table
         const { count, error: countError } = await adminSupabase
-            .from('chat_messages')
+            .from('messages')
             .select('*', { count: 'exact', head: true })
             .eq('thread_id', thread_id);
 
@@ -641,18 +641,20 @@ router.post('/messages', authenticate, async (req, res) => {
             });
         }
 
-        // Create message
+        // Create message in messages table (main storage)
         const { data: message, error } = await adminSupabase
-            .from('chat_messages')
+            .from('messages')
             .insert({
-                thread_id,
                 sender_id: req.user.id,
                 content,
-                message_type
+                type: 'individual', // Chat messages are individual conversations
+                status: 'approved', // Real-time messages are auto-approved
+                thread_id: thread_id, // Store thread reference
+                message_type: message_type
             })
             .select(`
                 *,
-                sender:users!chat_messages_sender_id_fkey(full_name, role)
+                sender:users!messages_sender_id_fkey(full_name, role)
             `)
             .single();
 
@@ -662,6 +664,22 @@ router.post('/messages', authenticate, async (req, res) => {
                 status: 'error',
                 message: 'Failed to create message'
             });
+        }
+
+        // Also create a reference in chat_messages for real-time functionality
+        const { error: chatMessageError } = await adminSupabase
+            .from('chat_messages')
+            .insert({
+                thread_id,
+                sender_id: req.user.id,
+                content,
+                message_type,
+                message_id: message.id // Reference to main message
+            });
+
+        if (chatMessageError) {
+            logger.error('Error creating chat message reference:', chatMessageError);
+            // Don't fail the request, just log the error
         }
 
         // Update thread's updated_at timestamp

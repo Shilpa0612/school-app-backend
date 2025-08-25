@@ -2437,4 +2437,205 @@ router.put('/update-parent-access/:mapping_id',
     }
 );
 
+// Get all teachers with their assigned classes (including subject teachers) - For Principal
+router.get('/teachers-with-assignments',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            // Get all teachers from users table
+            const { data: teachers, error: teachersError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, phone_number, email, role')
+                .eq('role', 'teacher');
+
+            if (teachersError) {
+                logger.error('Error fetching teachers:', teachersError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch teachers'
+                });
+            }
+
+            if (!teachers || teachers.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        teachers: [],
+                        total: 0,
+                        message: 'No teachers found'
+                    }
+                });
+            }
+
+            // Get all teacher assignments
+            const teacherIds = teachers.map(t => t.id);
+            const { data: assignments, error: assignmentsError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    assigned_date,
+                    is_active,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (
+                            year_name
+                        ),
+                        class_level:class_level_id (
+                            name,
+                            sequence_number
+                        )
+                    )
+                `)
+                .in('teacher_id', teacherIds)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false })
+                .order('assigned_date', { ascending: true });
+
+            if (assignmentsError) {
+                logger.error('Error fetching teacher assignments:', assignmentsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch teacher assignments'
+                });
+            }
+
+            // Get staff information for teachers
+            const { data: staffData, error: staffError } = await adminSupabase
+                .from('staff')
+                .select('id, user_id, department, designation, is_active')
+                .in('user_id', teacherIds)
+                .eq('is_active', true);
+
+            if (staffError) {
+                logger.error('Error fetching staff data:', staffError);
+                // Continue without staff data
+            }
+
+            // Group assignments by teacher
+            const assignmentsByTeacher = {};
+            (assignments || []).forEach(assignment => {
+                if (!assignmentsByTeacher[assignment.teacher_id]) {
+                    assignmentsByTeacher[assignment.teacher_id] = [];
+                }
+                assignmentsByTeacher[assignment.teacher_id].push(assignment);
+            });
+
+            // Build the response
+            const teachersWithAssignments = teachers.map(teacher => {
+                const teacherAssignments = assignmentsByTeacher[teacher.id] || [];
+                const staffInfo = staffData?.find(s => s.user_id === teacher.id);
+
+                // Separate assignments by type
+                const primaryClasses = teacherAssignments.filter(a => a.is_primary);
+                const subjectTeacherAssignments = teacherAssignments.filter(a =>
+                    a.assignment_type === 'subject_teacher' && !a.is_primary
+                );
+                const assistantAssignments = teacherAssignments.filter(a =>
+                    a.assignment_type === 'assistant_teacher' && !a.is_primary
+                );
+                const substituteAssignments = teacherAssignments.filter(a =>
+                    a.assignment_type === 'substitute_teacher' && !a.is_primary
+                );
+
+                // Get unique subjects taught
+                const subjectsTaught = teacherAssignments
+                    .filter(a => a.subject)
+                    .map(a => a.subject)
+                    .filter((subject, index, arr) => arr.indexOf(subject) === index);
+
+                return {
+                    teacher_id: teacher.id,
+                    full_name: teacher.full_name,
+                    phone_number: teacher.phone_number,
+                    email: teacher.email,
+                    role: teacher.role,
+                    staff_info: staffInfo ? {
+                        staff_id: staffInfo.id,
+                        department: staffInfo.department,
+                        designation: staffInfo.designation,
+                        is_active: staffInfo.is_active
+                    } : null,
+                    assignments: {
+                        total: teacherAssignments.length,
+                        primary_classes: primaryClasses.map(a => ({
+                            assignment_id: a.id,
+                            class_division_id: a.class_division.id,
+                            class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
+                            academic_year: a.class_division.academic_year.year_name,
+                            assignment_type: a.assignment_type,
+                            is_primary: a.is_primary,
+                            assigned_date: a.assigned_date
+                        })),
+                        subject_teacher_assignments: subjectTeacherAssignments.map(a => ({
+                            assignment_id: a.id,
+                            class_division_id: a.class_division.id,
+                            class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
+                            academic_year: a.class_division.academic_year.year_name,
+                            subject: a.subject,
+                            assignment_type: a.assignment_type,
+                            is_primary: a.is_primary,
+                            assigned_date: a.assigned_date
+                        })),
+                        assistant_assignments: assistantAssignments.map(a => ({
+                            assignment_id: a.id,
+                            class_division_id: a.class_division.id,
+                            class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
+                            academic_year: a.class_division.academic_year.year_name,
+                            assignment_type: a.assignment_type,
+                            is_primary: a.is_primary,
+                            assigned_date: a.assigned_date
+                        })),
+                        substitute_assignments: substituteAssignments.map(a => ({
+                            assignment_id: a.id,
+                            class_division_id: a.class_division.id,
+                            class_name: `${a.class_division.class_level.name} ${a.class_division.division}`,
+                            academic_year: a.class_division.academic_year.year_name,
+                            assignment_type: a.assignment_type,
+                            is_primary: a.is_primary,
+                            assigned_date: a.assigned_date
+                        }))
+                    },
+                    summary: {
+                        total_classes: teacherAssignments.length,
+                        primary_teacher_for: primaryClasses.length,
+                        subject_teacher_for: subjectTeacherAssignments.length,
+                        assistant_teacher_for: assistantAssignments.length,
+                        substitute_teacher_for: substituteAssignments.length,
+                        subjects_taught: subjectsTaught,
+                        has_assignments: teacherAssignments.length > 0
+                    }
+                };
+            });
+
+            // Sort teachers by name
+            teachersWithAssignments.sort((a, b) => a.full_name.localeCompare(b.full_name));
+
+            res.json({
+                status: 'success',
+                data: {
+                    teachers: teachersWithAssignments,
+                    total: teachersWithAssignments.length,
+                    summary: {
+                        total_teachers: teachersWithAssignments.length,
+                        teachers_with_assignments: teachersWithAssignments.filter(t => t.summary.has_assignments).length,
+                        teachers_without_assignments: teachersWithAssignments.filter(t => !t.summary.has_assignments).length,
+                        total_primary_assignments: teachersWithAssignments.reduce((sum, t) => sum + t.summary.primary_teacher_for, 0),
+                        total_subject_assignments: teachersWithAssignments.reduce((sum, t) => sum + t.summary.subject_teacher_for, 0)
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get teachers with assignments endpoint:', error);
+            next(error);
+        }
+    }
+);
+
 export default router;

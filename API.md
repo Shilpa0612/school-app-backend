@@ -2099,6 +2099,80 @@ GET /api/birthdays/my-classes
 }
 ```
 
+#### Get Parent Birthday View (Teachers & Classmates)
+
+```http
+GET /api/birthdays/parent-view
+```
+
+**Access**: Parents only
+**Description**: Get birthdays of class teachers, subject teachers, and classmates for parent's children
+
+**Query Parameters**:
+- `days_ahead` (optional): Number of days to look ahead for upcoming birthdays (default: 30)
+- `specific_date` (optional): Specific date to check for birthdays (YYYY-MM-DD format)
+
+**Examples**:
+- `GET /api/birthdays/parent-view` - Next 30 days (default)
+- `GET /api/birthdays/parent-view?days_ahead=7` - Next 7 days
+- `GET /api/birthdays/parent-view?specific_date=2025-03-15` - Specific date
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "teachers": [
+      {
+        "teacher_id": "uuid",
+        "full_name": "John Smith",
+        "date_of_birth": "1985-03-15",
+        "assignments": [
+          {
+            "subject": "Mathematics",
+            "is_class_teacher": true
+          }
+        ],
+        "days_until_birthday": 45,
+        "is_upcoming": true
+      }
+    ],
+    "classmates": [
+      {
+        "student_id": "uuid",
+        "full_name": "Bob Wilson",
+        "date_of_birth": "2008-07-22",
+        "class_division": "Grade 10 A",
+        "days_until_birthday": 12,
+        "is_upcoming": true
+      }
+    ],
+    "summary": {
+      "total_teachers": 5,
+      "total_classmates": 25,
+      "upcoming_birthdays": 8,
+      "teachers_upcoming": 2,
+      "classmates_upcoming": 6,
+      "date_range": {
+        "days_ahead": 30,
+        "specific_date": null,
+        "filter_applied": "date_range"
+      }
+    }
+  }
+}
+```
+
+**Features**:
+
+- ✅ **Teacher birthdays** with contact info and assignments
+- ✅ **Classmate birthdays** with shared class information
+- ✅ **Upcoming birthdays** (next 30 days) highlighted
+- ✅ **Days until birthday** calculation
+- ✅ **Summary statistics** for quick overview
+- ✅ **Sorted by upcoming birthdays** (most recent first)
+
 ### Class Management
 
 #### Create Class Level (Admin/Principal Only)
@@ -7213,3 +7287,589 @@ GET /api/attendance/reports/class/:class_division_id?start_date=2024-01-01&end_d
 - Teachers can only see attendance for their assigned classes
 - All access is logged and audited
 - Holiday information is properly isolated by class
+
+#### Get Teacher's Linked Parents and Principal
+
+```http
+GET /api/users/teacher-linked-parents
+```
+
+**Access**: Teachers (own data), Admin, Principal (any teacher)
+**Description**: Get all parents linked to students where the teacher is either a class teacher or subject teacher
+
+**Query Parameters**:
+
+- `teacher_id`: (Optional) Teacher ID to query (required for admin/principal, auto-filled for teachers)
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "teacher": {
+      "id": "uuid",
+      "full_name": "Teacher Name",
+      "assignments": [
+        {
+          "assignment_type": "class_teacher",
+          "subject": null,
+          "is_primary": true,
+          "class_name": "Grade 10 A",
+          "academic_year": "2024-2025"
+        }
+      ]
+    },
+    "linked_parents": [
+      {
+        "parent_id": "uuid",
+        "full_name": "Parent Name",
+        "email": "parent@email.com",
+        "phone_number": "+1234567890",
+        "linked_students": [
+          {
+            "student_id": "uuid",
+            "student_name": "Student Name",
+            "roll_number": "10A001",
+            "class_division_id": "uuid",
+            "teacher_assignments": [
+              {
+                "assignment_type": "class_teacher",
+                "subject": null,
+                "is_primary": true,
+                "class_name": "Grade 10 A",
+                "academic_year": "2024-2025"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "principal": {
+      "id": "uuid",
+      "full_name": "Principal Name",
+      "email": "principal@school.com",
+      "phone_number": "+1234567890",
+      "role": "principal"
+    },
+    "summary": {
+      "total_linked_parents": 25,
+      "total_students": 30,
+      "total_classes": 3,
+      "total_assignments": 4,
+      "primary_teacher_for": 1,
+      "subject_teacher_for": 3
+    }
+  }
+}
+```
+
+**Use Cases**:
+
+- Teachers can see which parents they can communicate with
+- Teachers can send messages to specific parents
+- Teachers can understand their student-parent relationships
+- Admin/Principal can view any teacher's parent connections
+
+#### Get Children's Teachers (Parent View - Enhanced for Messaging)
+
+```http
+GET /api/users/children/teachers
+```
+
+**Access**: Parents only
+**Description**: Get comprehensive information about children's teachers, classes, and contact details for messaging purposes
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "children": [
+      {
+        "student_id": "uuid",
+        "student_name": "Alex Johnson",
+        "admission_number": "ADM2024001",
+        "relationship": "father",
+        "is_primary_guardian": true,
+        "class_info": {
+          "class_division_id": "uuid",
+          "class_name": "Grade 10 A",
+          "division": "A",
+          "academic_year": "2024-2025",
+          "class_level": "Grade 10",
+          "roll_number": "001"
+        },
+        "teachers": [
+          {
+            "assignment_id": "uuid",
+            "teacher_id": "uuid",
+            "full_name": "Mrs. Sarah Wilson",
+            "phone_number": "+1234567890",
+            "email": "sarah.wilson@school.com",
+            "assignment_type": "class_teacher",
+            "subject": null,
+            "is_primary": true,
+            "assigned_date": "2024-06-01T00:00:00Z",
+            "contact_info": {
+              "phone": "+1234567890",
+              "email": "sarah.wilson@school.com"
+            }
+          },
+          {
+            "assignment_id": "uuid",
+            "teacher_id": "uuid",
+            "full_name": "Mr. John Smith",
+            "phone_number": "+1234567891",
+            "email": "john.smith@school.com",
+            "assignment_type": "subject_teacher",
+            "subject": "Mathematics",
+            "is_primary": false,
+            "assigned_date": "2024-06-01T00:00:00Z",
+            "contact_info": {
+              "phone": "+1234567891",
+              "email": "john.smith@school.com"
+            }
+          }
+        ]
+      }
+    ],
+    "principal": {
+      "id": "uuid",
+      "full_name": "Dr. Michael Brown",
+      "email": "principal@school.com",
+      "phone_number": "+1234567899",
+      "role": "principal",
+      "contact_info": {
+        "phone": "+1234567899",
+        "email": "principal@school.com"
+      }
+    },
+    "summary": {
+      "total_children": 2,
+      "total_teachers": 5,
+      "total_classes": 2,
+      "children_with_teachers": 2,
+      "children_without_teachers": 0
+    }
+  }
+}
+```
+
+**Key Features**:
+
+- ✅ **Complete child information** with admission number and relationship
+- ✅ **Detailed class information** including roll number and academic year
+- ✅ **All teacher assignments** (class teacher, subject teachers)
+- ✅ **Contact information** for all teachers and principal
+- ✅ **Assignment details** including subject and assignment type
+- ✅ **Summary statistics** for quick overview
+- ✅ **Sorted alphabetically** by child name
+
+**Use Cases**:
+
+- Parents can see all teachers for their children
+- Parents can contact specific subject teachers
+- Parents can message class teachers for general concerns
+- Parents can contact principal for school-wide issues
+- Parents can understand teacher roles and subjects
+
+## Homework Management
+
+### Get Homework List
+
+```http
+GET /api/homework
+```
+
+**Access**: All authenticated users (filtered by role)
+**Description**: Get list of homework assignments
+
+**Query Parameters**:
+
+- `page` (optional): Page number (default: 1)
+- `limit` (optional): Items per page (default: 20, max: 100)
+- `subject` (optional): Filter by subject
+- `class_division_id` (optional): Filter by class division
+- `teacher_id` (optional): Filter by teacher (admin/principal only)
+- `due_date_from` (optional): Filter by due date from (ISO date)
+- `due_date_to` (optional): Filter by due date to (ISO date)
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "homework": [
+      {
+        "id": "uuid",
+        "class_division_id": "uuid",
+        "teacher_id": "uuid",
+        "subject": "Mathematics",
+        "title": "Chapter 5 Exercises",
+        "description": "Complete exercises 5.1 to 5.5",
+        "due_date": "2024-03-20T23:59:59Z",
+        "created_at": "2024-03-15T10:00:00Z",
+        "teacher": {
+          "id": "uuid",
+          "full_name": "John Doe"
+        },
+        "class_division": {
+          "id": "uuid",
+          "division": "A",
+          "level": {
+            "name": "Grade 10",
+            "sequence_number": 10
+          }
+        },
+        "attachments": [
+          {
+            "id": "uuid",
+            "file_name": "chapter5.pdf",
+            "file_type": "application/pdf",
+            "storage_path": "homework-id/filename.pdf"
+          }
+        ]
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 50,
+      "total_pages": 3,
+      "has_next": true,
+      "has_prev": false
+    }
+  }
+}
+```
+
+### Get Homework Details
+
+```http
+GET /api/homework/:id
+```
+
+**Access**: All authenticated users (filtered by role)
+**Description**: Get detailed information about a specific homework
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "homework": {
+      "id": "uuid",
+      "class_division_id": "uuid",
+      "teacher_id": "uuid",
+      "subject": "Mathematics",
+      "title": "Chapter 5 Exercises",
+      "description": "Complete exercises 5.1 to 5.5",
+      "due_date": "2024-03-20T23:59:59Z",
+      "created_at": "2024-03-15T10:00:00Z",
+      "teacher": {
+        "id": "uuid",
+        "full_name": "John Doe"
+      },
+      "class_division": {
+        "id": "uuid",
+        "division": "A",
+        "level": {
+          "name": "Grade 10",
+          "sequence_number": 10
+        }
+      },
+      "attachments": [
+        {
+          "id": "uuid",
+          "file_name": "chapter5.pdf",
+          "file_type": "application/pdf",
+          "storage_path": "homework-id/filename.pdf"
+        }
+      ]
+    }
+  }
+}
+```
+
+### Create Homework
+
+```http
+POST /api/homework
+```
+
+**Access**: Teachers, Parents
+**Description**: Create a new homework assignment
+
+**Payload**:
+
+```json
+{
+  "class_division_id": "uuid",
+  "subject": "Mathematics",
+  "title": "Chapter 5 Exercises",
+  "description": "Complete exercises 5.1 to 5.5",
+  "due_date": "2024-03-20T23:59:59Z"
+}
+```
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "homework": {
+      "id": "uuid",
+      "class_division_id": "uuid",
+      "teacher_id": "uuid",
+      "subject": "Mathematics",
+      "title": "Chapter 5 Exercises",
+      "description": "Complete exercises 5.1 to 5.5",
+      "due_date": "2024-03-20T23:59:59Z",
+      "created_at": "2024-03-15T10:00:00Z"
+    }
+  }
+}
+```
+
+### Update Homework
+
+```http
+PUT /api/homework/:id
+```
+
+**Access**: Teachers (own homework), Parents (children's homework)
+**Description**: Update an existing homework assignment
+
+**Payload**:
+
+```json
+{
+  "subject": "Mathematics",
+  "title": "Updated Chapter 5 Exercises",
+  "description": "Complete exercises 5.1 to 5.10",
+  "due_date": "2024-03-25T23:59:59Z"
+}
+```
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "homework": {
+      "id": "uuid",
+      "subject": "Mathematics",
+      "title": "Updated Chapter 5 Exercises",
+      "description": "Complete exercises 5.1 to 5.10",
+      "due_date": "2024-03-25T23:59:59Z",
+      "updated_at": "2024-03-16T10:00:00Z"
+    }
+  }
+}
+```
+
+### Delete Homework
+
+```http
+DELETE /api/homework/:id
+```
+
+**Access**: Teachers (own homework), Parents (children's homework)
+**Description**: Delete a homework assignment
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "message": "Homework deleted successfully"
+}
+```
+
+### Add Homework Attachments
+
+```http
+POST /api/homework/:id/attachments
+```
+
+**Access**: Teachers (own homework), Parents (children's homework)
+**Description**: Upload file attachments to homework
+
+**Content-Type**: `multipart/form-data`
+
+**Form Data**:
+
+- `files`: Array of files (max 5 files, 10MB each)
+
+**Supported File Types**:
+
+- Images: `image/jpeg`, `image/png`
+- Documents: `application/pdf`, `text/plain`, `text/csv`
+- Word Documents: `application/msword`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "attachments": [
+      {
+        "id": "uuid",
+        "homework_id": "uuid",
+        "storage_path": "homework-id/filename.pdf",
+        "file_name": "chapter5.pdf",
+        "file_type": "application/pdf",
+        "file_size": 1024000,
+        "uploaded_by": "uuid",
+        "created_at": "2024-03-15T10:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+### Get Homework Attachments List
+
+```http
+GET /api/homework/:homework_id/attachments
+```
+
+**Access**:
+
+- **Teachers**: Homework creator OR assigned to the class
+- **Parents**: Children enrolled in the class OR attachment uploader
+- **Admin/Principal**: All homework (full access)
+  **Description**: Get list of all attachments for a homework with metadata
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "homework": {
+      "id": "uuid",
+      "subject": "Mathematics",
+      "title": "Chapter 5 Exercises"
+    },
+    "attachments": [
+      {
+        "id": "uuid",
+        "file_name": "chapter5.pdf",
+        "file_type": "application/pdf",
+        "file_size": 1024000,
+        "storage_path": "homework-id/filename.pdf",
+        "uploaded_by": "uuid",
+        "created_at": "2024-03-15T10:00:00Z",
+        "uploader": {
+          "id": "uuid",
+          "full_name": "John Doe",
+          "role": "teacher"
+        },
+        "download_url": "https://storage.supabase.co/...",
+        "download_endpoint": "/api/homework/uuid/attachments/uuid"
+      }
+    ],
+    "total_attachments": 2
+  }
+}
+```
+
+### Download Homework Attachment
+
+```http
+GET /api/homework/:homework_id/attachments/:attachment_id
+```
+
+**Access**:
+
+- **Teachers**: Homework creator OR assigned to the class
+- **Parents**: Children enrolled in the class OR attachment uploader
+- **Admin/Principal**: All homework (full access)
+  **Description**: Download a specific homework attachment file
+
+**Response**: File download with appropriate headers
+
+- `Content-Type`: File's MIME type
+- `Content-Disposition`: `attachment; filename="filename.pdf"`
+- `Content-Length`: File size in bytes
+- `Cache-Control`: `no-cache`
+
+**Example Usage**:
+
+```javascript
+// Download file
+const response = await fetch("/api/homework/uuid/attachments/uuid", {
+  headers: {
+    Authorization: `Bearer ${token}`,
+  },
+});
+
+if (response.ok) {
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "filename.pdf";
+  a.click();
+  window.URL.revokeObjectURL(url);
+}
+```
+
+### Get Homework Filters
+
+```http
+GET /api/homework/filters
+```
+
+**Access**: All authenticated users
+**Description**: Get available filters for homework queries
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "filters": {
+      "subjects": ["Mathematics", "Science", "English"],
+      "academic_years": [
+        {
+          "id": "uuid",
+          "year_name": "2024-2025"
+        }
+      ],
+      "class_levels": [
+        {
+          "id": "uuid",
+          "name": "Grade 10",
+          "sequence_number": 10
+        }
+      ],
+      "class_divisions": [
+        {
+          "id": "uuid",
+          "division": "A",
+          "level": {
+            "name": "Grade 10",
+            "sequence_number": 10
+          }
+        }
+      ],
+      "teachers": [
+        {
+          "id": "uuid",
+          "full_name": "John Doe"
+        }
+      ]
+    }
+  }
+}
+```

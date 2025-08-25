@@ -930,27 +930,22 @@ router.post('/:id/attachments',
     async (req, res, next) => {
         try {
             const { id } = req.params;
-            console.log('Upload request for homework ID:', id);
-            console.log('User:', req.user.id, req.user.role);
-            console.log('Files received:', req.files ? req.files.length : 0);
 
             // Verify homework exists
             const { data: homework, error: homeworkError } = await adminSupabase
                 .from('homework')
-                .select('id, class_division_id')
+                .select('id, class_division_id, teacher_id')
                 .eq('id', id)
                 .single();
 
             if (homeworkError || !homework) {
-                console.log('Homework not found:', homeworkError);
                 return res.status(404).json({
                     status: 'error',
                     message: 'Homework not found'
                 });
             }
 
-            console.log('Homework found:', homework);
-
+            // Authorization check
             let isAuthorized = false;
 
             if (req.user.role === 'teacher') {
@@ -962,8 +957,6 @@ router.post('/:id/attachments',
                     .eq('teacher_id', req.user.id)
                     .eq('is_active', true);
 
-                console.log('Teacher assignment check:', { teacherAssignments, assignmentError });
-
                 if (!assignmentError && teacherAssignments && teacherAssignments.length > 0) {
                     isAuthorized = true;
                 }
@@ -974,57 +967,30 @@ router.post('/:id/attachments',
                     .select(`
                         students:students_master (
                             id,
-                            full_name,
-                            student_academic_records (
-                                id,
-                                class_division_id,
-                                academic_year_id
-                            )
+                            full_name
+                        ),
+                        student_academic_records (
+                            id,
+                            class_division_id,
+                            academic_year_id
                         )
                     `)
                     .eq('parent_id', req.user.id);
 
-                console.log('Parent children check:', {
-                    childrenInClass,
-                    childrenError,
-                    parent_id: req.user.id,
-                    homework_class_id: homework.class_division_id
-                });
-
                 if (!childrenError && childrenInClass && childrenInClass.length > 0) {
                     // Check if any child is actually in this class
-                    const hasChildInClass = childrenInClass.some(mapping => {
-                        const childInClass = mapping.students &&
-                            mapping.students.student_academic_records &&
-                            mapping.students.student_academic_records.some(record =>
-                                record.class_division_id === homework.class_division_id
-                            );
-
-                        console.log('Child mapping check:', {
-                            student: mapping.students,
-                            academic_records: mapping.students?.student_academic_records,
-                            childInClass,
-                            homework_class_id: homework.class_division_id
-                        });
-
-                        return childInClass;
-                    });
-
-                    console.log('Child in class check:', {
-                        homework_class_id: homework.class_division_id,
-                        children_classes: childrenInClass.map(mapping =>
-                            mapping.students?.student_academic_records?.map(record => record.class_division_id)
-                        ).flat().filter(Boolean),
-                        hasChildInClass
-                    });
+                    const hasChildInClass = childrenInClass.some(mapping =>
+                        mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === homework.class_division_id
+                        )
+                    );
 
                     if (hasChildInClass) {
                         isAuthorized = true;
                     }
                 }
             }
-
-            console.log('Authorization result:', isAuthorized);
 
             if (!isAuthorized) {
                 let errorMessage = 'Not authorized to add attachments to this homework';
@@ -1095,10 +1061,10 @@ router.post('/:id/attachments',
                 try {
                     // Upload file to Supabase Storage using admin client to bypass RLS
                     const { data: uploadData, error: uploadError } = await adminSupabase.storage
-                        .from('homework-attachments')
-                        .upload(`${id}/${file.originalname}`, file.buffer, {
-                            contentType: file.mimetype
-                        });
+                    .from('homework-attachments')
+                    .upload(`${id}/${file.originalname}`, file.buffer, {
+                        contentType: file.mimetype
+                    });
 
                     if (uploadError) {
                         console.error('Upload error:', uploadError);
@@ -1109,29 +1075,29 @@ router.post('/:id/attachments',
 
                     // Get public URL using admin client
                     const { data: { publicUrl } } = adminSupabase.storage
-                        .from('homework-attachments')
-                        .getPublicUrl(uploadData.path);
+                    .from('homework-attachments')
+                    .getPublicUrl(uploadData.path);
 
-                    // Create attachment record
-                    const { data: attachment, error: attachmentError } = await adminSupabase
-                        .from('homework_files')
-                        .insert([{
-                            homework_id: id,
-                            storage_path: uploadData.path,
-                            file_name: file.originalname,
-                            file_type: file.mimetype,
-                            file_size: file.size,
-                            uploaded_by: req.user.id
-                        }])
-                        .select()
-                        .single();
+                // Create attachment record
+                const { data: attachment, error: attachmentError } = await adminSupabase
+                    .from('homework_files')
+                    .insert([{
+                        homework_id: id,
+                        storage_path: uploadData.path,
+                        file_name: file.originalname,
+                        file_type: file.mimetype,
+                        file_size: file.size,
+                        uploaded_by: req.user.id
+                    }])
+                    .select()
+                    .single();
 
                     if (attachmentError) {
                         console.error('Database error:', attachmentError);
                         throw attachmentError;
                     }
 
-                    attachments.push(attachment);
+                attachments.push(attachment);
                     console.log('Attachment created:', attachment);
                 } catch (fileError) {
                     console.error('Error processing file:', file.originalname, fileError);
@@ -1145,6 +1111,619 @@ router.post('/:id/attachments',
             });
         } catch (error) {
             console.error('Upload endpoint error:', error);
+            next(error);
+        }
+    }
+);
+
+// Get homework attachment (Download file)
+router.get('/:homework_id/attachments/:attachment_id',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { homework_id, attachment_id } = req.params;
+
+            // Verify homework exists
+            const { data: homework, error: homeworkError } = await adminSupabase
+                .from('homework')
+                .select('id, class_division_id, teacher_id, subject, title')
+                .eq('id', homework_id)
+                .single();
+
+            if (homeworkError || !homework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            // Verify attachment exists and belongs to this homework
+            const { data: attachment, error: attachmentError } = await adminSupabase
+                .from('homework_files')
+                .select('id, file_name, file_type, file_size, storage_path, uploaded_by, created_at')
+                .eq('id', attachment_id)
+                .eq('homework_id', homework_id)
+                .single();
+
+            if (attachmentError || !attachment) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Attachment not found'
+                });
+            }
+
+            // Authorization check
+            let isAuthorized = false;
+
+            if (req.user.role === 'teacher') {
+                // Check if teacher created the homework OR is assigned to the class
+                if (homework.teacher_id === req.user.id) {
+                    // Teacher who created the homework can access
+                    isAuthorized = true;
+                } else {
+                    // Verify teacher is assigned to this class division using new many-to-many system
+                    const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id, assignment_type, is_primary')
+                        .eq('class_division_id', homework.class_division_id)
+                        .eq('teacher_id', req.user.id)
+                        .eq('is_active', true);
+
+                    if (!assignmentError && teacherAssignments && teacherAssignments.length > 0) {
+                        isAuthorized = true;
+                    }
+                }
+            } else if (req.user.role === 'parent') {
+                // Check if parent uploaded the attachment OR has children in this class
+                if (attachment.uploaded_by === req.user.id) {
+                    // Parent who uploaded the attachment can access
+                    isAuthorized = true;
+                } else {
+                    // Verify parent has children in this class division
+                    const { data: childrenInClass, error: childrenError } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .select(`
+                            students:students_master (
+                                id,
+                                full_name
+                            ),
+                            student_academic_records (
+                                id,
+                                class_division_id,
+                                academic_year_id
+                            )
+                        `)
+                        .eq('parent_id', req.user.id);
+
+                    if (!childrenError && childrenInClass && childrenInClass.length > 0) {
+                        // Check if any child is actually in this class
+                        const hasChildInClass = childrenInClass.some(mapping =>
+                            mapping.student_academic_records &&
+                            mapping.student_academic_records.some(record =>
+                                record.class_division_id === homework.class_division_id
+                            )
+                        );
+
+                        if (hasChildInClass) {
+                            isAuthorized = true;
+                        }
+                    }
+                }
+            } else if (req.user.role === 'admin' || req.user.role === 'principal') {
+                // Admin and principal can access all attachments
+                isAuthorized = true;
+            }
+
+            if (!isAuthorized) {
+                // Add debug information to help troubleshoot
+                let debugInfo = {
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    homework_id: homework_id,
+                    attachment_id: attachment_id,
+                    homework_class_division_id: homework.class_division_id,
+                    homework_teacher_id: homework.teacher_id
+                };
+
+                if (req.user.role === 'teacher') {
+                    // Get teacher assignments for debugging
+                    const { data: teacherAssignments } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id, class_division_id, assignment_type, is_primary, is_active')
+                        .eq('teacher_id', req.user.id);
+
+                    debugInfo.teacher_debug = {
+                        teacher_assignments: teacherAssignments || [],
+                        has_assignment_for_class: teacherAssignments ?
+                            teacherAssignments.some(a => a.class_division_id === homework.class_division_id && a.is_active) : false,
+                        total_assignments: teacherAssignments ? teacherAssignments.length : 0
+                    };
+                } else if (req.user.role === 'parent') {
+                    // Get parent children for debugging
+                    const { data: childrenInClass } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .select(`
+                            students:students_master (
+                                id,
+                                full_name
+                            ),
+                            student_academic_records (
+                                id,
+                                class_division_id,
+                                academic_year_id
+                            )
+                        `)
+                        .eq('parent_id', req.user.id);
+
+                    debugInfo.parent_debug = {
+                        children_data: childrenInClass || [],
+                        children_classes: childrenInClass ? childrenInClass.map(mapping =>
+                            mapping.student_academic_records?.map(record => record.class_division_id)
+                        ).flat().filter(Boolean) : [],
+                        has_child_in_class: childrenInClass ? childrenInClass.some(mapping =>
+                            mapping.student_academic_records &&
+                            mapping.student_academic_records.some(record =>
+                                record.class_division_id === homework.class_division_id
+                            )
+                        ) : false,
+                        total_children: childrenInClass ? childrenInClass.length : 0
+                    };
+                }
+
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Not authorized to access this attachment',
+                    debug: debugInfo
+                });
+            }
+
+            // Get file from Supabase Storage
+            console.log('Attempting to download file:', attachment.storage_path);
+
+            const { data: fileData, error: fileError } = await adminSupabase.storage
+                .from('homework-attachments')
+                .download(attachment.storage_path);
+
+            if (fileError) {
+                console.error('File download error:', fileError);
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'File not found in storage',
+                    debug: {
+                        storage_path: attachment.storage_path,
+                        file_error: fileError.message,
+                        attachment_id: attachment_id,
+                        homework_id: homework_id
+                    }
+                });
+            }
+
+            if (!fileData) {
+                console.error('No file data returned from storage');
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'File data is empty',
+                    debug: {
+                        storage_path: attachment.storage_path,
+                        attachment_id: attachment_id,
+                        homework_id: homework_id
+                    }
+                });
+            }
+
+            // Handle different file data types
+            let fileBuffer;
+            let fileSize;
+
+            if (fileData instanceof Buffer) {
+                fileBuffer = fileData;
+                fileSize = fileData.length;
+            } else if (typeof fileData === 'string') {
+                fileBuffer = Buffer.from(fileData, 'utf8');
+                fileSize = fileBuffer.length;
+            } else if (fileData && typeof fileData === 'object' && fileData.arrayBuffer) {
+                // Handle ArrayBuffer or similar
+                const arrayBuffer = await fileData.arrayBuffer();
+                fileBuffer = Buffer.from(arrayBuffer);
+                fileSize = fileBuffer.length;
+            } else {
+                console.error('Unexpected file data type:', typeof fileData, fileData);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Invalid file data format',
+                    debug: {
+                        storage_path: attachment.storage_path,
+                        file_data_type: typeof fileData,
+                        attachment_id: attachment_id,
+                        homework_id: homework_id
+                    }
+                });
+            }
+
+            console.log('File downloaded successfully, size:', fileSize, 'type:', typeof fileData);
+
+            // Log file access for audit purposes
+            try {
+                await adminSupabase
+                    .from('file_access_logs')
+                    .insert({
+                        file_path: attachment.storage_path,
+                        accessed_by: req.user.id,
+                        access_type: 'read'
+                    });
+            } catch (logError) {
+                console.error('Failed to log file access:', logError);
+                // Don't fail the request if logging fails
+            }
+
+            // Set appropriate headers for file download
+            res.setHeader('Content-Type', attachment.file_type);
+            res.setHeader('Content-Disposition', `attachment; filename="${attachment.file_name}"`);
+            res.setHeader('Content-Length', fileSize);
+            res.setHeader('Cache-Control', 'no-cache');
+
+            console.log('Sending file response with headers:', {
+                'Content-Type': attachment.file_type,
+                'Content-Disposition': `attachment; filename="${attachment.file_name}"`,
+                'Content-Length': fileSize
+            });
+
+            // Send the file
+            res.send(fileBuffer);
+
+        } catch (error) {
+            console.error('Download endpoint error:', error);
+            next(error);
+        }
+    }
+);
+
+// Get homework attachment info (metadata only)
+router.get('/:homework_id/attachments',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { homework_id } = req.params;
+
+            // Verify homework exists
+            const { data: homework, error: homeworkError } = await adminSupabase
+                .from('homework')
+                .select('id, class_division_id, teacher_id, subject, title')
+                .eq('id', homework_id)
+                .single();
+
+            if (homeworkError || !homework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            // Authorization check
+            let isAuthorized = false;
+
+            if (req.user.role === 'teacher') {
+                // Check if teacher created the homework OR is assigned to the class
+                if (homework.teacher_id === req.user.id) {
+                    // Teacher who created the homework can access
+                    isAuthorized = true;
+                } else {
+                    // Verify teacher is assigned to this class division using new many-to-many system
+                    const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id, assignment_type, is_primary')
+                        .eq('class_division_id', homework.class_division_id)
+                        .eq('teacher_id', req.user.id)
+                        .eq('is_active', true);
+
+                    if (!assignmentError && teacherAssignments && teacherAssignments.length > 0) {
+                        isAuthorized = true;
+                    }
+                }
+            } else if (req.user.role === 'parent') {
+                // For attachments list, parents can access if they have children in the class
+                // (Individual attachment access is checked in the download endpoint)
+                const { data: childrenInClass, error: childrenError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        students:students_master (
+                            id,
+                            full_name
+                        ),
+                        student_academic_records (
+                            id,
+                            class_division_id,
+                            academic_year_id
+                        )
+                    `)
+                    .eq('parent_id', req.user.id);
+
+                if (!childrenError && childrenInClass && childrenInClass.length > 0) {
+                    // Check if any child is actually in this class
+                    const hasChildInClass = childrenInClass.some(mapping =>
+                        mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === homework.class_division_id
+                        )
+                    );
+
+                    if (hasChildInClass) {
+                        isAuthorized = true;
+                    }
+                }
+            } else if (req.user.role === 'admin' || req.user.role === 'principal') {
+                // Admin and principal can access all attachments
+                isAuthorized = true;
+            }
+
+            if (!isAuthorized) {
+                // Add debug information to help troubleshoot
+                let debugInfo = {
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    homework_id: homework_id,
+                    homework_class_division_id: homework.class_division_id,
+                    homework_teacher_id: homework.teacher_id
+                };
+
+                if (req.user.role === 'teacher') {
+                    // Get teacher assignments for debugging
+                    const { data: teacherAssignments } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id, class_division_id, assignment_type, is_primary, is_active')
+                        .eq('teacher_id', req.user.id);
+
+                    debugInfo.teacher_debug = {
+                        teacher_assignments: teacherAssignments || [],
+                        has_assignment_for_class: teacherAssignments ?
+                            teacherAssignments.some(a => a.class_division_id === homework.class_division_id && a.is_active) : false,
+                        total_assignments: teacherAssignments ? teacherAssignments.length : 0
+                    };
+                } else if (req.user.role === 'parent') {
+                    // Get parent children for debugging
+                    const { data: childrenInClass } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .select(`
+                            students:students_master (
+                                id,
+                                full_name
+                            ),
+                            student_academic_records (
+                                id,
+                                class_division_id,
+                                academic_year_id
+                            )
+                        `)
+                        .eq('parent_id', req.user.id);
+
+                    debugInfo.parent_debug = {
+                        children_data: childrenInClass || [],
+                        children_classes: childrenInClass ? childrenInClass.map(mapping =>
+                            mapping.student_academic_records?.map(record => record.class_division_id)
+                        ).flat().filter(Boolean) : [],
+                        has_child_in_class: childrenInClass ? childrenInClass.some(mapping =>
+                            mapping.student_academic_records &&
+                            mapping.student_academic_records.some(record =>
+                                record.class_division_id === homework.class_division_id
+                            )
+                        ) : false,
+                        total_children: childrenInClass ? childrenInClass.length : 0
+                    };
+                }
+
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Not authorized to access this homework attachments',
+                    debug: debugInfo
+                });
+            }
+
+            // Get all attachments for this homework
+            const { data: attachments, error: attachmentsError } = await adminSupabase
+                .from('homework_files')
+                .select(`
+                    id,
+                    file_name,
+                    file_type,
+                    file_size,
+                    storage_path,
+                    uploaded_by,
+                    created_at,
+                    uploader:users!homework_files_uploaded_by_fkey (
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('homework_id', homework_id)
+                .order('created_at', { ascending: false });
+
+            if (attachmentsError) {
+                throw attachmentsError;
+            }
+
+            // Add download URLs to each attachment
+            const attachmentsWithUrls = (attachments || []).map(attachment => {
+                const { data: { publicUrl } } = adminSupabase.storage
+                    .from('homework-attachments')
+                    .getPublicUrl(attachment.storage_path);
+
+                return {
+                    ...attachment,
+                    download_url: publicUrl,
+                    download_endpoint: `/api/homework/${homework_id}/attachments/${attachment.id}`
+                };
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    homework: {
+                        id: homework.id,
+                        subject: homework.subject,
+                        title: homework.title
+                    },
+                    attachments: attachmentsWithUrls,
+                    total_attachments: attachmentsWithUrls.length
+                }
+            });
+
+        } catch (error) {
+            console.error('Get attachments endpoint error:', error);
+            next(error);
+        }
+    }
+);
+
+// Debug endpoint for homework attachment authorization
+router.get('/:homework_id/attachments/debug/auth',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { homework_id } = req.params;
+
+            // Get homework details
+            const { data: homework, error: homeworkError } = await adminSupabase
+                .from('homework')
+                .select(`
+                    id,
+                    class_division_id,
+                    teacher_id,
+                    subject,
+                    title,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        level:class_level_id (name)
+                    ),
+                    teacher:teacher_id (
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('id', homework_id)
+                .single();
+
+            if (homeworkError || !homework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            // Get user details
+            const { data: user } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role, phone_number, email')
+                .eq('id', req.user.id)
+                .single();
+
+            // Build debug information
+            const debugInfo = {
+                user: {
+                    id: user?.id,
+                    full_name: user?.full_name,
+                    role: user?.role,
+                    phone_number: user?.phone_number,
+                    email: user?.email
+                },
+                homework: {
+                    id: homework.id,
+                    subject: homework.subject,
+                    title: homework.title,
+                    class_division_id: homework.class_division_id,
+                    teacher_id: homework.teacher_id,
+                    class_division: homework.class_division,
+                    teacher: homework.teacher
+                },
+                authorization_check: {
+                    user_role: req.user.role,
+                    can_access: false,
+                    reason: ''
+                }
+            };
+
+            // Check authorization based on role
+            if (req.user.role === 'teacher') {
+                // Check if teacher created the homework OR is assigned to the class
+                const isHomeworkCreator = homework.teacher_id === req.user.id;
+
+                const { data: teacherAssignments } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select(`
+                        id,
+                        class_division_id,
+                        assignment_type,
+                        is_primary,
+                        is_active,
+                        subject,
+                        assigned_date
+                    `)
+                    .eq('teacher_id', req.user.id);
+
+                const hasAssignmentForClass = teacherAssignments ?
+                    teacherAssignments.some(a => a.class_division_id === homework.class_division_id && a.is_active) : false;
+
+                const canAccess = isHomeworkCreator || hasAssignmentForClass;
+                debugInfo.authorization_check.can_access = canAccess;
+                debugInfo.authorization_check.reason = isHomeworkCreator ?
+                    'Teacher created this homework' :
+                    (hasAssignmentForClass ? 'Teacher is assigned to this class' : 'Teacher is not assigned to this class');
+                debugInfo.teacher_assignments = teacherAssignments || [];
+                debugInfo.is_homework_creator = isHomeworkCreator;
+
+            } else if (req.user.role === 'parent') {
+                // Check parent children
+                const { data: childrenInClass } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        student_id,
+                        relationship,
+                        is_primary_guardian,
+                        students:students_master (
+                            id,
+                            full_name,
+                            admission_number
+                        ),
+                        student_academic_records (
+                            id,
+                            class_division_id,
+                            roll_number,
+                            status,
+                            academic_year:academic_year_id (year_name)
+                        )
+                    `)
+                    .eq('parent_id', req.user.id);
+
+                const hasChildInClass = childrenInClass ?
+                    childrenInClass.some(mapping =>
+                        mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === homework.class_division_id && record.status === 'ongoing'
+                        )
+                    ) : false;
+
+                debugInfo.authorization_check.can_access = hasChildInClass;
+                debugInfo.authorization_check.reason = hasChildInClass ?
+                    'Parent has children in this class' : 'Parent does not have children in this class';
+                debugInfo.children_data = childrenInClass || [];
+
+            } else if (req.user.role === 'admin' || req.user.role === 'principal') {
+                debugInfo.authorization_check.can_access = true;
+                debugInfo.authorization_check.reason = `${req.user.role} can access all homework`;
+            } else {
+                debugInfo.authorization_check.can_access = false;
+                debugInfo.authorization_check.reason = `Role '${req.user.role}' is not authorized for homework access`;
+            }
+
+            res.json({
+                status: 'success',
+                data: debugInfo
+            });
+
+        } catch (error) {
+            console.error('Debug endpoint error:', error);
             next(error);
         }
     }

@@ -1077,4 +1077,322 @@ router.get('/debug/db-test',
     }
 );
 
+// Get birthdays for parents (teachers and classmates)
+router.get('/parent-view',
+    authenticate,
+    authorize('parent'),
+    async (req, res, next) => {
+        try {
+            const parentId = req.user.id;
+
+            // Date range filtering (default: next 30 days)
+            const { days_ahead = 30, specific_date } = req.query;
+            const today = new Date();
+            const endDate = new Date();
+            endDate.setDate(today.getDate() + parseInt(days_ahead));
+
+            // If specific date is provided, use that instead
+            let targetDate = null;
+            if (specific_date) {
+                targetDate = new Date(specific_date);
+                if (isNaN(targetDate.getTime())) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid specific_date format. Use YYYY-MM-DD'
+                    });
+                }
+            }
+
+            // Optimized query with date filtering at database level
+            let childrenQuery = adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    students:students_master!inner (
+                        id,
+                        full_name,
+                        date_of_birth,
+                        student_academic_records!inner (
+                            class_division_id,
+                            roll_number,
+                            status,
+                            class_division:class_division_id (
+                                id,
+                                division,
+                                level:class_level_id (name),
+                                class_teacher_assignments!inner (
+                                    id,
+                                    assignment_type,
+                                    subject,
+                                    is_primary,
+                                    is_active,
+                                    teacher:teacher_id (
+                                        id,
+                                        full_name
+                                    )
+                                )
+                            )
+                        )
+                    )
+                `)
+                .eq('parent_id', parentId)
+                .eq('students.student_academic_records.status', 'ongoing');
+
+            // For now, let's fetch all children data and filter in JavaScript
+            // This is more reliable for birthday date range logic
+            // We can optimize this later with better database queries
+
+            const { data: childrenData, error: childrenError } = await childrenQuery;
+
+            if (childrenError) {
+                throw childrenError;
+            }
+
+            // Get staff information for teachers separately
+            const teacherIds = new Set();
+            (childrenData || []).forEach(mapping => {
+                const student = mapping.students;
+                const academicRecord = student.student_academic_records[0];
+                if (academicRecord && academicRecord.class_division && academicRecord.class_division.class_teacher_assignments) {
+                    academicRecord.class_division.class_teacher_assignments.forEach(assignment => {
+                        if (assignment.teacher) {
+                            teacherIds.add(assignment.teacher.id);
+                        }
+                    });
+                }
+            });
+
+            // Fetch staff information for all teachers with date filtering
+            let staffQuery = adminSupabase
+                .from('staff')
+                .select(`
+                    id,
+                    full_name,
+                    date_of_birth,
+                    user_id
+                `)
+                .in('user_id', Array.from(teacherIds));
+
+            // For now, fetch all staff data and filter in JavaScript
+            // This is more reliable for birthday date range logic
+
+            const { data: staffData, error: staffError } = await staffQuery;
+
+            if (staffError) {
+                throw staffError;
+            }
+
+            // Create a map of user_id to staff data
+            const staffMap = new Map();
+            (staffData || []).forEach(staff => {
+                if (staff.user_id) {
+                    staffMap.set(staff.user_id, staff);
+                }
+            });
+
+            // Process the data to organize birthdays
+            const birthdays = {
+                teachers: [],
+                classmates: [],
+                summary: {
+                    total_teachers: 0,
+                    total_classmates: 0,
+                    upcoming_birthdays: 0
+                }
+            };
+
+            const teacherMap = new Map();
+            const classmateMap = new Map();
+            const currentDate = new Date();
+            const currentMonth = currentDate.getMonth();
+            const currentDay = currentDate.getDate();
+
+            // For date range filtering, we need to process ALL children to get their classmates
+            // but only include children and classmates that meet the date criteria
+            let childrenToProcess = childrenData || [];
+
+            // Process each child's data
+            childrenToProcess.forEach(mapping => {
+                const student = mapping.students;
+                const academicRecord = student.student_academic_records[0];
+
+                if (!academicRecord || !academicRecord.class_division) return;
+
+                const classDivision = academicRecord.class_division;
+                const childInfo = {
+                    student_id: student.id,
+                    student_name: student.full_name,
+                    class_division: `${classDivision.level.name} ${classDivision.division}`
+                };
+
+                // Process all children to get their classmates
+                // We'll filter the results later
+
+                // Process teachers for this class
+                (classDivision.class_teacher_assignments || []).forEach(assignment => {
+                    if (!assignment.is_active || !assignment.teacher) return;
+
+                    const teacher = assignment.teacher;
+                    const teacherKey = teacher.id;
+
+                    if (!teacherMap.has(teacherKey)) {
+                        // Get staff info for birthday data
+                        const staffInfo = staffMap.get(teacher.id) || null;
+                        const teacherBirthday = staffInfo && staffInfo.date_of_birth ? new Date(staffInfo.date_of_birth) : null;
+                        const daysUntilBirthday = teacherBirthday ? getDaysUntilBirthday(teacherBirthday) : null;
+                        const isUpcoming = daysUntilBirthday !== null && daysUntilBirthday <= parseInt(days_ahead);
+
+                        teacherMap.set(teacherKey, {
+                            teacher_id: teacher.id,
+                            full_name: teacher.full_name,
+                            date_of_birth: staffInfo ? staffInfo.date_of_birth : null,
+                            assignments: [],
+                            days_until_birthday: daysUntilBirthday,
+                            is_upcoming: isUpcoming
+                        });
+                    }
+
+                    const teacherData = teacherMap.get(teacherKey);
+                    teacherData.assignments.push({
+                        subject: assignment.subject,
+                        is_class_teacher: assignment.is_primary
+                    });
+                    // No need to track children taught for simplified response
+                });
+
+                // Get classmates for this child
+                getClassmatesForStudent(student.id, classDivision.id, childInfo);
+            });
+
+            // Get classmates for all children with date filtering
+            async function getClassmatesForStudent(studentId, classDivisionId, childInfo) {
+                let classmatesQuery = adminSupabase
+                    .from('student_academic_records')
+                    .select(`
+                        student_id,
+                        roll_number,
+                        students:students_master!inner (
+                            id,
+                            full_name,
+                            date_of_birth
+                        )
+                    `)
+                    .eq('class_division_id', classDivisionId)
+                    .eq('status', 'ongoing')
+                    .neq('student_id', studentId); // Exclude the child themselves
+
+                // For now, fetch all classmates and filter in JavaScript
+                // This is more reliable for birthday date range logic
+
+                const { data: classmates, error: classmatesError } = await classmatesQuery;
+
+                if (!classmatesError && classmates) {
+                    classmates.forEach(classmate => {
+                        const classmateStudent = classmate.students;
+                        const classmateKey = classmateStudent.id;
+
+                        if (!classmateMap.has(classmateKey)) {
+                            const classmateBirthday = classmateStudent.date_of_birth ? new Date(classmateStudent.date_of_birth) : null;
+                            const daysUntilBirthday = classmateBirthday ? getDaysUntilBirthday(classmateBirthday) : null;
+                            const isUpcoming = daysUntilBirthday !== null && daysUntilBirthday <= parseInt(days_ahead);
+
+                            classmateMap.set(classmateKey, {
+                                student_id: classmateStudent.id,
+                                full_name: classmateStudent.full_name,
+                                date_of_birth: classmateStudent.date_of_birth,
+                                class_division: childInfo.class_division,
+                                days_until_birthday: daysUntilBirthday,
+                                is_upcoming: isUpcoming
+                            });
+                        }
+                    });
+                }
+            }
+
+            // Wait for all classmate queries to complete (for all children to get their classmates)
+            await Promise.all(
+                childrenToProcess.map(mapping => {
+                    const student = mapping.students;
+                    const academicRecord = student.student_academic_records[0];
+                    if (!academicRecord || !academicRecord.class_division) return Promise.resolve();
+
+                    const childInfo = {
+                        student_id: student.id,
+                        student_name: student.full_name,
+                        class_division: `${academicRecord.class_division.level.name} ${academicRecord.class_division.division}`
+                    };
+
+                    return getClassmatesForStudent(student.id, academicRecord.class_division.id, childInfo);
+                })
+            );
+
+            // Convert maps to arrays and apply final filtering
+            let allTeachers = Array.from(teacherMap.values());
+            let allClassmates = Array.from(classmateMap.values());
+
+            // Apply date filtering if not specific date
+            if (!targetDate) {
+                allTeachers = allTeachers.filter(teacher => teacher.is_upcoming);
+                allClassmates = allClassmates.filter(classmate => classmate.is_upcoming);
+            }
+
+            // Sort by upcoming birthdays
+            birthdays.teachers = allTeachers.sort((a, b) => {
+                if (a.is_upcoming && !b.is_upcoming) return -1;
+                if (!a.is_upcoming && b.is_upcoming) return 1;
+                return (a.days_until_birthday || 999) - (b.days_until_birthday || 999);
+            });
+
+            birthdays.classmates = allClassmates.sort((a, b) => {
+                if (a.is_upcoming && !b.is_upcoming) return -1;
+                if (!a.is_upcoming && b.is_upcoming) return 1;
+                return (a.days_until_birthday || 999) - (b.days_until_birthday || 999);
+            });
+
+            // Calculate summary
+            birthdays.summary = {
+                total_teachers: birthdays.teachers.length,
+                total_classmates: birthdays.classmates.length,
+                upcoming_birthdays: birthdays.teachers.filter(t => t.is_upcoming).length +
+                    birthdays.classmates.filter(c => c.is_upcoming).length,
+                teachers_upcoming: birthdays.teachers.filter(t => t.is_upcoming).length,
+                classmates_upcoming: birthdays.classmates.filter(c => c.is_upcoming).length,
+                date_range: {
+                    days_ahead: parseInt(days_ahead),
+                    specific_date: specific_date || null,
+                    filter_applied: targetDate ? 'specific_date' : 'date_range'
+                }
+            };
+
+            res.json({
+                status: 'success',
+                data: birthdays
+            });
+
+        } catch (error) {
+            console.error('Error in parent birthdays endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Helper function to calculate days until birthday
+function getDaysUntilBirthday(birthday) {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+
+    // Create birthday for current year
+    const birthdayThisYear = new Date(birthday);
+    birthdayThisYear.setFullYear(currentYear);
+
+    // If birthday has passed this year, calculate for next year
+    if (birthdayThisYear < today) {
+        birthdayThisYear.setFullYear(currentYear + 1);
+    }
+
+    const timeDiff = birthdayThisYear.getTime() - today.getTime();
+    const daysDiff = Math.ceil(timeDiff / (1000 * 3600 * 24));
+
+    return daysDiff;
+}
+
 export default router; 

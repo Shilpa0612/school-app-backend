@@ -218,6 +218,101 @@ GET /api/calendar/events
 }
 ```
 
+### 6. Get Linked Parents and Principal
+
+```http
+GET /api/users/teacher-linked-parents
+```
+
+**Access**: Teachers (own data), Admin, Principal (any teacher)
+**Description**: Get all parents linked to students where the teacher is either a class teacher or subject teacher, plus principal information
+
+**Query Parameters**:
+
+- `teacher_id`: (Optional) Teacher ID to query (required for admin/principal, auto-filled for teachers)
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "teacher": {
+      "id": "uuid",
+      "full_name": "Teacher Name",
+      "assignments": [
+        {
+          "assignment_type": "class_teacher",
+          "subject": null,
+          "is_primary": true,
+          "class_name": "Grade 10 A",
+          "academic_year": "2024-2025"
+        },
+        {
+          "assignment_type": "subject_teacher",
+          "subject": "Mathematics",
+          "is_primary": false,
+          "class_name": "Grade 9 B",
+          "academic_year": "2024-2025"
+        }
+      ]
+    },
+    "linked_parents": [
+      {
+        "parent_id": "uuid",
+        "full_name": "Parent Name",
+        "email": "parent@email.com",
+        "phone_number": "+1234567890",
+        "linked_students": [
+          {
+            "student_id": "uuid",
+            "student_name": "Student Name",
+            "roll_number": "10A001",
+            "class_division_id": "uuid",
+            "teacher_assignments": [
+              {
+                "assignment_type": "class_teacher",
+                "subject": null,
+                "is_primary": true,
+                "class_name": "Grade 10 A",
+                "academic_year": "2024-2025"
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "principal": {
+      "id": "uuid",
+      "full_name": "Principal Name",
+      "email": "principal@school.com",
+      "phone_number": "+1234567890",
+      "role": "principal"
+    },
+    "summary": {
+      "total_linked_parents": 25,
+      "total_students": 30,
+      "total_classes": 3,
+      "total_assignments": 4,
+      "primary_teacher_for": 1,
+      "subject_teacher_for": 3
+    }
+  }
+}
+```
+
+**Key Features**:
+
+- ✅ **Complete parent information** with contact details
+- ✅ **Linked students** for each parent with teacher assignments
+- ✅ **Teacher assignments** showing role (class teacher vs subject teacher)
+- ✅ **Principal information** for school-wide communication
+- ✅ **Summary statistics** for quick overview
+- ✅ **Deduplication** - parents with multiple children appear once
+- ✅ **Sorted alphabetically** by parent name
+
+### 7. View Calendar Events
+
 ## Class Teacher Specific Endpoints
 
 ### 1. Mark Attendance

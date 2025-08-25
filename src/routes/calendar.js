@@ -100,20 +100,20 @@ router.post('/events',
             }
 
             // Determine event status based on user role and event type
-            let eventStatus = 'pending'; // Default status for all events
+            let eventStatus = 'approved'; // Default status
 
-            // Auto-approve certain events
-            if (['admin', 'principal'].includes(req.user.role)) {
-                // Admin/Principal events are auto-approved
+            // Approval logic based on user role
+            if (req.user.role === 'teacher') {
+                // Teacher events need principal approval
+                eventStatus = 'pending';
+            } else if (req.user.role === 'principal') {
+                // Principal events are auto-approved
                 eventStatus = 'approved';
-            } else if (req.user.role === 'teacher') {
-                // Teachers: class-specific events are auto-approved, school-wide need approval
-                if (event_type === 'class_specific') {
-                    eventStatus = 'approved';
-                } else {
-                    eventStatus = 'pending';
-                }
+            } else if (req.user.role === 'admin') {
+                // Admin events are auto-approved
+                eventStatus = 'approved';
             }
+            // All other roles (parents, etc.) - events are auto-approved
 
             const { data, error } = await adminSupabase
                 .from('calendar_events')
@@ -185,11 +185,17 @@ router.get('/events',
 
             let query;
 
-            // Filter events based on user role
+            // Filter events based on user role and approval status
             let statusFilter = 'approved'; // Default: only show approved events
+
             if (['admin', 'principal'].includes(req.user.role)) {
-                statusFilter = null; // Admin/Principal can see all events
+                // Admin/Principal can see all events (approved, pending, rejected)
+                statusFilter = null;
+            } else if (req.user.role === 'teacher') {
+                // Teachers can see approved events + their own pending events
+                statusFilter = null; // We'll handle this in post-processing
             }
+            // Parents and other roles only see approved events
 
             if (use_ist === 'true') {
                 // Use the custom function for IST timezone (without status filter for now)
@@ -249,6 +255,14 @@ router.get('/events',
             let filteredEvents = data || [];
             if (use_ist === 'true' && statusFilter) {
                 filteredEvents = filteredEvents.filter(event => event.status === statusFilter);
+            }
+
+            // Special handling for teachers: show approved events + their own pending events
+            if (req.user.role === 'teacher') {
+                filteredEvents = filteredEvents.filter(event =>
+                    event.status === 'approved' ||
+                    (event.status === 'pending' && event.created_by === req.user.id)
+                );
             }
 
             // Add status fields to IST function response if they're missing
@@ -818,11 +832,11 @@ router.get('/events/class/:class_division_id',
     }
 );
 
-// Approve event (Admin/Principal only)
+// Approve event (Principal only)
 router.post('/events/:id/approve',
     authenticate,
     [
-        body('rejection_reason').optional().isString().trim()
+        body('approval_note').optional().isString().trim()
     ],
     async (req, res, next) => {
         try {
@@ -831,21 +845,21 @@ router.post('/events/:id/approve',
                 return res.status(400).json({ errors: errors.array() });
             }
 
-            // Check if user is admin or principal
-            if (!['admin', 'principal'].includes(req.user.role)) {
+            // Check if user is principal
+            if (req.user.role !== 'principal') {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'Only admin and principal can approve events'
+                    message: 'Only principals can approve events'
                 });
             }
 
             const { id } = req.params;
-            const { rejection_reason } = req.body;
+            const { approval_note } = req.body;
 
-            // Check if event exists and is pending
+            // Get the event
             const { data: event, error: fetchError } = await adminSupabase
                 .from('calendar_events')
-                .select('id, status, title')
+                .select('*')
                 .eq('id', id)
                 .single();
 
@@ -856,10 +870,11 @@ router.post('/events/:id/approve',
                 });
             }
 
+            // Check if event is pending approval
             if (event.status !== 'pending') {
                 return res.status(400).json({
                     status: 'error',
-                    message: `Event is already ${event.status}`
+                    message: 'Event is not pending approval'
                 });
             }
 
@@ -869,7 +884,8 @@ router.post('/events/:id/approve',
                 .update({
                     status: 'approved',
                     approved_by: req.user.id,
-                    approved_at: new Date().toISOString()
+                    approved_at: new Date().toISOString(),
+                    approval_note: approval_note || null
                 })
                 .eq('id', id)
                 .select(`
@@ -898,11 +914,11 @@ router.post('/events/:id/approve',
     }
 );
 
-// Reject event (Admin/Principal only)
+// Reject event (Principal only)
 router.post('/events/:id/reject',
     authenticate,
     [
-        body('rejection_reason').notEmpty().withMessage('Rejection reason is required')
+        body('rejection_reason').notEmpty().trim().withMessage('Rejection reason is required')
     ],
     async (req, res, next) => {
         try {
@@ -911,21 +927,21 @@ router.post('/events/:id/reject',
                 return res.status(400).json({ errors: errors.array() });
             }
 
-            // Check if user is admin or principal
-            if (!['admin', 'principal'].includes(req.user.role)) {
+            // Check if user is principal
+            if (req.user.role !== 'principal') {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'Only admin and principal can reject events'
+                    message: 'Only principals can reject events'
                 });
             }
 
             const { id } = req.params;
             const { rejection_reason } = req.body;
 
-            // Check if event exists and is pending
+            // Get the event
             const { data: event, error: fetchError } = await adminSupabase
                 .from('calendar_events')
-                .select('id, status, title')
+                .select('*')
                 .eq('id', id)
                 .single();
 
@@ -936,10 +952,11 @@ router.post('/events/:id/reject',
                 });
             }
 
+            // Check if event is pending approval
             if (event.status !== 'pending') {
                 return res.status(400).json({
                     status: 'error',
-                    message: `Event is already ${event.status}`
+                    message: 'Event is not pending approval'
                 });
             }
 
@@ -979,23 +996,20 @@ router.post('/events/:id/reject',
     }
 );
 
-// Get pending events for approval (Admin/Principal only)
+// Get pending events for approval (Principal only)
 router.get('/events/pending',
     authenticate,
     async (req, res, next) => {
         try {
-            // Check if user is admin or principal
-            if (!['admin', 'principal'].includes(req.user.role)) {
+            // Check if user is principal
+            if (req.user.role !== 'principal') {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'Only admin and principal can view pending events'
+                    message: 'Only principals can view pending events'
                 });
             }
 
-            const { page = 1, limit = 20 } = req.query;
-            const offset = (page - 1) * limit;
-
-            const { data: events, error, count } = await adminSupabase
+            const { data: pendingEvents, error } = await adminSupabase
                 .from('calendar_events')
                 .select(`
                     *,
@@ -1006,24 +1020,15 @@ router.get('/events/pending',
                         academic_year:academic_year_id (year_name),
                         class_level:class_level_id (name)
                     )
-                `, { count: 'exact' })
+                `)
                 .eq('status', 'pending')
-                .order('created_at', { ascending: false })
-                .range(offset, offset + limit - 1);
+                .order('created_at', { ascending: false });
 
             if (error) throw error;
 
             res.json({
                 status: 'success',
-                data: {
-                    events: events || [],
-                    pagination: {
-                        page: parseInt(page),
-                        limit: parseInt(limit),
-                        total: count || 0,
-                        total_pages: Math.ceil((count || 0) / limit)
-                    }
-                }
+                data: { events: pendingEvents || [] }
             });
         } catch (error) {
             next(error);

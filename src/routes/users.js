@@ -1318,4 +1318,659 @@ router.post('/sync-all-teachers', authenticate, async (req, res, next) => {
     }
 });
 
+// Get all linked parents and principal for a teacher (based on their class/subject assignments)
+router.get('/teacher-linked-parents',
+    authenticate,
+    authorize(['teacher', 'admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const teacherId = req.user.role === 'teacher' ? req.user.id : req.query.teacher_id;
+
+            if (!teacherId) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Teacher ID is required'
+                });
+            }
+
+            // Verify teacher exists
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacherId)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found'
+                });
+            }
+
+            // Get all class assignments for this teacher
+            const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
+                `)
+                .eq('teacher_id', teacherId)
+                .eq('is_active', true);
+
+            if (assignmentError) {
+                console.error('Error fetching teacher assignments:', assignmentError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch teacher assignments'
+                });
+            }
+
+            if (!teacherAssignments || teacherAssignments.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        teacher: {
+                            id: teacher.id,
+                            full_name: teacher.full_name
+                        },
+                        linked_parents: [],
+                        principal: null,
+                        total_linked_parents: 0,
+                        message: 'No class assignments found for this teacher'
+                    }
+                });
+            }
+
+            // Get all class division IDs where teacher is assigned
+            const classDivisionIds = teacherAssignments.map(assignment => assignment.class_division.id);
+
+            // Get all students in these classes
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('student_academic_records')
+                .select(`
+                    student_id,
+                    class_division_id,
+                    roll_number,
+                    students:students_master (
+                        id,
+                        full_name,
+                        parent_student_mappings (
+                            parent_id,
+                            parents:users (
+                                id,
+                                full_name,
+                                email,
+                                phone_number
+                            )
+                        )
+                    )
+                `)
+                .in('class_division_id', classDivisionIds)
+                .eq('status', 'ongoing');
+
+            if (studentsError) {
+                console.error('Error fetching students:', studentsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch students'
+                });
+            }
+
+            // Get principal information
+            const { data: principal, error: principalError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, email, phone_number, role')
+                .eq('role', 'principal')
+                .limit(1)
+                .single();
+
+            if (principalError) {
+                console.error('Error fetching principal:', principalError);
+                // Continue without principal info
+            }
+
+            // Extract and deduplicate parents
+            const parentMap = new Map();
+            const studentParentMap = new Map();
+
+            (students || []).forEach(studentRecord => {
+                const student = studentRecord.students;
+                if (student && student.parent_student_mappings) {
+                    student.parent_student_mappings.forEach(mapping => {
+                        const parent = mapping.parents;
+                        if (parent && !parentMap.has(parent.id)) {
+                            parentMap.set(parent.id, {
+                                parent_id: parent.id,
+                                full_name: parent.full_name,
+                                email: parent.email,
+                                phone_number: parent.phone_number,
+                                linked_students: []
+                            });
+                        }
+
+                        // Add student to parent's linked students
+                        if (parentMap.has(parent.id)) {
+                            const parentData = parentMap.get(parent.id);
+                            const studentInfo = {
+                                student_id: student.id,
+                                student_name: student.full_name,
+                                roll_number: studentRecord.roll_number,
+                                class_division_id: studentRecord.class_division_id,
+                                teacher_assignments: teacherAssignments.filter(assignment =>
+                                    assignment.class_division.id === studentRecord.class_division_id
+                                ).map(assignment => ({
+                                    assignment_type: assignment.assignment_type,
+                                    subject: assignment.subject,
+                                    is_primary: assignment.is_primary,
+                                    class_name: `${assignment.class_division.class_level.name} ${assignment.class_division.division}`,
+                                    academic_year: assignment.class_division.academic_year.year_name
+                                }))
+                            };
+
+                            // Check if student already exists for this parent
+                            const existingStudent = parentData.linked_students.find(s => s.student_id === student.id);
+                            if (!existingStudent) {
+                                parentData.linked_students.push(studentInfo);
+                            } else {
+                                // Merge teacher assignments
+                                studentInfo.teacher_assignments.forEach(assignment => {
+                                    const existingAssignment = existingStudent.teacher_assignments.find(a =>
+                                        a.assignment_type === assignment.assignment_type &&
+                                        a.subject === assignment.subject
+                                    );
+                                    if (!existingAssignment) {
+                                        existingStudent.teacher_assignments.push(assignment);
+                                    }
+                                });
+                            }
+                        }
+                    });
+                }
+            });
+
+            // Convert map to array and sort by parent name
+            const linkedParents = Array.from(parentMap.values()).sort((a, b) =>
+                a.full_name.localeCompare(b.full_name)
+            );
+
+            // Calculate summary statistics
+            const totalStudents = new Set(students?.map(s => s.student_id) || []).size;
+            const totalClasses = new Set(classDivisionIds).size;
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher: {
+                        id: teacher.id,
+                        full_name: teacher.full_name,
+                        assignments: teacherAssignments.map(assignment => ({
+                            assignment_type: assignment.assignment_type,
+                            subject: assignment.subject,
+                            is_primary: assignment.is_primary,
+                            class_name: `${assignment.class_division.class_level.name} ${assignment.class_division.division}`,
+                            academic_year: assignment.class_division.academic_year.year_name
+                        }))
+                    },
+                    linked_parents: linkedParents,
+                    principal: principal ? {
+                        id: principal.id,
+                        full_name: principal.full_name,
+                        email: principal.email,
+                        phone_number: principal.phone_number,
+                        role: principal.role
+                    } : null,
+                    summary: {
+                        total_linked_parents: linkedParents.length,
+                        total_students: totalStudents,
+                        total_classes: totalClasses,
+                        total_assignments: teacherAssignments.length,
+                        primary_teacher_for: teacherAssignments.filter(a => a.is_primary).length,
+                        subject_teacher_for: teacherAssignments.filter(a => !a.is_primary).length
+                    }
+                }
+            });
+
+        } catch (error) {
+            console.error('Error in get teacher linked parents:', error);
+            next(error);
+        }
+    }
+);
+
+// Get children's teachers for the authenticated parent (enhanced for messaging)
+router.get('/children/teachers',
+    authenticate,
+    authorize('parent'),
+    async (req, res, next) => {
+        try {
+            // Fetch the parent's child mappings with student details
+            const { data: mappings, error: mappingError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    student_id,
+                    relationship,
+                    is_primary_guardian,
+                    students:students_master (
+                        id,
+                        full_name,
+                        admission_number
+                    )
+                `)
+                .eq('parent_id', req.user.id);
+
+            if (mappingError) throw mappingError;
+
+            const studentIds = (mappings || []).map(m => m.student_id);
+            if (studentIds.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        children: [],
+                        principal: null,
+                        summary: {
+                            total_children: 0,
+                            total_teachers: 0,
+                            total_classes: 0
+                        }
+                    }
+                });
+            }
+
+            // Get ongoing academic records for these students with class details
+            const { data: records, error: recError } = await adminSupabase
+                .from('student_academic_records')
+                .select(`
+                    student_id,
+                    class_division_id,
+                    roll_number,
+                    status,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (
+                            year_name
+                        ),
+                        class_level:class_level_id (
+                            name,
+                            sequence_number
+                        )
+                    )
+                `)
+                .in('student_id', studentIds)
+                .eq('status', 'ongoing');
+
+            if (recError) throw recError;
+
+            const classIds = Array.from(new Set((records || []).map(r => r.class_division_id).filter(Boolean)));
+            if (classIds.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        children: mappings.map(m => ({
+                            student_id: m.student_id,
+                            student_name: m.students?.full_name || 'Unknown',
+                            admission_number: m.students?.admission_number || 'Unknown',
+                            relationship: m.relationship,
+                            is_primary_guardian: m.is_primary_guardian,
+                            class_info: null,
+                            teachers: []
+                        })),
+                        principal: null,
+                        summary: {
+                            total_children: studentIds.length,
+                            total_teachers: 0,
+                            total_classes: 0
+                        }
+                    }
+                });
+            }
+
+            // Fetch teacher assignments for these classes
+            const { data: assignments, error: aErr } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    class_division_id,
+                    teacher_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    assigned_date,
+                    teacher:teacher_id (
+                        id,
+                        full_name,
+                        phone_number,
+                        email
+                    )
+                `)
+                .in('class_division_id', classIds)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false })
+                .order('assigned_date', { ascending: true });
+
+            if (aErr) throw aErr;
+
+            // Build map class_division_id -> teachers
+            const classToTeachers = new Map();
+            for (const a of assignments || []) {
+                const arr = classToTeachers.get(a.class_division_id) || [];
+                arr.push({
+                    assignment_id: a.id,
+                    teacher_id: a.teacher_id,
+                    full_name: a.teacher?.full_name || null,
+                    phone_number: a.teacher?.phone_number || null,
+                    email: a.teacher?.email || null,
+                    assignment_type: a.assignment_type,
+                    subject: a.subject || null,
+                    is_primary: a.is_primary,
+                    assigned_date: a.assigned_date
+                });
+                classToTeachers.set(a.class_division_id, arr);
+            }
+
+            // Optionally include legacy teacher_id if no assignments exist
+            if ((assignments || []).length === 0) {
+                const { data: legacyClasses } = await adminSupabase
+                    .from('class_divisions')
+                    .select(`
+                        id,
+                        teacher:teacher_id (
+                            id,
+                            full_name,
+                            phone_number,
+                            email
+                        )
+                    `)
+                    .in('id', classIds);
+
+                for (const lc of legacyClasses || []) {
+                    if (lc.teacher) {
+                        classToTeachers.set(lc.id, [{
+                            assignment_id: `legacy-${lc.id}`,
+                            teacher_id: lc.teacher.id,
+                            full_name: lc.teacher.full_name,
+                            phone_number: lc.teacher.phone_number,
+                            email: lc.teacher.email,
+                            assignment_type: 'class_teacher',
+                            subject: null,
+                            is_primary: true,
+                            assigned_date: null
+                        }]);
+                    }
+                }
+            }
+
+            // Get principal info
+            const { data: principal } = await adminSupabase
+                .from('users')
+                .select('id, full_name, email, phone_number')
+                .eq('role', 'principal')
+                .limit(1)
+                .maybeSingle();
+
+            // Assemble response by child with comprehensive information
+            const children = [];
+            const allTeachers = new Set();
+            const allClasses = new Set();
+
+            for (const mapping of mappings || []) {
+                const student = mapping.students;
+                const record = (records || []).find(r => r.student_id === mapping.student_id);
+
+                let classInfo = null;
+                let teachers = [];
+
+                if (record && record.class_division) {
+                    classInfo = {
+                        class_division_id: record.class_division_id,
+                        class_name: `${record.class_division.class_level.name} ${record.class_division.division}`,
+                        division: record.class_division.division,
+                        academic_year: record.class_division.academic_year.year_name,
+                        class_level: record.class_division.class_level.name,
+                        roll_number: record.roll_number
+                    };
+
+                    teachers = classToTeachers.get(record.class_division_id) || [];
+
+                    // Add to sets for summary
+                    allClasses.add(record.class_division_id);
+                    teachers.forEach(t => allTeachers.add(t.teacher_id));
+                }
+
+                children.push({
+                    student_id: mapping.student_id,
+                    student_name: student?.full_name || 'Unknown',
+                    admission_number: student?.admission_number || 'Unknown',
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian,
+                    class_info: classInfo,
+                    teachers: teachers.map(teacher => ({
+                        assignment_id: teacher.assignment_id,
+                        teacher_id: teacher.teacher_id,
+                        full_name: teacher.full_name,
+                        phone_number: teacher.phone_number,
+                        email: teacher.email,
+                        assignment_type: teacher.assignment_type,
+                        subject: teacher.subject,
+                        is_primary: teacher.is_primary,
+                        assigned_date: teacher.assigned_date,
+                        contact_info: {
+                            phone: teacher.phone_number,
+                            email: teacher.email
+                        }
+                    }))
+                });
+            }
+
+            // Sort children by name
+            children.sort((a, b) => a.student_name.localeCompare(b.student_name));
+
+            res.json({
+                status: 'success',
+                data: {
+                    children: children,
+                    principal: principal ? {
+                        id: principal.id,
+                        full_name: principal.full_name,
+                        email: principal.email,
+                        phone_number: principal.phone_number,
+                        role: 'principal',
+                        contact_info: {
+                            phone: principal.phone_number,
+                            email: principal.email
+                        }
+                    } : null,
+                    summary: {
+                        total_children: children.length,
+                        total_teachers: allTeachers.size,
+                        total_classes: allClasses.size,
+                        children_with_teachers: children.filter(c => c.teachers.length > 0).length,
+                        children_without_teachers: children.filter(c => c.teachers.length === 0).length
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Error in get children teachers:', error);
+            next(error);
+        }
+    }
+);
+
+// Update staff date of birth (Admin only)
+router.put('/staff/:id/date-of-birth',
+    authenticate,
+    authorize('admin'),
+    [
+        body('date_of_birth').isISO8601().toDate().withMessage('Date of birth must be a valid date')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const { id } = req.params;
+            const { date_of_birth } = req.body;
+
+            // Check if staff exists
+            const { data: staff, error: staffError } = await adminSupabase
+                .from('staff')
+                .select('id, full_name, role')
+                .eq('id', id)
+                .single();
+
+            if (staffError || !staff) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Staff member not found'
+                });
+            }
+
+            // Update the date of birth
+            const { data: updatedStaff, error: updateError } = await adminSupabase
+                .from('staff')
+                .update({ date_of_birth })
+                .eq('id', id)
+                .select('id, full_name, role, date_of_birth')
+                .single();
+
+            if (updateError) {
+                console.error('Error updating staff date of birth:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to update date of birth'
+                });
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Staff date of birth updated successfully',
+                data: {
+                    staff: updatedStaff
+                }
+            });
+
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
+// Get staff birthdays (Admin/Principal)
+router.get('/staff/birthdays',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { date, upcoming_days = 30 } = req.query;
+
+            let query = adminSupabase
+                .from('staff')
+                .select(`
+                    id,
+                    full_name,
+                    role,
+                    date_of_birth,
+                    email,
+                    phone_number,
+                    department
+                `)
+                .not('date_of_birth', 'is', null);
+
+            if (date) {
+                // Filter by specific date
+                const targetDate = new Date(date);
+                query = query
+                    .eq('date_of_birth', targetDate.toISOString().split('T')[0]);
+            } else {
+                // Filter for upcoming birthdays
+                const today = new Date();
+                const upcomingDate = new Date();
+                upcomingDate.setDate(today.getDate() + parseInt(upcoming_days));
+
+                // Get month and day for today
+                const todayMonth = today.getMonth() + 1;
+                const todayDay = today.getDate();
+                const upcomingMonth = upcomingDate.getMonth() + 1;
+                const upcomingDay = upcomingDate.getDate();
+
+                // Complex query for upcoming birthdays across year boundary
+                if (upcomingMonth >= todayMonth) {
+                    // Same year or next year
+                    query = query.or(`and(extract(month from date_of_birth).gte.${todayMonth},extract(day from date_of_birth).gte.${todayDay}),and(extract(month from date_of_birth).lte.${upcomingMonth},extract(day from date_of_birth).lte.${upcomingDay})`);
+                } else {
+                    // Crosses year boundary
+                    query = query.or(`and(extract(month from date_of_birth).gte.${todayMonth},extract(day from date_of_birth).gte.${todayDay}),and(extract(month from date_of_birth).lte.${upcomingMonth},extract(day from date_of_birth).lte.${upcomingDay})`);
+                }
+            }
+
+            const { data: staff, error } = await query.order('date_of_birth');
+
+            if (error) {
+                console.error('Error fetching staff birthdays:', error);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch staff birthdays'
+                });
+            }
+
+            // Calculate days until birthday for each staff member
+            const staffWithBirthdayInfo = staff.map(member => {
+                const birthday = new Date(member.date_of_birth);
+                const today = new Date();
+                const nextBirthday = new Date(today.getFullYear(), birthday.getMonth(), birthday.getDate());
+
+                if (nextBirthday < today) {
+                    nextBirthday.setFullYear(today.getFullYear() + 1);
+                }
+
+                const daysUntilBirthday = Math.ceil((nextBirthday - today) / (1000 * 60 * 60 * 24));
+
+                return {
+                    ...member,
+                    days_until_birthday: daysUntilBirthday,
+                    is_upcoming: daysUntilBirthday <= parseInt(upcoming_days)
+                };
+            });
+
+            // Sort by upcoming birthdays
+            staffWithBirthdayInfo.sort((a, b) => {
+                if (a.is_upcoming && !b.is_upcoming) return -1;
+                if (!a.is_upcoming && b.is_upcoming) return 1;
+                return a.days_until_birthday - b.days_until_birthday;
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    staff: staffWithBirthdayInfo,
+                    summary: {
+                        total_staff: staffWithBirthdayInfo.length,
+                        upcoming_birthdays: staffWithBirthdayInfo.filter(s => s.is_upcoming).length,
+                        filter_date: date || null,
+                        upcoming_days: parseInt(upcoming_days)
+                    }
+                }
+            });
+
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 export default router; 
