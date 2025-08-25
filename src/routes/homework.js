@@ -1061,10 +1061,10 @@ router.post('/:id/attachments',
                 try {
                     // Upload file to Supabase Storage using admin client to bypass RLS
                     const { data: uploadData, error: uploadError } = await adminSupabase.storage
-                    .from('homework-attachments')
-                    .upload(`${id}/${file.originalname}`, file.buffer, {
-                        contentType: file.mimetype
-                    });
+                        .from('homework-attachments')
+                        .upload(`${id}/${file.originalname}`, file.buffer, {
+                            contentType: file.mimetype
+                        });
 
                     if (uploadError) {
                         console.error('Upload error:', uploadError);
@@ -1075,29 +1075,29 @@ router.post('/:id/attachments',
 
                     // Get public URL using admin client
                     const { data: { publicUrl } } = adminSupabase.storage
-                    .from('homework-attachments')
-                    .getPublicUrl(uploadData.path);
+                        .from('homework-attachments')
+                        .getPublicUrl(uploadData.path);
 
-                // Create attachment record
-                const { data: attachment, error: attachmentError } = await adminSupabase
-                    .from('homework_files')
-                    .insert([{
-                        homework_id: id,
-                        storage_path: uploadData.path,
-                        file_name: file.originalname,
-                        file_type: file.mimetype,
-                        file_size: file.size,
-                        uploaded_by: req.user.id
-                    }])
-                    .select()
-                    .single();
+                    // Create attachment record
+                    const { data: attachment, error: attachmentError } = await adminSupabase
+                        .from('homework_files')
+                        .insert([{
+                            homework_id: id,
+                            storage_path: uploadData.path,
+                            file_name: file.originalname,
+                            file_type: file.mimetype,
+                            file_size: file.size,
+                            uploaded_by: req.user.id
+                        }])
+                        .select()
+                        .single();
 
                     if (attachmentError) {
                         console.error('Database error:', attachmentError);
                         throw attachmentError;
                     }
 
-                attachments.push(attachment);
+                    attachments.push(attachment);
                     console.log('Attachment created:', attachment);
                 } catch (fileError) {
                     console.error('Error processing file:', file.originalname, fileError);
@@ -1116,7 +1116,7 @@ router.post('/:id/attachments',
     }
 );
 
-// Get homework attachment (Download file)
+// Get homework attachment (Get signed URL for direct file access)
 router.get('/:homework_id/attachments/:attachment_id',
     authenticate,
     async (req, res, next) => {
@@ -1277,70 +1277,41 @@ router.get('/:homework_id/attachments/:attachment_id',
                 });
             }
 
-            // Get file from Supabase Storage
-            console.log('Attempting to download file:', attachment.storage_path);
+            // Generate signed URL for direct file access
+            console.log('Generating signed URL for file:', attachment.storage_path);
 
-            const { data: fileData, error: fileError } = await adminSupabase.storage
+            const { data: signedUrlData, error: urlError } = await adminSupabase.storage
                 .from('homework-attachments')
-                .download(attachment.storage_path);
+                .createSignedUrl(attachment.storage_path, 3600); // 1 hour expiry
 
-            if (fileError) {
-                console.error('File download error:', fileError);
-                return res.status(404).json({
-                    status: 'error',
-                    message: 'File not found in storage',
-                    debug: {
-                        storage_path: attachment.storage_path,
-                        file_error: fileError.message,
-                        attachment_id: attachment_id,
-                        homework_id: homework_id
-                    }
-                });
-            }
-
-            if (!fileData) {
-                console.error('No file data returned from storage');
-                return res.status(404).json({
-                    status: 'error',
-                    message: 'File data is empty',
-                    debug: {
-                        storage_path: attachment.storage_path,
-                        attachment_id: attachment_id,
-                        homework_id: homework_id
-                    }
-                });
-            }
-
-            // Handle different file data types
-            let fileBuffer;
-            let fileSize;
-
-            if (fileData instanceof Buffer) {
-                fileBuffer = fileData;
-                fileSize = fileData.length;
-            } else if (typeof fileData === 'string') {
-                fileBuffer = Buffer.from(fileData, 'utf8');
-                fileSize = fileBuffer.length;
-            } else if (fileData && typeof fileData === 'object' && fileData.arrayBuffer) {
-                // Handle ArrayBuffer or similar
-                const arrayBuffer = await fileData.arrayBuffer();
-                fileBuffer = Buffer.from(arrayBuffer);
-                fileSize = fileBuffer.length;
-            } else {
-                console.error('Unexpected file data type:', typeof fileData, fileData);
+            if (urlError) {
+                console.error('Signed URL generation error:', urlError);
                 return res.status(500).json({
                     status: 'error',
-                    message: 'Invalid file data format',
+                    message: 'Failed to generate file access URL',
                     debug: {
                         storage_path: attachment.storage_path,
-                        file_data_type: typeof fileData,
+                        url_error: urlError.message,
                         attachment_id: attachment_id,
                         homework_id: homework_id
                     }
                 });
             }
 
-            console.log('File downloaded successfully, size:', fileSize, 'type:', typeof fileData);
+            if (!signedUrlData || !signedUrlData.signedUrl) {
+                console.error('No signed URL returned from storage');
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to generate file access URL',
+                    debug: {
+                        storage_path: attachment.storage_path,
+                        attachment_id: attachment_id,
+                        homework_id: homework_id
+                    }
+                });
+            }
+
+            console.log('Signed URL generated successfully');
 
             // Log file access for audit purposes
             try {
@@ -1356,20 +1327,19 @@ router.get('/:homework_id/attachments/:attachment_id',
                 // Don't fail the request if logging fails
             }
 
-            // Set appropriate headers for file download
-            res.setHeader('Content-Type', attachment.file_type);
-            res.setHeader('Content-Disposition', `attachment; filename="${attachment.file_name}"`);
-            res.setHeader('Content-Length', fileSize);
-            res.setHeader('Cache-Control', 'no-cache');
-
-            console.log('Sending file response with headers:', {
-                'Content-Type': attachment.file_type,
-                'Content-Disposition': `attachment; filename="${attachment.file_name}"`,
-                'Content-Length': fileSize
+            // Return the signed URL for direct file access
+            res.json({
+                status: 'success',
+                data: {
+                    file_url: signedUrlData.signedUrl,
+                    file_name: attachment.file_name,
+                    file_type: attachment.file_type,
+                    file_size: attachment.file_size,
+                    expires_at: new Date(Date.now() + 3600000).toISOString(), // 1 hour from now
+                    attachment_id: attachment_id,
+                    homework_id: homework_id
+                }
             });
-
-            // Send the file
-            res.send(fileBuffer);
 
         } catch (error) {
             console.error('Download endpoint error:', error);
