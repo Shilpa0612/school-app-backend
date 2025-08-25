@@ -112,9 +112,55 @@ router.post('/',
             }
 
             if (!isAuthorized) {
+                let errorMessage = 'You are not authorized to create homework for this class division';
+                let debugInfo = null;
+
+                if (req.user.role === 'parent') {
+                    // Get the class division details for better error message
+                    const { data: classDivision } = await adminSupabase
+                        .from('class_divisions')
+                        .select(`
+                            division,
+                            level:class_level_id (name)
+                        `)
+                        .eq('id', class_division_id)
+                        .single();
+
+                    if (classDivision) {
+                        errorMessage = `You can only create homework for classes where your children are enrolled. This class is ${classDivision.level.name} ${classDivision.division}, but your children are not in this class.`;
+                    }
+
+                    // Add debug information to help troubleshoot
+                    debugInfo = {
+                        parent_id: req.user.id,
+                        class_division_id: class_division_id,
+                        class_name: classDivision ? `${classDivision.level.name} ${classDivision.division}` : 'Unknown',
+                        children_data: childrenInClass || [],
+                        children_classes: childrenInClass ? childrenInClass.map(mapping =>
+                            mapping.student_academic_records?.map(record => ({
+                                class_division_id: record.class_division_id,
+                                academic_year_id: record.academic_year_id
+                            }))
+                        ).flat().filter(Boolean) : [],
+                        authorization_check: {
+                            children_found: childrenInClass ? childrenInClass.length : 0,
+                            children_with_records: childrenInClass ? childrenInClass.filter(mapping =>
+                                mapping.student_academic_records && mapping.student_academic_records.length > 0
+                            ).length : 0,
+                            matching_classes: childrenInClass ? childrenInClass.filter(mapping =>
+                                mapping.student_academic_records &&
+                                mapping.student_academic_records.some(record =>
+                                    record.class_division_id === class_division_id
+                                )
+                            ).length : 0
+                        }
+                    };
+                }
+
                 return res.status(403).json({
                     status: 'error',
-                    message: 'You are not authorized to create homework for this class division'
+                    message: errorMessage,
+                    debug: debugInfo
                 });
             }
 
@@ -927,14 +973,16 @@ router.post('/:id/attachments',
                     .from('parent_student_mappings')
                     .select(`
                         students:students_master (
-                            id
-                        ),
-                        student_academic_records (
-                            class_division_id
+                            id,
+                            full_name,
+                            student_academic_records (
+                                id,
+                                class_division_id,
+                                academic_year_id
+                            )
                         )
                     `)
-                    .eq('parent_id', req.user.id)
-                    .eq('student_academic_records.class_division_id', homework.class_division_id);
+                    .eq('parent_id', req.user.id);
 
                 console.log('Parent children check:', {
                     childrenInClass,
@@ -946,14 +994,15 @@ router.post('/:id/attachments',
                 if (!childrenError && childrenInClass && childrenInClass.length > 0) {
                     // Check if any child is actually in this class
                     const hasChildInClass = childrenInClass.some(mapping => {
-                        const childInClass = mapping.student_academic_records &&
-                            mapping.student_academic_records.some(record =>
+                        const childInClass = mapping.students &&
+                            mapping.students.student_academic_records &&
+                            mapping.students.student_academic_records.some(record =>
                                 record.class_division_id === homework.class_division_id
                             );
 
                         console.log('Child mapping check:', {
                             student: mapping.students,
-                            academic_records: mapping.student_academic_records,
+                            academic_records: mapping.students?.student_academic_records,
                             childInClass,
                             homework_class_id: homework.class_division_id
                         });
@@ -964,7 +1013,7 @@ router.post('/:id/attachments',
                     console.log('Child in class check:', {
                         homework_class_id: homework.class_division_id,
                         children_classes: childrenInClass.map(mapping =>
-                            mapping.student_academic_records?.map(record => record.class_division_id)
+                            mapping.students?.student_academic_records?.map(record => record.class_division_id)
                         ).flat().filter(Boolean),
                         hasChildInClass
                     });
@@ -979,6 +1028,7 @@ router.post('/:id/attachments',
 
             if (!isAuthorized) {
                 let errorMessage = 'Not authorized to add attachments to this homework';
+                let debugInfo = null;
 
                 if (req.user.role === 'parent') {
                     // Get the class division details for better error message
@@ -994,11 +1044,38 @@ router.post('/:id/attachments',
                     if (classDivision) {
                         errorMessage = `You can only upload attachments to homework for classes where your children are enrolled. This homework is for ${classDivision.level.name} ${classDivision.division}, but your children are not in this class.`;
                     }
+
+                    // Add debug information to help troubleshoot
+                    debugInfo = {
+                        parent_id: req.user.id,
+                        homework_class_id: homework.class_division_id,
+                        homework_class_name: classDivision ? `${classDivision.level.name} ${classDivision.division}` : 'Unknown',
+                        children_data: childrenInClass || [],
+                        children_classes: childrenInClass ? childrenInClass.map(mapping =>
+                            mapping.students?.student_academic_records?.map(record => ({
+                                class_division_id: record.class_division_id,
+                                academic_year_id: record.academic_year_id
+                            }))
+                        ).flat().filter(Boolean) : [],
+                        authorization_check: {
+                            children_found: childrenInClass ? childrenInClass.length : 0,
+                            children_with_records: childrenInClass ? childrenInClass.filter(mapping =>
+                                mapping.students?.student_academic_records && mapping.students.student_academic_records.length > 0
+                            ).length : 0,
+                            matching_classes: childrenInClass ? childrenInClass.filter(mapping =>
+                                mapping.students?.student_academic_records &&
+                                mapping.students.student_academic_records.some(record =>
+                                    record.class_division_id === homework.class_division_id
+                                )
+                            ).length : 0
+                        }
+                    };
                 }
 
                 return res.status(403).json({
                     status: 'error',
-                    message: errorMessage
+                    message: errorMessage,
+                    debug: debugInfo
                 });
             }
 
@@ -1016,8 +1093,8 @@ router.post('/:id/attachments',
                 console.log('Processing file:', file.originalname, file.mimetype, file.size);
 
                 try {
-                    // Upload file to Supabase Storage
-                    const { data: uploadData, error: uploadError } = await supabase.storage
+                    // Upload file to Supabase Storage using admin client to bypass RLS
+                    const { data: uploadData, error: uploadError } = await adminSupabase.storage
                         .from('homework-attachments')
                         .upload(`${id}/${file.originalname}`, file.buffer, {
                             contentType: file.mimetype
@@ -1030,8 +1107,8 @@ router.post('/:id/attachments',
 
                     console.log('File uploaded successfully:', uploadData);
 
-                    // Get public URL
-                    const { data: { publicUrl } } = supabase.storage
+                    // Get public URL using admin client
+                    const { data: { publicUrl } } = adminSupabase.storage
                         .from('homework-attachments')
                         .getPublicUrl(uploadData.path);
 
