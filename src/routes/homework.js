@@ -77,14 +77,16 @@ router.post('/',
                     .from('parent_student_mappings')
                     .select(`
                         students:students_master (
-                            id
+                            id,
+                            full_name
                         ),
                         student_academic_records (
-                            class_division_id
+                            id,
+                            class_division_id,
+                            academic_year_id
                         )
                     `)
-                    .eq('parent_id', req.user.id)
-                    .eq('student_academic_records.class_division_id', class_division_id);
+                    .eq('parent_id', req.user.id);
 
                 if (!childrenError && childrenInClass && childrenInClass.length > 0) {
                     // Check if any child is actually in this class
@@ -94,6 +96,14 @@ router.post('/',
                             record.class_division_id === class_division_id
                         )
                     );
+
+                    console.log('Parent homework creation check:', {
+                        class_division_id,
+                        children_classes: childrenInClass.map(mapping =>
+                            mapping.student_academic_records?.map(record => record.class_division_id)
+                        ).flat().filter(Boolean),
+                        hasChildInClass
+                    });
 
                     if (hasChildInClass) {
                         isAuthorized = true;
@@ -434,14 +444,16 @@ router.put('/:id',
                     .from('parent_student_mappings')
                     .select(`
                         students:students_master (
-                            id
+                            id,
+                            full_name
                         ),
                         student_academic_records (
-                            class_division_id
+                            id,
+                            class_division_id,
+                            academic_year_id
                         )
                     `)
-                    .eq('parent_id', req.user.id)
-                    .eq('student_academic_records.class_division_id', existingHomework.class_division_id);
+                    .eq('parent_id', req.user.id);
 
                 if (!childrenError && childrenInClass && childrenInClass.length > 0) {
                     // Check if any child is actually in this class
@@ -533,14 +545,16 @@ router.delete('/:id',
                     .from('parent_student_mappings')
                     .select(`
                         students:students_master (
-                            id
+                            id,
+                            full_name
                         ),
                         student_academic_records (
-                            class_division_id
+                            id,
+                            class_division_id,
+                            academic_year_id
                         )
                     `)
-                    .eq('parent_id', req.user.id)
-                    .eq('student_academic_records.class_division_id', homework.class_division_id);
+                    .eq('parent_id', req.user.id);
 
                 if (!childrenError && childrenInClass && childrenInClass.length > 0) {
                     // Check if any child is actually in this class
@@ -816,6 +830,14 @@ router.post('/:id/attachments',
                             record.class_division_id === homework.class_division_id
                         )
                     );
+
+                    console.log('Child in class check:', {
+                        homework_class_id: homework.class_division_id,
+                        children_classes: childrenInClass.map(mapping =>
+                            mapping.student_academic_records?.map(record => record.class_division_id)
+                        ).flat().filter(Boolean),
+                        hasChildInClass
+                    });
 
                     if (hasChildInClass) {
                         isAuthorized = true;
