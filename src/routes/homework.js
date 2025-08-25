@@ -12,11 +12,11 @@ const upload = multer({
         fileSize: parseInt(process.env.MAX_FILE_SIZE) || 10485760 // 10MB default
     },
     fileFilter: (req, file, cb) => {
-        const allowedTypes = (process.env.ALLOWED_FILE_TYPES || 'image/jpeg,image/png,application/pdf').split(',');
+        const allowedTypes = (process.env.ALLOWED_FILE_TYPES || 'image/jpeg,image/png,application/pdf,text/plain,text/csv,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document').split(',');
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
         } else {
-            cb(new Error('Invalid file type'));
+            cb(new Error(`Invalid file type: ${file.mimetype}. Allowed types: ${allowedTypes.join(', ')}`));
         }
     }
 });
@@ -583,14 +583,87 @@ router.delete('/:id',
     }
 );
 
+// Test storage bucket access
+router.get('/test-storage',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            // Test if the storage bucket exists
+            const { data: buckets, error: bucketsError } = await supabase.storage.listBuckets();
+
+            if (bucketsError) {
+                console.error('Storage buckets error:', bucketsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Storage configuration error',
+                    details: bucketsError.message
+                });
+            }
+
+            const homeworkBucket = buckets.find(bucket => bucket.name === 'homework-attachments');
+
+            if (!homeworkBucket) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'homework-attachments bucket not found',
+                    availableBuckets: buckets.map(b => b.name)
+                });
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Storage bucket accessible',
+                bucket: homeworkBucket
+            });
+        } catch (error) {
+            console.error('Storage test error:', error);
+            next(error);
+        }
+    }
+);
+
 // Add homework attachments
 router.post('/:id/attachments',
     authenticate,
     authorize(['teacher', 'parent']),
     upload.array('files', 5), // Maximum 5 files
+    (err, req, res, next) => {
+        // Handle multer errors
+        if (err instanceof multer.MulterError) {
+            if (err.code === 'LIMIT_FILE_SIZE') {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'File too large. Maximum size is 10MB.'
+                });
+            }
+            if (err.code === 'LIMIT_FILE_COUNT') {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Too many files. Maximum 5 files allowed.'
+                });
+            }
+            return res.status(400).json({
+                status: 'error',
+                message: `File upload error: ${err.message}`
+            });
+        }
+
+        // Handle other file filter errors
+        if (err) {
+            return res.status(400).json({
+                status: 'error',
+                message: err.message
+            });
+        }
+
+        next();
+    },
     async (req, res, next) => {
         try {
             const { id } = req.params;
+            console.log('Upload request for homework ID:', id);
+            console.log('User:', req.user.id, req.user.role);
+            console.log('Files received:', req.files ? req.files.length : 0);
 
             // Verify homework exists
             const { data: homework, error: homeworkError } = await adminSupabase
@@ -600,11 +673,14 @@ router.post('/:id/attachments',
                 .single();
 
             if (homeworkError || !homework) {
+                console.log('Homework not found:', homeworkError);
                 return res.status(404).json({
                     status: 'error',
                     message: 'Homework not found'
                 });
             }
+
+            console.log('Homework found:', homework);
 
             let isAuthorized = false;
 
@@ -617,6 +693,8 @@ router.post('/:id/attachments',
                     .eq('teacher_id', req.user.id)
                     .eq('is_active', true)
                     .single();
+
+                console.log('Teacher assignment check:', { teacherAssignment, assignmentError });
 
                 if (!assignmentError && teacherAssignment) {
                     isAuthorized = true;
@@ -636,6 +714,8 @@ router.post('/:id/attachments',
                     .eq('parent_id', req.user.id)
                     .eq('student_academic_records.class_division_id', homework.class_division_id);
 
+                console.log('Parent children check:', { childrenInClass, childrenError });
+
                 if (!childrenError && childrenInClass && childrenInClass.length > 0) {
                     // Check if any child is actually in this class
                     const hasChildInClass = childrenInClass.some(mapping =>
@@ -651,6 +731,8 @@ router.post('/:id/attachments',
                 }
             }
 
+            console.log('Authorization result:', isAuthorized);
+
             if (!isAuthorized) {
                 return res.status(403).json({
                     status: 'error',
@@ -659,39 +741,63 @@ router.post('/:id/attachments',
             }
 
             const files = req.files;
+            if (!files || files.length === 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'No files provided'
+                });
+            }
+
             const attachments = [];
 
             for (const file of files) {
-                // Upload file to Supabase Storage
-                const { data: uploadData, error: uploadError } = await supabase.storage
-                    .from('homework-attachments')
-                    .upload(`${id}/${file.originalname}`, file.buffer, {
-                        contentType: file.mimetype
-                    });
+                console.log('Processing file:', file.originalname, file.mimetype, file.size);
 
-                if (uploadError) throw uploadError;
+                try {
+                    // Upload file to Supabase Storage
+                    const { data: uploadData, error: uploadError } = await supabase.storage
+                        .from('homework-attachments')
+                        .upload(`${id}/${file.originalname}`, file.buffer, {
+                            contentType: file.mimetype
+                        });
 
-                // Get public URL
-                const { data: { publicUrl } } = supabase.storage
-                    .from('homework-attachments')
-                    .getPublicUrl(uploadData.path);
+                    if (uploadError) {
+                        console.error('Upload error:', uploadError);
+                        throw uploadError;
+                    }
 
-                // Create attachment record
-                const { data: attachment, error: attachmentError } = await adminSupabase
-                    .from('homework_files')
-                    .insert([{
-                        homework_id: id,
-                        storage_path: uploadData.path,
-                        file_name: file.originalname,
-                        file_type: file.mimetype,
-                        file_size: file.size,
-                        uploaded_by: req.user.id
-                    }])
-                    .select()
-                    .single();
+                    console.log('File uploaded successfully:', uploadData);
 
-                if (attachmentError) throw attachmentError;
-                attachments.push(attachment);
+                    // Get public URL
+                    const { data: { publicUrl } } = supabase.storage
+                        .from('homework-attachments')
+                        .getPublicUrl(uploadData.path);
+
+                    // Create attachment record
+                    const { data: attachment, error: attachmentError } = await adminSupabase
+                        .from('homework_files')
+                        .insert([{
+                            homework_id: id,
+                            storage_path: uploadData.path,
+                            file_name: file.originalname,
+                            file_type: file.mimetype,
+                            file_size: file.size,
+                            uploaded_by: req.user.id
+                        }])
+                        .select()
+                        .single();
+
+                    if (attachmentError) {
+                        console.error('Database error:', attachmentError);
+                        throw attachmentError;
+                    }
+
+                    attachments.push(attachment);
+                    console.log('Attachment created:', attachment);
+                } catch (fileError) {
+                    console.error('Error processing file:', file.originalname, fileError);
+                    throw fileError;
+                }
             }
 
             res.status(201).json({
@@ -699,6 +805,7 @@ router.post('/:id/attachments',
                 data: { attachments }
             });
         } catch (error) {
+            console.error('Upload endpoint error:', error);
             next(error);
         }
     }
