@@ -596,6 +596,123 @@ router.delete('/:id',
     }
 );
 
+// Debug parent authorization for specific homework
+router.get('/debug-parent-auth/:homework_id',
+    authenticate,
+    authorize(['parent']),
+    async (req, res, next) => {
+        try {
+            const { homework_id } = req.params;
+
+            // Get homework details
+            const { data: homework, error: homeworkError } = await adminSupabase
+                .from('homework')
+                .select(`
+                    id,
+                    class_division_id,
+                    title,
+                    subject,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        level:class_level_id (name)
+                    )
+                `)
+                .eq('id', homework_id)
+                .single();
+
+            if (homeworkError || !homework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            // Get all parent's children
+            const { data: childrenData, error: childrenError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    students:students_master (
+                        id,
+                        full_name,
+                        roll_number
+                    ),
+                    student_academic_records (
+                        id,
+                        class_division_id,
+                        academic_year_id,
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            level:class_level_id (name)
+                        )
+                    )
+                `)
+                .eq('parent_id', req.user.id);
+
+            if (childrenError) {
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Error fetching children data',
+                    details: childrenError.message
+                });
+            }
+
+            // Check authorization logic
+            let isAuthorized = false;
+            let matchingChildren = [];
+
+            if (childrenData && childrenData.length > 0) {
+                // Check if any child is actually in this class
+                const hasChildInClass = childrenData.some(mapping => {
+                    const childInClass = mapping.student_academic_records &&
+                        mapping.student_academic_records.some(record =>
+                            record.class_division_id === homework.class_division_id
+                        );
+
+                    if (childInClass) {
+                        matchingChildren.push({
+                            student: mapping.students,
+                            academic_records: mapping.student_academic_records.filter(record =>
+                                record.class_division_id === homework.class_division_id
+                            )
+                        });
+                    }
+
+                    return childInClass;
+                });
+
+                if (hasChildInClass) {
+                    isAuthorized = true;
+                }
+            }
+
+            res.json({
+                status: 'success',
+                data: {
+                    parent_id: req.user.id,
+                    homework: homework,
+                    children_data: childrenData || [],
+                    authorization_check: {
+                        is_authorized: isAuthorized,
+                        homework_class_id: homework.class_division_id,
+                        children_classes: childrenData ? childrenData.map(mapping =>
+                            mapping.student_academic_records?.map(record => ({
+                                class_division_id: record.class_division_id,
+                                class_name: record.class_division?.level?.name + ' ' + record.class_division?.division
+                            }))
+                        ).flat().filter(Boolean) : [],
+                        matching_children: matchingChildren
+                    }
+                }
+            });
+        } catch (error) {
+            console.error('Debug parent auth error:', error);
+            next(error);
+        }
+    }
+);
+
 // Debug parent's children and class assignments
 router.get('/debug-parent-children',
     authenticate,
@@ -676,8 +793,7 @@ router.get('/debug-parent-children',
                         total_children: childrenData ? childrenData.length : 0,
                         total_homework: homeworkData ? homeworkData.length : 0,
                         children_classes: childrenData ? childrenData.map(child =>
-                            child.student_academic_records?.map(record =>
-                                record.class_division?.division
+                            child.student_academic_records?.map(record => record.class_division?.division
                             )
                         ).flat().filter(Boolean) : []
                     }
@@ -820,16 +936,30 @@ router.post('/:id/attachments',
                     .eq('parent_id', req.user.id)
                     .eq('student_academic_records.class_division_id', homework.class_division_id);
 
-                console.log('Parent children check:', { childrenInClass, childrenError });
+                console.log('Parent children check:', {
+                    childrenInClass,
+                    childrenError,
+                    parent_id: req.user.id,
+                    homework_class_id: homework.class_division_id
+                });
 
                 if (!childrenError && childrenInClass && childrenInClass.length > 0) {
                     // Check if any child is actually in this class
-                    const hasChildInClass = childrenInClass.some(mapping =>
-                        mapping.student_academic_records &&
-                        mapping.student_academic_records.some(record =>
-                            record.class_division_id === homework.class_division_id
-                        )
-                    );
+                    const hasChildInClass = childrenInClass.some(mapping => {
+                        const childInClass = mapping.student_academic_records &&
+                            mapping.student_academic_records.some(record =>
+                                record.class_division_id === homework.class_division_id
+                            );
+
+                        console.log('Child mapping check:', {
+                            student: mapping.students,
+                            academic_records: mapping.student_academic_records,
+                            childInClass,
+                            homework_class_id: homework.class_division_id
+                        });
+
+                        return childInClass;
+                    });
 
                     console.log('Child in class check:', {
                         homework_class_id: homework.class_division_id,
