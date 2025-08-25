@@ -41,10 +41,10 @@ router.post('/',
 
             const { class_division_id, subject, title, description, due_date } = req.body;
 
-            // Verify teacher is assigned to this class division
+            // Verify class division exists
             const { data: classData, error: classError } = await adminSupabase
                 .from('class_divisions')
-                .select('id, teacher_id')
+                .select('id')
                 .eq('id', class_division_id)
                 .single();
 
@@ -55,8 +55,16 @@ router.post('/',
                 });
             }
 
-            // Verify teacher is assigned to this class division
-            if (classData.teacher_id !== req.user.id) {
+            // Verify teacher is assigned to this class division using new many-to-many system
+            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('id, assignment_type, is_primary')
+                .eq('class_division_id', class_division_id)
+                .eq('teacher_id', req.user.id)
+                .eq('is_active', true)
+                .single();
+
+            if (assignmentError || !teacherAssignment) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'You are not assigned to this class division'
@@ -111,8 +119,22 @@ router.get('/',
 
             // Filter based on user role
             if (req.user.role === 'teacher') {
-                // Teachers see homework for their assigned classes
-                query = query.eq('teacher_id', req.user.id);
+                // Teachers see homework for their assigned classes using new many-to-many system
+                const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('class_division_id')
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true);
+
+                if (assignmentError) throw assignmentError;
+
+                if (teacherAssignments && teacherAssignments.length > 0) {
+                    const classIds = teacherAssignments.map(assignment => assignment.class_division_id);
+                    query = query.in('class_division_id', classIds);
+                } else {
+                    // If no assignments found, return empty result
+                    query = query.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
+                }
             } else if (req.user.role === 'parent') {
                 // Parents see homework for their children's classes
                 const { data: childrenClasses } = await adminSupabase
@@ -183,7 +205,22 @@ router.get('/',
 
             // Apply the same filters to count query
             if (req.user.role === 'teacher') {
-                countQuery = countQuery.eq('teacher_id', req.user.id);
+                // Teachers see homework for their assigned classes using new many-to-many system
+                const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('class_division_id')
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true);
+
+                if (assignmentError) throw assignmentError;
+
+                if (teacherAssignments && teacherAssignments.length > 0) {
+                    const classIds = teacherAssignments.map(assignment => assignment.class_division_id);
+                    countQuery = countQuery.in('class_division_id', classIds);
+                } else {
+                    // If no assignments found, return empty result
+                    countQuery = countQuery.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
+                }
             } else if (req.user.role === 'parent') {
                 // For parents, we need to apply the same class filtering logic
                 const { data: childrenClasses } = await adminSupabase
@@ -326,10 +363,10 @@ router.put('/:id',
                 due_date
             } = req.body;
 
-            // Verify homework exists and belongs to teacher
+            // Verify homework exists and teacher is assigned to the class
             const { data: existingHomework, error: fetchError } = await adminSupabase
                 .from('homework')
-                .select('id, teacher_id')
+                .select('id, class_division_id')
                 .eq('id', id)
                 .single();
 
@@ -340,7 +377,16 @@ router.put('/:id',
                 });
             }
 
-            if (existingHomework.teacher_id !== req.user.id) {
+            // Verify teacher is assigned to this class division using new many-to-many system
+            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('id, assignment_type, is_primary')
+                .eq('class_division_id', existingHomework.class_division_id)
+                .eq('teacher_id', req.user.id)
+                .eq('is_active', true)
+                .single();
+
+            if (assignmentError || !teacherAssignment) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Not authorized to update this homework'
@@ -381,10 +427,10 @@ router.delete('/:id',
         try {
             const { id } = req.params;
 
-            // Verify homework exists and belongs to teacher
+            // Verify homework exists and teacher is assigned to the class
             const { data: homework, error: fetchError } = await adminSupabase
                 .from('homework')
-                .select('id, teacher_id')
+                .select('id, class_division_id')
                 .eq('id', id)
                 .single();
 
@@ -395,7 +441,16 @@ router.delete('/:id',
                 });
             }
 
-            if (homework.teacher_id !== req.user.id) {
+            // Verify teacher is assigned to this class division using new many-to-many system
+            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('id, assignment_type, is_primary')
+                .eq('class_division_id', homework.class_division_id)
+                .eq('teacher_id', req.user.id)
+                .eq('is_active', true)
+                .single();
+
+            if (assignmentError || !teacherAssignment) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Not authorized to delete this homework'
@@ -429,10 +484,10 @@ router.post('/:id/attachments',
         try {
             const { id } = req.params;
 
-            // Verify homework exists and belongs to teacher
+            // Verify homework exists
             const { data: homework, error: homeworkError } = await adminSupabase
                 .from('homework')
-                .select('id, teacher_id')
+                .select('id, class_division_id')
                 .eq('id', id)
                 .single();
 
@@ -443,7 +498,16 @@ router.post('/:id/attachments',
                 });
             }
 
-            if (homework.teacher_id !== req.user.id) {
+            // Verify teacher is assigned to this class division using new many-to-many system
+            const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('id, assignment_type, is_primary')
+                .eq('class_division_id', homework.class_division_id)
+                .eq('teacher_id', req.user.id)
+                .eq('is_active', true)
+                .single();
+
+            if (assignmentError || !teacherAssignment) {
                 return res.status(403).json({
                     status: 'error',
                     message: 'Not authorized to add attachments to this homework'
@@ -535,18 +599,26 @@ router.get('/filters',
 
             // Get available class divisions based on user role
             if (req.user.role === 'teacher') {
-                // Teachers see their assigned classes
-                const { data: teacherClasses, error: teacherClassesError } = await adminSupabase
-                    .from('class_divisions')
+                // Teachers see their assigned classes using new many-to-many system
+                const { data: teacherAssignments, error: teacherAssignmentsError } = await adminSupabase
+                    .from('class_teacher_assignments')
                     .select(`
-                        id,
-                        division,
-                        level:class_level_id (name, sequence_number)
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            level:class_level_id (name, sequence_number)
+                        )
                     `)
-                    .eq('teacher_id', req.user.id);
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true);
 
-                if (!teacherClassesError && teacherClasses) {
-                    filters.class_divisions = teacherClasses;
+                if (!teacherAssignmentsError && teacherAssignments) {
+                    const classDivisions = teacherAssignments
+                        .map(assignment => assignment.class_division)
+                        .filter((value, index, self) =>
+                            index === self.findIndex(t => t.id === value.id)
+                        );
+                    filters.class_divisions = classDivisions;
                 }
             } else if (req.user.role === 'parent') {
                 // Parents see their children's classes
