@@ -111,8 +111,8 @@ router.post('/events',
                 eventStatus = 'approved';
             } else if (req.user.role === 'admin') {
                 // Admin events are auto-approved
-                eventStatus = 'approved';
-            }
+                    eventStatus = 'approved';
+                }
             // All other roles (parents, etc.) - events are auto-approved
 
             const { data, error } = await adminSupabase

@@ -499,11 +499,159 @@ router.get('/children/teachers',
                 });
             }
 
+            // Get chat thread information for each teacher
+            const teachersByChildWithChat = await Promise.all(
+                teachersByChild.map(async (childData) => {
+                    const teachersWithChatInfo = await Promise.all(
+                        childData.teachers.map(async (teacher) => {
+                            try {
+                                // Check if there's an existing chat thread between parent and teacher
+                                // First, get all threads where parent is a participant
+                                const { data: parentThreads, error: parentThreadError } = await adminSupabase
+                                    .from('chat_participants')
+                                    .select('thread_id')
+                                    .eq('user_id', req.user.id);
+
+                                if (parentThreadError || !parentThreads || parentThreads.length === 0) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Get all threads where teacher is a participant
+                                const { data: teacherThreads, error: teacherThreadError } = await adminSupabase
+                                    .from('chat_participants')
+                                    .select('thread_id')
+                                    .eq('user_id', teacher.teacher_id);
+
+                                if (teacherThreadError || !teacherThreads || teacherThreads.length === 0) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Find common thread IDs
+                                const parentThreadIds = parentThreads.map(t => t.thread_id);
+                                const teacherThreadIds = teacherThreads.map(t => t.thread_id);
+                                const commonThreadIds = parentThreadIds.filter(id => teacherThreadIds.includes(id));
+
+                                if (commonThreadIds.length === 0) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Get the thread details (take the first common thread)
+                                const { data: thread, error: threadError } = await adminSupabase
+                                    .from('chat_threads')
+                                    .select(`
+                                        id,
+                                        title,
+                                        thread_type,
+                                        created_at,
+                                        updated_at,
+                                        participants:chat_participants(
+                                            user_id,
+                                            role,
+                                            last_read_at,
+                                            user:users(full_name, role)
+                                        )
+                                    `)
+                                    .eq('id', commonThreadIds[0])
+                                    .eq('thread_type', 'direct')
+                                    .single();
+
+                                if (threadError || !thread) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Get message count for this thread
+                                const { count: messageCount, error: countError } = await adminSupabase
+                                    .from('chat_messages')
+                                    .select('*', { count: 'exact', head: true })
+                                    .eq('thread_id', thread.id);
+
+                                if (countError) {
+                                    console.error('Error getting message count for thread:', thread.id, countError);
+                                }
+
+                                return {
+                                    ...teacher,
+                                    chat_info: {
+                                        has_thread: true,
+                                        thread_id: thread.id,
+                                        message_count: messageCount || 0,
+                                        participants: thread.participants || [],
+                                        thread_title: thread.title,
+                                        thread_type: thread.thread_type,
+                                        created_at: thread.created_at,
+                                        updated_at: thread.updated_at
+                                    }
+                                };
+                            } catch (error) {
+                                console.error('Error getting chat info for teacher:', teacher.teacher_id, error);
+                                return {
+                                    ...teacher,
+                                    chat_info: {
+                                        has_thread: false,
+                                        thread_id: null,
+                                        message_count: 0,
+                                        participants: []
+                                    }
+                                };
+                            }
+                        })
+                    );
+
+                    return {
+                        ...childData,
+                        teachers: teachersWithChatInfo
+                    };
+                })
+            );
+
+            // Calculate chat-related summary statistics
+            const allTeachersWithChat = teachersByChildWithChat.flatMap(child => child.teachers);
+            const teachersWithChat = allTeachersWithChat.filter(t => t.chat_info.has_thread).length;
+            const teachersWithoutChat = allTeachersWithChat.filter(t => !t.chat_info.has_thread).length;
+
             res.json({
                 status: 'success',
                 data: {
                     principal: principal ? { id: principal.id, full_name: principal.full_name } : null,
-                    teachers_by_child: teachersByChild
+                    teachers_by_child: teachersByChildWithChat,
+                    summary: {
+                        total_children: teachersByChildWithChat.length,
+                        total_teachers: allTeachersWithChat.length,
+                        teachers_with_chat: teachersWithChat,
+                        teachers_without_chat: teachersWithoutChat
+                    }
                 }
             });
         } catch (error) {
@@ -1502,6 +1650,135 @@ router.get('/teacher-linked-parents',
                 a.full_name.localeCompare(b.full_name)
             );
 
+            // Get chat thread information for each parent
+            const parentsWithChatInfo = await Promise.all(
+                linkedParents.map(async (parent) => {
+                    try {
+                        // Check if there's an existing chat thread between teacher and parent
+                        // First, get all threads where teacher is a participant
+                        const { data: teacherThreads, error: teacherThreadError } = await adminSupabase
+                            .from('chat_participants')
+                            .select('thread_id')
+                            .eq('user_id', teacherId);
+
+                        if (teacherThreadError || !teacherThreads || teacherThreads.length === 0) {
+                            return {
+                                ...parent,
+                                chat_info: {
+                                    has_thread: false,
+                                    thread_id: null,
+                                    message_count: 0,
+                                    participants: []
+                                }
+                            };
+                        }
+
+                        // Get all threads where parent is a participant
+                        const { data: parentThreads, error: parentThreadError } = await adminSupabase
+                            .from('chat_participants')
+                            .select('thread_id')
+                            .eq('user_id', parent.parent_id);
+
+                        if (parentThreadError || !parentThreads || parentThreads.length === 0) {
+                            return {
+                                ...parent,
+                                chat_info: {
+                                    has_thread: false,
+                                    thread_id: null,
+                                    message_count: 0,
+                                    participants: []
+                                }
+                            };
+                        }
+
+                        // Find common thread IDs
+                        const teacherThreadIds = teacherThreads.map(t => t.thread_id);
+                        const parentThreadIds = parentThreads.map(t => t.thread_id);
+                        const commonThreadIds = teacherThreadIds.filter(id => parentThreadIds.includes(id));
+
+                        if (commonThreadIds.length === 0) {
+                            return {
+                                ...parent,
+                                chat_info: {
+                                    has_thread: false,
+                                    thread_id: null,
+                                    message_count: 0,
+                                    participants: []
+                                }
+                            };
+                        }
+
+                        // Get the thread details (take the first common thread)
+                        const { data: thread, error: threadError } = await adminSupabase
+                            .from('chat_threads')
+                            .select(`
+                                id,
+                                title,
+                                thread_type,
+                                created_at,
+                                updated_at,
+                                participants:chat_participants(
+                                    user_id,
+                                    role,
+                                    last_read_at,
+                                    user:users(full_name, role)
+                                )
+                            `)
+                            .eq('id', commonThreadIds[0])
+                            .eq('thread_type', 'direct')
+                            .single();
+
+                        if (threadError || !thread) {
+                            // No existing thread
+                            return {
+                                ...parent,
+                                chat_info: {
+                                    has_thread: false,
+                                    thread_id: null,
+                                    message_count: 0,
+                                    participants: []
+                                }
+                            };
+                        }
+
+                        // Get message count for this thread
+                        const { count: messageCount, error: countError } = await adminSupabase
+                            .from('chat_messages')
+                            .select('*', { count: 'exact', head: true })
+                            .eq('thread_id', thread.id);
+
+                        if (countError) {
+                            console.error('Error getting message count for thread:', thread.id, countError);
+                        }
+
+                        return {
+                            ...parent,
+                            chat_info: {
+                                has_thread: true,
+                                thread_id: thread.id,
+                                message_count: messageCount || 0,
+                                participants: thread.participants || [],
+                                thread_title: thread.title,
+                                thread_type: thread.thread_type,
+                                created_at: thread.created_at,
+                                updated_at: thread.updated_at
+                            }
+                        };
+                    } catch (error) {
+                        console.error('Error getting chat info for parent:', parent.parent_id, error);
+                        return {
+                            ...parent,
+                            chat_info: {
+                                has_thread: false,
+                                thread_id: null,
+                                message_count: 0,
+                                participants: []
+                            }
+                        };
+                    }
+                })
+            );
+
             // Calculate summary statistics
             const totalStudents = new Set(students?.map(s => s.student_id) || []).size;
             const totalClasses = new Set(classDivisionIds).size;
@@ -1520,7 +1797,7 @@ router.get('/teacher-linked-parents',
                             academic_year: assignment.class_division.academic_year.year_name
                         }))
                     },
-                    linked_parents: linkedParents,
+                    linked_parents: parentsWithChatInfo,
                     principal: principal ? {
                         id: principal.id,
                         full_name: principal.full_name,
@@ -1529,12 +1806,14 @@ router.get('/teacher-linked-parents',
                         role: principal.role
                     } : null,
                     summary: {
-                        total_linked_parents: linkedParents.length,
+                        total_linked_parents: parentsWithChatInfo.length,
                         total_students: totalStudents,
                         total_classes: totalClasses,
                         total_assignments: teacherAssignments.length,
                         primary_teacher_for: teacherAssignments.filter(a => a.is_primary).length,
-                        subject_teacher_for: teacherAssignments.filter(a => !a.is_primary).length
+                        subject_teacher_for: teacherAssignments.filter(a => !a.is_primary).length,
+                        parents_with_chat: parentsWithChatInfo.filter(p => p.chat_info.has_thread).length,
+                        parents_without_chat: parentsWithChatInfo.filter(p => !p.chat_info.has_thread).length
                     }
                 }
             });
@@ -1774,10 +2053,152 @@ router.get('/children/teachers',
             // Sort children by name
             children.sort((a, b) => a.student_name.localeCompare(b.student_name));
 
+            // Get chat thread information for each teacher
+            const childrenWithChatInfo = await Promise.all(
+                children.map(async (child) => {
+                    const teachersWithChatInfo = await Promise.all(
+                        child.teachers.map(async (teacher) => {
+                            try {
+                                // Check if there's an existing chat thread between parent and teacher
+                                // First, get all threads where parent is a participant
+                                const { data: parentThreads, error: parentThreadError } = await adminSupabase
+                                    .from('chat_participants')
+                                    .select('thread_id')
+                                    .eq('user_id', req.user.id);
+
+                                if (parentThreadError || !parentThreads || parentThreads.length === 0) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Get all threads where teacher is a participant
+                                const { data: teacherThreads, error: teacherThreadError } = await adminSupabase
+                                    .from('chat_participants')
+                                    .select('thread_id')
+                                    .eq('user_id', teacher.teacher_id);
+
+                                if (teacherThreadError || !teacherThreads || teacherThreads.length === 0) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Find common thread IDs
+                                const parentThreadIds = parentThreads.map(t => t.thread_id);
+                                const teacherThreadIds = teacherThreads.map(t => t.thread_id);
+                                const commonThreadIds = parentThreadIds.filter(id => teacherThreadIds.includes(id));
+
+                                if (commonThreadIds.length === 0) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Get the thread details (take the first common thread)
+                                const { data: thread, error: threadError } = await adminSupabase
+                                    .from('chat_threads')
+                                    .select(`
+                                        id,
+                                        title,
+                                        thread_type,
+                                        created_at,
+                                        updated_at,
+                                        participants:chat_participants(
+                                            user_id,
+                                            role,
+                                            last_read_at,
+                                            user:users(full_name, role)
+                                        )
+                                    `)
+                                    .eq('id', commonThreadIds[0])
+                                    .eq('thread_type', 'direct')
+                                    .single();
+
+                                if (threadError || !thread) {
+                                    return {
+                                        ...teacher,
+                                        chat_info: {
+                                            has_thread: false,
+                                            thread_id: null,
+                                            message_count: 0,
+                                            participants: []
+                                        }
+                                    };
+                                }
+
+                                // Get message count for this thread
+                                const { count: messageCount, error: countError } = await adminSupabase
+                                    .from('chat_messages')
+                                    .select('*', { count: 'exact', head: true })
+                                    .eq('thread_id', thread.id);
+
+                                if (countError) {
+                                    console.error('Error getting message count for thread:', thread.id, countError);
+                                }
+
+                                return {
+                                    ...teacher,
+                                    chat_info: {
+                                        has_thread: true,
+                                        thread_id: thread.id,
+                                        message_count: messageCount || 0,
+                                        participants: thread.participants || [],
+                                        thread_title: thread.title,
+                                        thread_type: thread.thread_type,
+                                        created_at: thread.created_at,
+                                        updated_at: thread.updated_at
+                                    }
+                                };
+                            } catch (error) {
+                                console.error('Error getting chat info for teacher:', teacher.teacher_id, error);
+                                return {
+                                    ...teacher,
+                                    chat_info: {
+                                        has_thread: false,
+                                        thread_id: null,
+                                        message_count: 0,
+                                        participants: []
+                                    }
+                                };
+                            }
+                        })
+                    );
+
+                    return {
+                        ...child,
+                        teachers: teachersWithChatInfo
+                    };
+                })
+            );
+
+            // Calculate chat-related summary statistics
+            const allTeachersWithChat = childrenWithChatInfo.flatMap(child => child.teachers);
+            const teachersWithChat = allTeachersWithChat.filter(t => t.chat_info.has_thread).length;
+            const teachersWithoutChat = allTeachersWithChat.filter(t => !t.chat_info.has_thread).length;
+
             res.json({
                 status: 'success',
                 data: {
-                    children: children,
+                    children: childrenWithChatInfo,
                     principal: principal ? {
                         id: principal.id,
                         full_name: principal.full_name,
@@ -1790,11 +2211,13 @@ router.get('/children/teachers',
                         }
                     } : null,
                     summary: {
-                        total_children: children.length,
+                        total_children: childrenWithChatInfo.length,
                         total_teachers: allTeachers.size,
                         total_classes: allClasses.size,
-                        children_with_teachers: children.filter(c => c.teachers.length > 0).length,
-                        children_without_teachers: children.filter(c => c.teachers.length === 0).length
+                        children_with_teachers: childrenWithChatInfo.filter(c => c.teachers.length > 0).length,
+                        children_without_teachers: childrenWithChatInfo.filter(c => c.teachers.length === 0).length,
+                        teachers_with_chat: teachersWithChat,
+                        teachers_without_chat: teachersWithoutChat
                     }
                 }
             });
