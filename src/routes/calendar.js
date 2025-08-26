@@ -59,29 +59,50 @@ router.post('/events',
                 // Check if teacher is assigned to this class
                 if (req.user.role === 'teacher') {
                     // Check teacher assignment in the class_teacher_assignments table
-                    const { data: teacherAssignment, error: assignmentError } = await supabase
+                    const { data: teacherAssignments, error: assignmentError } = await supabase
                         .from('class_teacher_assignments')
                         .select('*')
                         .eq('teacher_id', req.user.id)
                         .eq('class_division_id', class_division_id)
-                        .eq('is_active', true)
-                        .single();
+                        .eq('is_active', true);
 
-                    // If not found in new system, check legacy system
-                    if (assignmentError || !teacherAssignment) {
+                    // Check if teacher is assigned to this class
+                    let isAssigned = false;
+
+                    if (!assignmentError && teacherAssignments && teacherAssignments.length > 0) {
+                        isAssigned = true;
+                        console.log(`✅ Teacher assignment found: ${teacherAssignments.length} assignments`);
+                    } else {
+                        console.log(`⚠️  No active teacher assignments found for teacher ${req.user.id} and class ${class_division_id}`);
+                        if (assignmentError) {
+                            console.log(`   Assignment error:`, assignmentError);
+                        }
+
+                        // If not found in new system, check legacy system
                         const { data: legacyAssignment, error: legacyError } = await supabase
                             .from('class_divisions')
                             .select('teacher_id')
                             .eq('id', class_division_id)
                             .eq('teacher_id', req.user.id)
-                            .single();
+                            .maybeSingle();
 
-                        if (legacyError || !legacyAssignment) {
-                            return res.status(403).json({
-                                status: 'error',
-                                message: 'You can only create events for your assigned classes'
-                            });
+                        if (!legacyError && legacyAssignment) {
+                            isAssigned = true;
+                            console.log(`✅ Legacy teacher assignment found`);
+                        } else {
+                            console.log(`⚠️  No legacy assignment found either`);
+                            if (legacyError) {
+                                console.log(`   Legacy error:`, legacyError);
+                            }
                         }
+                    }
+
+                    if (!isAssigned) {
+                        console.log(`❌ Teacher ${req.user.id} is not assigned to class ${class_division_id}`);
+                        return res.status(403).json({
+                            status: 'error',
+                            message: 'You can only create events for your assigned classes'
+                        });
                     }
                 } else if (!['admin', 'principal'].includes(req.user.role)) {
                     return res.status(403).json({
@@ -257,12 +278,36 @@ router.get('/events',
                 filteredEvents = filteredEvents.filter(event => event.status === statusFilter);
             }
 
-            // Special handling for teachers: show approved events + their own pending events
+            // Special handling for teachers: show approved events + their own pending events + school-wide events
             if (req.user.role === 'teacher') {
-                filteredEvents = filteredEvents.filter(event =>
-                    event.status === 'approved' ||
-                    (event.status === 'pending' && event.created_by === req.user.id)
-                );
+                // Get teacher's assigned classes to include class-specific events
+                const { data: teacherAssignments, error: assignmentsError } = await supabase
+                    .from('class_teacher_assignments')
+                    .select('class_division_id')
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true);
+
+                if (!assignmentsError) {
+                    const assignedClassIds = teacherAssignments?.map(assignment => assignment.class_division_id) || [];
+
+                    filteredEvents = filteredEvents.filter(event =>
+                        // Show approved events
+                        event.status === 'approved' ||
+                        // Show teacher's own pending events
+                        (event.status === 'pending' && event.created_by === req.user.id) ||
+                        // Show school-wide events (regardless of status for teachers)
+                        event.event_type === 'school_wide' ||
+                        // Show events for teacher's assigned classes
+                        (event.class_division_id && assignedClassIds.includes(event.class_division_id))
+                    );
+                } else {
+                    // Fallback: show approved events + teacher's own pending events + school-wide events
+                    filteredEvents = filteredEvents.filter(event =>
+                        event.status === 'approved' ||
+                        (event.status === 'pending' && event.created_by === req.user.id) ||
+                        event.event_type === 'school_wide'
+                    );
+                }
             }
 
             // Add status fields to IST function response if they're missing
