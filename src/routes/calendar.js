@@ -40,14 +40,7 @@ router.post('/events',
                 timezone = 'Asia/Kolkata'
             } = req.body;
 
-            // Access control
-            if (event_type === 'school_wide' && !['admin', 'principal'].includes(req.user.role)) {
-                return res.status(403).json({
-                    status: 'error',
-                    message: 'Only admin and principal can create school-wide events'
-                });
-            }
-
+            // Validate required fields for class-specific events
             if (event_type === 'class_specific') {
                 if (!class_division_id) {
                     return res.status(400).json({
@@ -56,60 +49,26 @@ router.post('/events',
                     });
                 }
 
-                // Check if teacher is assigned to this class
-                if (req.user.role === 'teacher') {
-                    // Check teacher assignment in the class_teacher_assignments table
-                    const { data: teacherAssignments, error: assignmentError } = await supabase
-                        .from('class_teacher_assignments')
-                        .select('*')
-                        .eq('teacher_id', req.user.id)
-                        .eq('class_division_id', class_division_id)
-                        .eq('is_active', true);
+                // Verify the class division exists
+                const { data: classDivision, error: classDivisionError } = await adminSupabase
+                    .from('class_divisions')
+                    .select('id, division, academic_year:academic_year_id (year_name), class_level:class_level_id (name)')
+                    .eq('id', class_division_id)
+                    .single();
 
-                    // Check if teacher is assigned to this class
-                    let isAssigned = false;
-
-                    if (!assignmentError && teacherAssignments && teacherAssignments.length > 0) {
-                        isAssigned = true;
-                        console.log(`✅ Teacher assignment found: ${teacherAssignments.length} assignments`);
-                    } else {
-                        console.log(`⚠️  No active teacher assignments found for teacher ${req.user.id} and class ${class_division_id}`);
-                        if (assignmentError) {
-                            console.log(`   Assignment error:`, assignmentError);
-                        }
-
-                        // If not found in new system, check legacy system
-                        const { data: legacyAssignment, error: legacyError } = await supabase
-                            .from('class_divisions')
-                            .select('teacher_id')
-                            .eq('id', class_division_id)
-                            .eq('teacher_id', req.user.id)
-                            .maybeSingle();
-
-                        if (!legacyError && legacyAssignment) {
-                            isAssigned = true;
-                            console.log(`✅ Legacy teacher assignment found`);
-                        } else {
-                            console.log(`⚠️  No legacy assignment found either`);
-                            if (legacyError) {
-                                console.log(`   Legacy error:`, legacyError);
-                            }
-                        }
-                    }
-
-                    if (!isAssigned) {
-                        console.log(`❌ Teacher ${req.user.id} is not assigned to class ${class_division_id}`);
-                        return res.status(403).json({
-                            status: 'error',
-                            message: 'You can only create events for your assigned classes'
-                        });
-                    }
-                } else if (!['admin', 'principal'].includes(req.user.role)) {
-                    return res.status(403).json({
+                if (classDivisionError || !classDivision) {
+                    console.log(`❌ Class division validation failed:`, {
+                        class_division_id,
+                        error: classDivisionError,
+                        data: classDivision
+                    });
+                    return res.status(400).json({
                         status: 'error',
-                        message: 'Only admin, principal, and assigned teachers can create class-specific events'
+                        message: 'Invalid class_division_id provided'
                     });
                 }
+
+                console.log(`✅ Class division validated: ${classDivision.class_level.name} ${classDivision.division}`);
             }
 
             // Convert IST time to UTC for storage
