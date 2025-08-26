@@ -58,9 +58,9 @@ router.post('/events',
 
                 // Check if teacher is assigned to this class
                 if (req.user.role === 'teacher') {
-                    // Check both new teacher assignment system and legacy system
+                    // Check teacher assignment in the class_teacher_assignments table
                     const { data: teacherAssignment, error: assignmentError } = await supabase
-                        .from('teacher_class_assignments')
+                        .from('class_teacher_assignments')
                         .select('*')
                         .eq('teacher_id', req.user.id)
                         .eq('class_division_id', class_division_id)
@@ -111,8 +111,8 @@ router.post('/events',
                 eventStatus = 'approved';
             } else if (req.user.role === 'admin') {
                 // Admin events are auto-approved
-                    eventStatus = 'approved';
-                }
+                eventStatus = 'approved';
+            }
             // All other roles (parents, etc.) - events are auto-approved
 
             const { data, error } = await adminSupabase
@@ -780,9 +780,11 @@ router.get('/events/class/:class_division_id',
             // Verify teacher has access to this class
             if (req.user.role === 'teacher') {
                 const { data: assignment, error: assignmentError } = await supabase
-                    .from('teacher_class_assignments')
+                    .from('class_teacher_assignments')
                     .select('*')
                     .eq('teacher_id', req.user.id)
+                    .eq('class_division_id', class_division_id)
+                    .eq('is_active', true)
                     .single();
 
                 if (assignmentError || !assignment) {

@@ -358,6 +358,89 @@ GET /api/announcements/pending/approvals?page=1&limit=20
 DELETE /api/announcements/{id}
 ```
 
+### 8. **Get My Announcements (Parent/Teacher)**
+
+```http
+GET /api/announcements/my-announcements
+```
+
+**Query Parameters:**
+
+- `announcement_type`: circular, general, urgent, academic, administrative
+- `priority`: low, normal, high, urgent
+- `is_featured`: true, false
+- `unread_only`: true, false (show only unread announcements)
+- `page`: Page number (default: 1)
+- `limit`: Items per page (default: 20, max: 100)
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "announcements": [
+      {
+        "id": "uuid",
+        "title": "School Holiday Notice",
+        "content": "School will be closed on Monday for Republic Day.",
+        "announcement_type": "circular",
+        "status": "approved",
+        "priority": "high",
+        "is_published": true,
+        "is_featured": true,
+        "created_at": "2024-01-24T10:00:00Z",
+        "updated_at": "2024-01-24T10:00:00Z",
+        "is_read": false,
+        "read_at": null,
+        "delivery_status": "pending",
+        "creator": {
+          "id": "uuid",
+          "full_name": "Principal Name",
+          "role": "principal"
+        },
+        "attachments": []
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 150,
+      "total_pages": 8,
+      "has_next": true,
+      "has_prev": false
+    },
+    "summary": {
+      "total_targeted": 150,
+      "read_count": 45,
+      "unread_count": 105,
+      "user_role": "parent"
+    },
+    "filters": {
+      "announcement_type": "circular",
+      "priority": "high",
+      "is_featured": true,
+      "unread_only": false
+    }
+  }
+}
+```
+
+### 9. **Mark Announcement as Read (Parent/Teacher)**
+
+```http
+PATCH /api/announcements/{id}/read
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Announcement marked as read"
+}
+```
+
 ## Approval Workflow
 
 ### **Auto-Approval**

@@ -124,7 +124,13 @@ router.get('/',
                 limit = 20,
                 is_featured,
                 created_by,
-                approved_by
+                approved_by,
+                start_date,
+                end_date,
+                created_after,
+                created_before,
+                published_after,
+                published_before
             } = req.query;
 
             const offset = (page - 1) * limit;
@@ -181,6 +187,26 @@ router.get('/',
             }
             if (approved_by) {
                 query = query.eq('approved_by', approved_by);
+            }
+
+            // Apply date range filters
+            if (start_date) {
+                query = query.gte('created_at', start_date);
+            }
+            if (end_date) {
+                query = query.lte('created_at', end_date);
+            }
+            if (created_after) {
+                query = query.gt('created_at', created_after);
+            }
+            if (created_before) {
+                query = query.lt('created_at', created_before);
+            }
+            if (published_after) {
+                query = query.gt('publish_at', published_after);
+            }
+            if (published_before) {
+                query = query.lt('publish_at', published_before);
             }
 
             // Get total count
@@ -242,7 +268,13 @@ router.get('/',
                         priority,
                         is_featured,
                         created_by,
-                        approved_by
+                        approved_by,
+                        start_date,
+                        end_date,
+                        created_after,
+                        created_before,
+                        published_after,
+                        published_before
                     }
                 }
             });
@@ -612,6 +644,263 @@ router.delete('/:id',
 
         } catch (error) {
             logger.error('Error in delete announcement:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
+// GET TARGETED ANNOUNCEMENTS (Parent/Teacher specific)
+// ============================================================================
+
+router.get('/my-announcements',
+    authenticate,
+    authorize(['parent', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const {
+                announcement_type,
+                priority,
+                page = 1,
+                limit = 20,
+                is_featured,
+                unread_only = false,
+                start_date,
+                end_date,
+                created_after,
+                created_before,
+                published_after,
+                published_before
+            } = req.query;
+
+            const offset = (page - 1) * limit;
+            const userRole = req.user.role;
+            const userId = req.user.id;
+
+            // Build query for targeted announcements
+            let query = adminSupabase
+                .from('announcements')
+                .select(`
+                    *,
+                    creator:users!announcements_created_by_fkey(
+                        id,
+                        full_name,
+                        role
+                    ),
+                    approver:users!announcements_approved_by_fkey(
+                        id,
+                        full_name,
+                        role
+                    ),
+                    attachments:announcement_attachments(
+                        id,
+                        file_name,
+                        file_size,
+                        file_type,
+                        mime_type
+                    )
+                `)
+                .eq('status', 'approved')
+                .eq('is_published', true)
+                .or(`target_roles.cs.{${userRole}},target_roles.eq.{}`)
+                .order('priority', { ascending: false })
+                .order('created_at', { ascending: false });
+
+            // Apply additional filters
+            if (announcement_type) {
+                query = query.eq('announcement_type', announcement_type);
+            }
+            if (priority) {
+                query = query.eq('priority', priority);
+            }
+            if (is_featured !== undefined) {
+                query = query.eq('is_featured', is_featured === 'true');
+            }
+
+            // Apply date range filters
+            if (start_date) {
+                query = query.gte('created_at', start_date);
+            }
+            if (end_date) {
+                query = query.lte('created_at', end_date);
+            }
+            if (created_after) {
+                query = query.gt('created_at', created_after);
+            }
+            if (created_before) {
+                query = query.lt('created_at', created_before);
+            }
+            if (published_after) {
+                query = query.gt('publish_at', published_after);
+            }
+            if (published_before) {
+                query = query.lt('publish_at', published_before);
+            }
+
+            // Get total count
+            const { count: totalCount, error: countError } = await adminSupabase
+                .from('announcements')
+                .select('*', { count: 'exact', head: true })
+                .eq('status', 'approved')
+                .eq('is_published', true)
+                .or(`target_roles.cs.{${userRole}},target_roles.eq.{}`);
+
+            if (countError) {
+                logger.error('Error getting targeted announcement count:', countError);
+            }
+
+            // Get announcements with pagination
+            const { data: announcements, error: fetchError } = await query
+                .range(offset, offset + limit - 1);
+
+            if (fetchError) {
+                logger.error('Error fetching targeted announcements:', fetchError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch announcements'
+                });
+            }
+
+            // Process announcements to add read status and track views
+            const processedAnnouncements = await Promise.all(
+                (announcements || []).map(async (announcement) => {
+                    // Track view if not already viewed
+                    try {
+                        await adminSupabase
+                            .from('announcement_views')
+                            .upsert({
+                                announcement_id: announcement.id,
+                                user_id: userId
+                            }, { onConflict: 'announcement_id,user_id' });
+                    } catch (error) {
+                        logger.error('Error tracking view:', error);
+                    }
+
+                    // Check if user is a recipient
+                    const { data: recipient } = await adminSupabase
+                        .from('announcement_recipients')
+                        .select('delivery_status, read_at')
+                        .eq('announcement_id', announcement.id)
+                        .eq('user_id', userId)
+                        .single();
+
+                    return {
+                        ...announcement,
+                        is_read: !!recipient?.read_at,
+                        read_at: recipient?.read_at,
+                        delivery_status: recipient?.delivery_status || 'pending'
+                    };
+                })
+            );
+
+            // Filter unread announcements if requested
+            const filteredAnnouncements = unread_only === 'true'
+                ? processedAnnouncements.filter(a => !a.is_read)
+                : processedAnnouncements;
+
+            // Get summary statistics
+            const { data: summaryData } = await adminSupabase
+                .from('announcement_recipients')
+                .select('announcement_id, read_at')
+                .eq('user_id', userId);
+
+            const totalTargeted = summaryData?.length || 0;
+            const readCount = summaryData?.filter(r => r.read_at).length || 0;
+            const unreadCount = totalTargeted - readCount;
+
+            res.json({
+                status: 'success',
+                data: {
+                    announcements: filteredAnnouncements,
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: totalCount || 0,
+                        total_pages: Math.ceil((totalCount || 0) / limit),
+                        has_next: offset + limit < (totalCount || 0),
+                        has_prev: page > 1
+                    },
+                    summary: {
+                        total_targeted: totalTargeted,
+                        read_count: readCount,
+                        unread_count: unreadCount,
+                        user_role: userRole
+                    },
+                    filters: {
+                        announcement_type,
+                        priority,
+                        is_featured,
+                        unread_only,
+                        start_date,
+                        end_date,
+                        created_after,
+                        created_before,
+                        published_after,
+                        published_before
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get targeted announcements:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
+// MARK ANNOUNCEMENT AS READ
+// ============================================================================
+
+router.patch('/:id/read',
+    authenticate,
+    authorize(['parent', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { id } = req.params;
+            const userId = req.user.id;
+
+            // Check if announcement exists and is targeted to user
+            const { data: announcement, error: fetchError } = await adminSupabase
+                .from('announcements')
+                .select('*')
+                .eq('id', id)
+                .eq('status', 'approved')
+                .eq('is_published', true)
+                .single();
+
+            if (fetchError || !announcement) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Announcement not found or not accessible'
+                });
+            }
+
+            // Update recipient status to read
+            const { error: updateError } = await adminSupabase
+                .from('announcement_recipients')
+                .update({
+                    delivery_status: 'read',
+                    read_at: new Date().toISOString()
+                })
+                .eq('announcement_id', id)
+                .eq('user_id', userId);
+
+            if (updateError) {
+                logger.error('Error marking announcement as read:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to mark announcement as read'
+                });
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Announcement marked as read'
+            });
+
+        } catch (error) {
+            logger.error('Error in mark announcement as read:', error);
             next(error);
         }
     }

@@ -49,10 +49,10 @@ router.get('/', authenticate, async (req, res) => {
         // Role-based filtering
         if (req.user.role === 'teacher') {
             // Teachers see their own activities and activities for their assigned classes
-            query = query.or(`teacher_id.eq.${req.user.id},class_division_id.in.(select class_division_id from teacher_class_assignments where teacher_id = ${req.user.id})`);
+            query = query.or(`teacher_id.eq.${req.user.id},class_division_id.in.(select class_division_id from class_teacher_assignments where teacher_id = ${req.user.id} and is_active = true)`);
         } else if (req.user.role === 'parent') {
             // Parents see activities for their children's classes
-            query = query.in('class_division_id', 
+            query = query.in('class_division_id',
                 `(select sar.class_division_id from parent_student_mappings psm 
                  join student_academic_records sar on sar.student_id = psm.student_id 
                  where psm.parent_id = ${req.user.id})`
@@ -61,7 +61,7 @@ router.get('/', authenticate, async (req, res) => {
 
         // Get total count
         const { count, error: countError } = await query.count();
-        
+
         if (countError) {
             logger.error('Error getting activities count:', countError);
         }
@@ -103,10 +103,10 @@ router.get('/', authenticate, async (req, res) => {
 // Create activity
 router.post('/', authenticate, async (req, res) => {
     try {
-        const { 
+        const {
             title, description, activity_date, activity_type, class_division_id,
             dress_code, venue, start_time, end_time, max_participants, notes,
-            items 
+            items
         } = req.body;
 
         // Check permissions (only teachers can create activities)
@@ -237,10 +237,11 @@ router.get('/:id', authenticate, async (req, res) => {
         if (req.user.role === 'teacher' && activity.teacher_id !== req.user.id) {
             // Check if teacher is assigned to this class
             const { data: assignment } = await supabase
-                .from('teacher_class_assignments')
+                .from('class_teacher_assignments')
                 .select('*')
                 .eq('teacher_id', req.user.id)
                 .eq('class_division_id', activity.class_division_id)
+                .eq('is_active', true)
                 .single();
 
             if (!assignment) {
