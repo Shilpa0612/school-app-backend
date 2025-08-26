@@ -118,14 +118,39 @@ class WebSocketService {
      */
     handleIncomingMessage(userId, data) {
         try {
-            const message = JSON.parse(data.toString());
+            // Clean the data string to remove control characters
+            const cleanData = data.toString().replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+            const message = JSON.parse(cleanData);
+
+            // Validate required fields
+            if (!message.type) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Message type is required'
+                });
+                return;
+            }
 
             switch (message.type) {
                 case 'subscribe_thread':
+                    if (!message.thread_id) {
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Thread ID is required for subscription'
+                        });
+                        return;
+                    }
                     this.subscribeToThread(userId, message.thread_id);
                     break;
 
                 case 'unsubscribe_thread':
+                    if (!message.thread_id) {
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Thread ID is required for unsubscription'
+                        });
+                        return;
+                    }
                     this.unsubscribeFromThread(userId, message.thread_id);
                     break;
 
@@ -134,14 +159,29 @@ class WebSocketService {
                     break;
 
                 case 'send_message':
+                    if (!message.thread_id || !message.content) {
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Thread ID and content are required for sending messages'
+                        });
+                        return;
+                    }
                     this.handleSendMessage(userId, message);
                     break;
 
                 default:
                     logger.warn(`Unknown message type from user ${userId}:`, message.type);
+                    this.sendMessageToUser(userId, {
+                        type: 'error',
+                        message: `Unknown message type: ${message.type}`
+                    });
             }
         } catch (error) {
             logger.error(`Error handling message from user ${userId}:`, error);
+            this.sendMessageToUser(userId, {
+                type: 'error',
+                message: 'Invalid JSON format. Please check your message structure.'
+            });
         }
     }
 
@@ -454,20 +494,27 @@ class WebSocketService {
             });
 
             // Broadcast to all participants in the thread
-            const { data: participants } = await adminSupabase
+            const { data: participants, error: participantsError } = await adminSupabase
                 .from('chat_participants')
                 .select('user_id')
                 .eq('thread_id', thread_id);
 
-            if (participants) {
+            if (participantsError) {
+                logger.error('Error fetching participants for broadcasting:', participantsError);
+            } else if (participants && participants.length > 0) {
+                logger.info(`Broadcasting message to ${participants.length} participants in thread ${thread_id}`);
+
                 participants.forEach(participant => {
                     if (participant.user_id !== userId) {
+                        logger.info(`Sending message to participant: ${participant.user_id}`);
                         this.sendMessageToUser(participant.user_id, {
                             type: 'new_message',
                             data: newMessage
                         });
                     }
                 });
+            } else {
+                logger.warn(`No participants found for thread ${thread_id}`);
             }
 
             logger.info(`Message sent via WebSocket by user ${userId} in thread ${thread_id}`);
