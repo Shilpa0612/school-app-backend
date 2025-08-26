@@ -408,20 +408,19 @@ class WebSocketService {
                 return;
             }
 
-            // Create message in messages table (main storage)
+            // Create message in chat_messages table (primary storage for chat)
             const { data: newMessage, error } = await adminSupabase
-                .from('messages')
+                .from('chat_messages')
                 .insert({
+                    thread_id: thread_id,
                     sender_id: userId,
                     content,
-                    type: 'individual', // WebSocket messages are individual chats
-                    status: 'approved', // Real-time messages are auto-approved
-                    thread_id: thread_id, // Store thread reference
-                    message_type: message_type
+                    message_type: message_type,
+                    status: 'sent'
                 })
                 .select(`
                     *,
-                    sender:users!messages_sender_id_fkey(full_name, role)
+                    sender:users!chat_messages_sender_id_fkey(full_name, role)
                 `)
                 .single();
 
@@ -432,22 +431,6 @@ class WebSocketService {
                     message: 'Failed to send message'
                 });
                 return;
-            }
-
-            // Also create a reference in chat_messages for real-time functionality
-            const { error: chatMessageError } = await adminSupabase
-                .from('chat_messages')
-                .insert({
-                    thread_id,
-                    sender_id: userId,
-                    content,
-                    message_type,
-                    message_id: newMessage.id // Reference to main message
-                });
-
-            if (chatMessageError) {
-                logger.error('Error creating chat message reference:', chatMessageError);
-                // Don't fail the request, just log the error
             }
 
             // Update thread's updated_at timestamp
@@ -464,6 +447,7 @@ class WebSocketService {
                     thread_id: newMessage.thread_id,
                     content: newMessage.content,
                     message_type: newMessage.message_type,
+                    status: newMessage.status,
                     created_at: newMessage.created_at,
                     sender: newMessage.sender
                 }

@@ -27,6 +27,19 @@ Both endpoints now include:
 - `teachers_with_chat` / `parents_with_chat`: Count of users with existing chats
 - `teachers_without_chat` / `parents_without_chat`: Count of users without chats
 
+### 4. Principal Chats Management API
+
+- **Endpoint**: `/api/users/principal/chats`
+- **Enhancement**: Comprehensive chat management for principals with advanced filtering
+- **Features**:
+  - Date range filtering (`start_date`, `end_date`)
+  - Class division filtering (`class_division_id`)
+  - Chat type filtering (`direct`, `group`, `all`)
+  - Principal participation filtering (`includes_me`: `yes`, `no`, `all`)
+  - Pagination support (`page`, `limit`)
+  - Badge system for quick identification
+  - Comprehensive statistics and analytics
+
 ## 🔧 **Technical Implementation**
 
 ### Database Queries
@@ -61,10 +74,12 @@ Both endpoints now include:
 
 1. **`test_teacher_linked_parents.js`** - Test script for teacher-linked-parents API
 2. **`test_children_teachers.js`** - Test script for children/teachers API
-3. **`TEACHER_LINKED_PARENTS_CHAT_FEATURE.md`** - Documentation for teacher API
-4. **`CHILDREN_TEACHERS_CHAT_FEATURE.md`** - Documentation for children API
-5. **`performance_monitor.js`** - Performance monitoring utility
-6. **`CHAT_FEATURE_IMPLEMENTATION_SUMMARY.md`** - This summary document
+3. **`test_principal_chats.js`** - Test script for principal chats API
+4. **`TEACHER_LINKED_PARENTS_CHAT_FEATURE.md`** - Documentation for teacher API
+5. **`CHILDREN_TEACHERS_CHAT_FEATURE.md`** - Documentation for children API
+6. **`PRINCIPAL_CHATS_API_DOCS.md`** - Documentation for principal chats API
+7. **`performance_monitor.js`** - Performance monitoring utility
+8. **`CHAT_FEATURE_IMPLEMENTATION_SUMMARY.md`** - This summary document
 
 ## 🚀 **API Response Examples**
 
@@ -121,6 +136,50 @@ Both endpoints now include:
     "summary": {
       "teachers_with_chat": 5,
       "teachers_without_chat": 3
+    }
+  }
+}
+```
+
+### Principal Chats Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "threads": [
+      {
+        "thread_id": "uuid",
+        "title": "Chat Title",
+        "thread_type": "direct",
+        "message_count": 25,
+        "is_principal_participant": true,
+        "participants": {
+          "all": [...],
+          "teachers": [...],
+          "parents": [...],
+          "count": 5
+        },
+        "badges": {
+          "includes_principal": true,
+          "is_direct": true,
+          "has_teachers": true,
+          "has_parents": true
+        }
+      }
+    ],
+    "filters": {
+      "start_date": "2024-01-01",
+      "end_date": "2024-12-31",
+      "chat_type": "direct",
+      "includes_me": "yes"
+    },
+    "summary": {
+      "total_threads": 20,
+      "direct_chats": 15,
+      "group_chats": 5,
+      "includes_principal": 12,
+      "excludes_principal": 8
     }
   }
 }

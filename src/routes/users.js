@@ -2396,4 +2396,266 @@ router.get('/staff/birthdays',
     }
 );
 
+// Get all chats for principal with filtering (Admin/Principal only)
+router.get('/principal/chats',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const {
+                start_date,
+                end_date,
+                class_division_id,
+                chat_type = 'all', // 'direct', 'group', 'all'
+                includes_me = 'all', // 'yes', 'no', 'all'
+                page = 1,
+                limit = 20
+            } = req.query;
+
+            const offset = (page - 1) * limit;
+            const principalId = req.user.id;
+
+            // Build base query for chat threads
+            let query = adminSupabase
+                .from('chat_threads')
+                .select(`
+                    id,
+                    title,
+                    thread_type,
+                    created_at,
+                    updated_at,
+                    created_by,
+                    participants:chat_participants(
+                        user_id,
+                        role,
+                        last_read_at,
+                        user:users(
+                            id,
+                            full_name,
+                            role,
+                            email,
+                            phone_number
+                        )
+                    ),
+                    last_message:chat_messages(
+                        id,
+                        content,
+                        created_at,
+                        sender:users!chat_messages_sender_id_fkey(
+                            id,
+                            full_name,
+                            role
+                        )
+                    )
+                `)
+                .order('updated_at', { ascending: false });
+
+            // Apply date range filter
+            if (start_date) {
+                query = query.gte('created_at', new Date(start_date).toISOString());
+            }
+            if (end_date) {
+                query = query.lte('created_at', new Date(end_date).toISOString());
+            }
+
+            // Apply chat type filter
+            if (chat_type !== 'all') {
+                query = query.eq('thread_type', chat_type);
+            }
+
+            // Get total count for pagination
+            const { count: totalCount, error: countError } = await adminSupabase
+                .from('chat_threads')
+                .select('*', { count: 'exact', head: true });
+
+            if (countError) {
+                console.error('Error getting total count:', countError);
+            }
+
+            // Get all threads with pagination
+            const { data: threads, error: threadsError } = await query
+                .range(offset, offset + limit - 1);
+
+            if (threadsError) {
+                console.error('Error fetching chat threads:', threadsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch chat threads'
+                });
+            }
+
+            // Process threads to add additional information
+            const processedThreads = await Promise.all(
+                (threads || []).map(async (thread) => {
+                    try {
+                        // Check if principal is a participant
+                        const isPrincipalParticipant = thread.participants.some(
+                            p => p.user_id === principalId
+                        );
+
+                        // Apply "includes me" filter
+                        if (includes_me === 'yes' && !isPrincipalParticipant) {
+                            return null;
+                        }
+                        if (includes_me === 'no' && isPrincipalParticipant) {
+                            return null;
+                        }
+
+                        // Get message count
+                        const { count: messageCount, error: countError } = await adminSupabase
+                            .from('chat_messages')
+                            .select('*', { count: 'exact', head: true })
+                            .eq('thread_id', thread.id);
+
+                        if (countError) {
+                            console.error('Error getting message count for thread:', thread.id, countError);
+                        }
+
+                        // Get participant details with roles
+                        const participants = thread.participants.map(p => ({
+                            user_id: p.user_id,
+                            role: p.role,
+                            last_read_at: p.last_read_at,
+                            user: p.user,
+                            is_principal: p.user_id === principalId
+                        }));
+
+                        // Categorize participants
+                        const teachers = participants.filter(p => p.user.role === 'teacher');
+                        const parents = participants.filter(p => p.user.role === 'parent');
+                        const students = participants.filter(p => p.user.role === 'student');
+                        const admins = participants.filter(p => p.user.role === 'admin');
+
+                        // Get class division info if available (for group chats)
+                        let classInfo = null;
+                        if (thread.thread_type === 'group' && class_division_id) {
+                            const { data: classData, error: classError } = await adminSupabase
+                                .from('class_divisions')
+                                .select(`
+                                    id,
+                                    division,
+                                    academic_year:academic_year_id (year_name),
+                                    class_level:class_level_id (name)
+                                `)
+                                .eq('id', class_division_id)
+                                .single();
+
+                            if (!classError && classData) {
+                                classInfo = {
+                                    id: classData.id,
+                                    name: `${classData.class_level.name} ${classData.division}`,
+                                    academic_year: classData.academic_year.year_name
+                                };
+                            }
+                        }
+
+                        // Apply class division filter
+                        if (class_division_id && classInfo && classInfo.id !== class_division_id) {
+                            return null;
+                        }
+
+                        return {
+                            thread_id: thread.id,
+                            title: thread.title,
+                            thread_type: thread.thread_type,
+                            created_at: thread.created_at,
+                            updated_at: thread.updated_at,
+                            created_by: thread.created_by,
+                            message_count: messageCount || 0,
+                            is_principal_participant: isPrincipalParticipant,
+                            participants: {
+                                all: participants,
+                                teachers: teachers,
+                                parents: parents,
+                                students: students,
+                                admins: admins,
+                                count: participants.length
+                            },
+                            last_message: thread.last_message ? {
+                                id: thread.last_message.id,
+                                content: thread.last_message.content,
+                                created_at: thread.last_message.created_at,
+                                sender: thread.last_message.sender
+                            } : null,
+                            class_info: classInfo,
+                            badges: {
+                                includes_principal: isPrincipalParticipant,
+                                is_group: thread.thread_type === 'group',
+                                is_direct: thread.thread_type === 'direct',
+                                has_teachers: teachers.length > 0,
+                                has_parents: parents.length > 0,
+                                has_students: students.length > 0,
+                                has_admins: admins.length > 0
+                            }
+                        };
+                    } catch (error) {
+                        console.error('Error processing thread:', thread.id, error);
+                        return null;
+                    }
+                })
+            );
+
+            // Filter out null values and apply final filters
+            const filteredThreads = processedThreads.filter(thread => thread !== null);
+
+            // Calculate summary statistics
+            const totalThreads = filteredThreads.length;
+            const directChats = filteredThreads.filter(t => t.thread_type === 'direct').length;
+            const groupChats = filteredThreads.filter(t => t.thread_type === 'group').length;
+            const includesPrincipal = filteredThreads.filter(t => t.is_principal_participant).length;
+            const excludesPrincipal = filteredThreads.filter(t => !t.is_principal_participant).length;
+            const totalMessages = filteredThreads.reduce((sum, t) => sum + t.message_count, 0);
+
+            // Get participant statistics
+            const allParticipants = filteredThreads.flatMap(t => t.participants.all);
+            const uniqueParticipants = [...new Set(allParticipants.map(p => p.user_id))];
+            const participantStats = {
+                total_unique: uniqueParticipants.length,
+                teachers: filteredThreads.reduce((sum, t) => sum + t.participants.teachers.length, 0),
+                parents: filteredThreads.reduce((sum, t) => sum + t.participants.parents.length, 0),
+                students: filteredThreads.reduce((sum, t) => sum + t.participants.students.length, 0),
+                admins: filteredThreads.reduce((sum, t) => sum + t.participants.admins.length, 0)
+            };
+
+            res.json({
+                status: 'success',
+                data: {
+                    threads: filteredThreads,
+                    filters: {
+                        start_date,
+                        end_date,
+                        class_division_id,
+                        chat_type,
+                        includes_me,
+                        page: parseInt(page),
+                        limit: parseInt(limit)
+                    },
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: totalCount || 0,
+                        total_pages: Math.ceil((totalCount || 0) / limit),
+                        has_next: offset + limit < (totalCount || 0),
+                        has_prev: page > 1
+                    },
+                    summary: {
+                        total_threads: totalThreads,
+                        direct_chats: directChats,
+                        group_chats: groupChats,
+                        includes_principal: includesPrincipal,
+                        excludes_principal: excludesPrincipal,
+                        total_messages: totalMessages,
+                        average_messages_per_thread: totalThreads > 0 ? Math.round(totalMessages / totalThreads) : 0,
+                        participant_stats: participantStats
+                    }
+                }
+            });
+
+        } catch (error) {
+            console.error('Error in get principal chats:', error);
+            next(error);
+        }
+    }
+);
+
 export default router; 

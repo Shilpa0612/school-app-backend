@@ -532,12 +532,12 @@ router.get('/messages', authenticate, async (req, res) => {
             });
         }
 
-        // Get messages from messages table (main storage)
+        // Get messages from chat_messages table (primary storage for chat)
         const { data: messages, error } = await adminSupabase
-            .from('messages')
+            .from('chat_messages')
             .select(`
                 *,
-                sender:users!messages_sender_id_fkey(full_name, role),
+                sender:users!chat_messages_sender_id_fkey(full_name, role),
                 attachments:chat_message_attachments(*)
             `)
             .eq('thread_id', thread_id)
@@ -559,9 +559,9 @@ router.get('/messages', authenticate, async (req, res) => {
             .eq('thread_id', thread_id)
             .eq('user_id', req.user.id);
 
-        // Get total count from messages table
+        // Get total count from chat_messages table
         const { count, error: countError } = await adminSupabase
-            .from('messages')
+            .from('chat_messages')
             .select('*', { count: 'exact', head: true })
             .eq('thread_id', thread_id);
 
