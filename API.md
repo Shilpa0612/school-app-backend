@@ -919,7 +919,9 @@ POST /calendar/events
   "description": "Event description", // Required
   "event_date": "2024-01-01T00:00:00Z", // Required
   "event_type": "school_wide", // Required
-  "class_division_id": "uuid", // Optional - only for class_specific events
+  "class_division_id": "uuid", // Optional - for single class events
+  "class_division_ids": ["uuid1", "uuid2"], // Optional - for multi-class events
+  "is_multi_class": false, // Optional - auto-detected based on class_division_ids
   "is_single_day": true, // Optional - defaults to true
   "start_time": "09:00:00", // Optional - for timed events
   "end_time": "10:00:00", // Optional - for timed events
@@ -945,14 +947,16 @@ POST /calendar/events
 
 **Event Type Rules:**
 
-- `school_wide`: No `class_division_id` needed
-- `teacher_specific`: No `class_division_id` needed
-- `class_specific`: `class_division_id` is required
+- `school_wide`: No class division fields needed
+- `teacher_specific`: No class division fields needed
+- `class_specific`: `class_division_id` is required (single class)
+- `multi_class_specific`: `class_division_ids` array is required (multiple classes)
 
 **Event Types:**
 
 - `school_wide`: Visible to all users (Admin/Principal only)
 - `class_specific`: Visible to specific class (Teachers can create for their classes)
+- `multi_class_specific`: Visible to multiple classes (Teachers can create for their assigned classes)
 - `teacher_specific`: Teacher-specific events (only visible to the teacher who created them)
 
 **Event Categories:**
@@ -966,6 +970,56 @@ POST /calendar/events
 - **Parents**: Can only view events
 
 **Response:** Created event object
+
+**Multi-Class Event Example:**
+
+```json
+POST /calendar/events
+{
+  "title": "Math & English Quiz Competition",
+  "description": "Inter-class competition for Math and English classes",
+  "event_date": "2024-12-20T10:00:00Z",
+  "event_type": "multi_class_specific",
+  "class_division_ids": ["uuid-1a", "uuid-2b", "uuid-4d"],
+  "event_category": "academic"
+}
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Event created successfully for 3 classes",
+  "data": {
+    "event": {
+      "id": "event-uuid",
+      "title": "Math & English Quiz Competition",
+      "event_type": "multi_class_specific",
+      "is_multi_class": true,
+      "class_division_ids": ["uuid-1a", "uuid-2b", "uuid-4d"],
+      "classes": [
+        {
+          "id": "uuid-1a",
+          "division": "A",
+          "class_level": { "name": "Class 1" }
+        },
+        {
+          "id": "uuid-2b",
+          "division": "B",
+          "class_level": { "name": "Class 2" }
+        },
+        {
+          "id": "uuid-4d",
+          "division": "D",
+          "class_level": { "name": "Class 4" }
+        }
+      ]
+    },
+    "class_count": 3
+  }
+}
+```
 
 #### Get Events
 
@@ -2109,10 +2163,12 @@ GET /api/birthdays/parent-view
 **Description**: Get birthdays of class teachers, subject teachers, and classmates for parent's children
 
 **Query Parameters**:
+
 - `days_ahead` (optional): Number of days to look ahead for upcoming birthdays (default: 30)
 - `specific_date` (optional): Specific date to check for birthdays (YYYY-MM-DD format)
 
 **Examples**:
+
 - `GET /api/birthdays/parent-view` - Next 30 days (default)
 - `GET /api/birthdays/parent-view?days_ahead=7` - Next 7 days
 - `GET /api/birthdays/parent-view?specific_date=2025-03-15` - Specific date
@@ -2275,14 +2331,51 @@ DELETE /api/academic/class-levels/:id
 **Notes:**
 
 - Cannot delete if class divisions are using this level
-- Returns error if level is in use
+- Cannot delete if any class divisions under this level have enrolled students
+- Returns detailed error information if deletion is not allowed
 
-**Response:**
+**Response - Success:**
 
 ```json
 {
   "status": "success",
-  "message": "Class level deleted successfully"
+  "message": "Class level deleted successfully",
+  "data": {
+    "deleted_class_level": {
+      "id": "uuid",
+      "name": "Grade 1"
+    }
+  }
+}
+```
+
+**Response - Error (Class Divisions with Students):**
+
+```json
+{
+  "status": "error",
+  "message": "Cannot delete class level because it has class divisions with enrolled students",
+  "data": {
+    "class_level_id": "uuid",
+    "class_level_name": "Grade 1",
+    "divisions_with_students": ["A", "B"],
+    "total_divisions_with_students": 2
+  }
+}
+```
+
+**Response - Error (Class Divisions Exist):**
+
+```json
+{
+  "status": "error",
+  "message": "Cannot delete class level because it has class divisions. Please delete the class divisions first.",
+  "data": {
+    "class_level_id": "uuid",
+    "class_level_name": "Grade 1",
+    "existing_divisions": ["A", "B"],
+    "total_divisions": 2
+  }
 }
 ```
 
@@ -2383,6 +2476,60 @@ PUT /api/academic/class-divisions/:id
     }
   },
   "message": "Class division updated successfully"
+}
+```
+
+#### Delete Class Division (Admin/Principal Only)
+
+```http
+DELETE /api/academic/class-divisions/:id
+```
+
+**Notes:**
+
+- Cannot delete if the class division has enrolled students
+- Returns detailed error information if deletion is not allowed
+- Will cascade delete related records (teacher assignments, subjects, etc.)
+
+**Response - Success:**
+
+```json
+{
+  "status": "success",
+  "message": "Class division deleted successfully",
+  "data": {
+    "deleted_class_division": {
+      "id": "uuid",
+      "class_name": "Grade 1 A",
+      "class_level_id": "uuid",
+      "class_level_name": "Grade 1",
+      "division": "A"
+    }
+  }
+}
+```
+
+**Response - Error (Has Students):**
+
+```json
+{
+  "status": "error",
+  "message": "Cannot delete class division because it has enrolled students",
+  "data": {
+    "class_division_id": "uuid",
+    "class_name": "Grade 1 A",
+    "enrolled_students_count": 3,
+    "students": [
+      {
+        "id": "uuid",
+        "name": "John Doe"
+      },
+      {
+        "id": "uuid",
+        "name": "Jane Smith"
+      }
+    ]
+  }
 }
 ```
 

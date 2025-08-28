@@ -400,10 +400,16 @@ router.post('/login', async (req, res, next) => {
                         };
 
                         return monitoredSupabase.from('staff').insert(staffData);
+                    } else {
+                        // Staff record already exists, no need to create
+                        return null;
                     }
                 })
-                .then(() => {
-                    console.log(`Staff record created for teacher ${user.id}`);
+                .then((result) => {
+                    if (result) {
+                        console.log(`Staff record created for teacher ${user.id}`);
+                    }
+                    // No logging if staff record already existed
                 })
                 .catch(err => {
                     console.error(`Failed to create staff record for teacher ${user.id}:`, err);

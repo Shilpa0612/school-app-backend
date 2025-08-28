@@ -14,6 +14,8 @@ router.post('/events',
         body('event_date').isISO8601().toDate(),
         body('event_type').optional().isIn(['school_wide', 'class_specific', 'teacher_specific']),
         body('class_division_id').optional().isUUID(),
+        body('class_division_ids').optional().isArray(),
+        body('is_multi_class').optional().isBoolean(),
         body('is_single_day').optional().isBoolean(),
         body('start_time').optional().matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/),
         body('end_time').optional().matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/),
@@ -33,6 +35,8 @@ router.post('/events',
                 event_date,
                 event_type = 'school_wide',
                 class_division_id,
+                class_division_ids = [],
+                is_multi_class = false,
                 is_single_day = true,
                 start_time,
                 end_time,
@@ -40,25 +44,59 @@ router.post('/events',
                 timezone = 'Asia/Kolkata'
             } = req.body;
 
-            // Validate required fields for class-specific events
-            if (event_type === 'class_specific') {
-                if (!class_division_id) {
+            // Determine event type and class assignments
+            let finalEventType = event_type;
+            let finalClassDivisionId = null;
+            let finalClassDivisionIds = [];
+            let finalIsMultiClass = false;
+
+            if (class_division_ids && class_division_ids.length > 0) {
+                // Multi-class event - but use class_specific type as per requirement
+                finalEventType = 'class_specific';
+                finalClassDivisionIds = class_division_ids;
+                finalClassDivisionId = null;
+                finalIsMultiClass = true;
+            } else if (class_division_id) {
+                // Single class event
+                finalEventType = 'class_specific';
+                finalClassDivisionId = class_division_id;
+                finalClassDivisionIds = [];
+                finalIsMultiClass = false;
+            } else if (event_type === 'school_wide') {
+                // School-wide event
+                finalEventType = 'school_wide';
+                finalClassDivisionId = null;
+                finalClassDivisionIds = [];
+                finalIsMultiClass = false;
+            }
+
+            // Validate class divisions exist
+            if (finalClassDivisionIds.length > 0) {
+                const { data: validClasses, error: classError } = await adminSupabase
+                    .from('class_divisions')
+                    .select('id, division, academic_year:academic_year_id (year_name), class_level:class_level_id (name)')
+                    .in('id', finalClassDivisionIds);
+
+                if (classError || validClasses.length !== finalClassDivisionIds.length) {
                     return res.status(400).json({
                         status: 'error',
-                        message: 'class_division_id is required for class-specific events'
+                        message: 'One or more class divisions not found'
                     });
                 }
 
-                // Verify the class division exists
+                console.log(`✅ Validated ${validClasses.length} classes:`,
+                    validClasses.map(c => `${c.class_level.name} ${c.division}`));
+            } else if (finalClassDivisionId) {
+                // Validate single class division exists
                 const { data: classDivision, error: classDivisionError } = await adminSupabase
                     .from('class_divisions')
                     .select('id, division, academic_year:academic_year_id (year_name), class_level:class_level_id (name)')
-                    .eq('id', class_division_id)
+                    .eq('id', finalClassDivisionId)
                     .single();
 
                 if (classDivisionError || !classDivision) {
                     console.log(`❌ Class division validation failed:`, {
-                        class_division_id,
+                        class_division_id: finalClassDivisionId,
                         error: classDivisionError,
                         data: classDivision
                     });
@@ -101,8 +139,10 @@ router.post('/events',
                     title,
                     description,
                     event_date: utcEventDate.toISOString(),
-                    event_type,
-                    class_division_id,
+                    event_type: finalEventType,
+                    class_division_id: finalClassDivisionId,
+                    class_division_ids: finalClassDivisionIds,
+                    is_multi_class: finalIsMultiClass,
                     is_single_day,
                     start_time,
                     end_time,
@@ -134,13 +174,37 @@ router.post('/events',
                 statusMessage = 'Event created and approved successfully';
             }
 
+            // Add multi-class information to message
+            if (data.is_multi_class && data.class_division_ids && data.class_division_ids.length > 0) {
+                const classCount = data.class_division_ids.length;
+                statusMessage += ` for ${classCount} class${classCount > 1 ? 'es' : ''}`;
+            }
+
+            // If this is a multi-class event, fetch the class details
+            let eventWithClasses = { ...data };
+            if (data.is_multi_class && data.class_division_ids && data.class_division_ids.length > 0) {
+                try {
+                    const { data: classDetails, error: classError } = await adminSupabase
+                        .from('class_divisions')
+                        .select('id, division, academic_year:academic_year_id (year_name), class_level:class_level_id (name)')
+                        .in('id', data.class_division_ids);
+
+                    if (!classError && classDetails) {
+                        eventWithClasses.classes = classDetails;
+                    }
+                } catch (err) {
+                    console.log('Could not fetch class details for multi-class event:', err.message);
+                }
+            }
+
             res.status(201).json({
                 status: 'success',
                 message: statusMessage,
                 data: {
-                    event: data,
+                    event: eventWithClasses,
                     approval_status: data.status,
-                    requires_approval: data.status === 'pending'
+                    requires_approval: data.status === 'pending',
+                    class_count: data.is_multi_class ? data.class_division_ids?.length || 0 : 1
                 }
             });
         } catch (error) {
@@ -256,8 +320,11 @@ router.get('/events',
                         (event.status === 'pending' && event.created_by === req.user.id) ||
                         // Show school-wide events (regardless of status for teachers)
                         event.event_type === 'school_wide' ||
-                        // Show events for teacher's assigned classes
-                        (event.class_division_id && assignedClassIds.includes(event.class_division_id))
+                        // Show events for teacher's assigned classes (single class)
+                        (event.class_division_id && assignedClassIds.includes(event.class_division_id)) ||
+                        // Show events for teacher's assigned classes (multi-class)
+                        (event.is_multi_class && event.class_division_ids &&
+                            event.class_division_ids.some(classId => assignedClassIds.includes(classId)))
                     );
                 } else {
                     // Fallback: show approved events + teacher's own pending events + school-wide events
@@ -374,7 +441,16 @@ router.get('/events/parent',
 
                 // Build the OR condition based on whether parent has children
                 if (classDivisionIds.length > 0) {
-                    query = query.or(`event_type.eq.school_wide,class_division_id.in.(${classDivisionIds.join(',')})`);
+                    // Include school-wide events, single class events, and multi-class events
+                    const conditions = ['event_type.eq.school_wide'];
+
+                    // Single class events
+                    conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
+
+                    // Multi-class events - check if any of the classes match parent's children
+                    conditions.push(`class_division_ids.cs.{${classDivisionIds.join(',')}}`);
+
+                    query = query.or(conditions.join(','));
                 } else {
                     // If no children, only show school-wide events
                     query = query.eq('event_type', 'school_wide');
@@ -550,7 +626,10 @@ router.get('/events/teacher',
                 // Build the OR condition for teacher's assigned classes + school-wide events
                 const conditions = ['event_type.eq.school_wide'];
                 if (classDivisionIds.length > 0) {
+                    // Single class events
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
+                    // Multi-class events - check if any of the classes match teacher's assignments
+                    conditions.push(`class_division_ids.cs.{${classDivisionIds.join(',')}}`);
                 }
                 query = query.or(conditions.join(','));
 
@@ -671,6 +750,8 @@ router.put('/events/:id',
         body('event_date').optional().isISO8601().toDate(),
         body('event_type').optional().isIn(['school_wide', 'class_specific', 'teacher_specific']),
         body('class_division_id').optional().isUUID(),
+        body('class_division_ids').optional().isArray(),
+        body('is_multi_class').optional().isBoolean(),
         body('is_single_day').optional().isBoolean(),
         body('start_time').optional().matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/),
         body('end_time').optional().matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/),
@@ -694,6 +775,19 @@ router.put('/events/:id',
                 }
             });
 
+            // Handle multi-class event type changes
+            if (updateData.class_division_ids && updateData.class_division_ids.length > 0) {
+                // Converting to multi-class event - but use class_specific type as per requirement
+                updateData.event_type = 'class_specific';
+                updateData.class_division_id = null;
+                updateData.is_multi_class = true;
+            } else if (updateData.class_division_id) {
+                // Converting to single class event
+                updateData.event_type = 'class_specific';
+                updateData.class_division_ids = [];
+                updateData.is_multi_class = false;
+            }
+
             // Convert IST time to UTC if event_date is provided
             if (updateData.event_date && updateData.timezone === 'Asia/Kolkata') {
                 const istOffset = 5.5 * 60 * 60 * 1000;
@@ -705,7 +799,17 @@ router.put('/events/:id',
                 .from('calendar_events')
                 .update(updateData)
                 .eq('id', id)
-                .select()
+                .select(`
+                    *,
+                    creator:created_by (id, full_name, role),
+                    approver:approved_by (id, full_name, role),
+                    class:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
+                `)
                 .single();
 
             if (error) throw error;
@@ -808,10 +912,16 @@ router.get('/events/class/:class_division_id',
                 .from('calendar_events')
                 .select(`
                     *,
-                    creator:created_by (id, full_name, role)
+                    creator:created_by (id, full_name, role),
+                    class:class_division_id (
+                        id,
+                        division,
+                        academic_year:academic_year_id (year_name),
+                        class_level:class_level_id (name)
+                    )
                 `)
-                .eq('class_division_id', class_division_id)
-                .eq('event_type', 'class_specific');
+                .or(`class_division_id.eq.${class_division_id},class_division_ids.cs.{${class_division_id}}`)
+                .or(`event_type.eq.class_specific`);
 
             if (start_date) {
                 query = query.gte('event_date', start_date);

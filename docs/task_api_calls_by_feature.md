@@ -66,14 +66,14 @@ Notes
 - Class Levels
   - POST `/api/academic/class-levels` (admin/principal)
   - GET `/api/academic/class-levels`
-  - [Missing] PUT `/api/academic/class-levels/:id` (admin/principal)
-  - [Missing] DELETE `/api/academic/class-levels/:id` (admin/principal)
+  - PUT `/api/academic/class-levels/:id` (admin/principal)
+  - DELETE `/api/academic/class-levels/:id` (admin/principal)
 - Class Divisions
   - POST `/api/academic/class-divisions` (admin/principal)
   - GET `/api/academic/class-divisions`
   - GET `/api/academic/class-divisions/:class_division_id/teachers`
   - [Legacy] PUT `/api/academic/class-divisions/:id` — supports division rename; avoid sending `teacher_id` (use many-to-many endpoints instead)
-  - [Missing] DELETE `/api/academic/class-divisions/:id` (admin/principal)
+  - DELETE `/api/academic/class-divisions/:id` (admin/principal)
 
 #### Task 6: Final Testing & Optimization
 
@@ -221,9 +221,9 @@ Bulk Operations
 
 Enhanced Academic Structure
 
-- [New] PUT `/api/academic/class-levels/:id` — update class level
-- [New] DELETE `/api/academic/class-levels/:id` — delete class level
-- [New] DELETE `/api/academic/class-divisions/:id` — delete class division
+- ✅ PUT `/api/academic/class-levels/:id` — update class level
+- ✅ DELETE `/api/academic/class-levels/:id` — delete class level
+- ✅ DELETE `/api/academic/class-divisions/:id` — delete class division
 
 Teacher Assignment UX Helpers (optional)
 

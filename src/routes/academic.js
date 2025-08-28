@@ -21,9 +21,35 @@ router.post('/subjects',
             }
             const { name, code } = req.body;
             const { data, error } = await adminSupabase
-                .from('subjects')
-                .insert([{ name, code }])
-                .select()
+                .from('calendar_events')
+                .insert([{
+                    title,
+                    description,
+                    event_date: utcEventDate.toISOString(),
+                    event_type: finalEventType,
+                    class_division_id: finalClassDivisionId,
+                    class_division_ids: finalClassDivisionIds,
+                    is_multi_class: finalIsMultiClass,
+                    is_single_day,
+                    start_time,
+                    end_time,
+                    event_category,
+                    timezone,
+                    status: eventStatus,
+                    created_by: req.user.id
+                }])
+                // ✅ CORRECT CODE - Use this:
+                .select(`
+    *,
+    creator:created_by (id, full_name, role),
+    approver:approved_by (id, full_name, role),
+    class:class_division_id (
+        id,
+        division,
+        academic_year:academic_year_id (year_name),
+        class_level:class_level_id (name)
+    )
+`)
                 .single();
             if (error) throw error;
             res.status(201).json({ status: 'success', data: { subject: data } });
@@ -2633,6 +2659,197 @@ router.get('/teachers-with-assignments',
 
         } catch (error) {
             logger.error('Error in get teachers with assignments endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Delete class level (Admin/Principal only)
+router.delete('/class-levels/:id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const classLevelId = req.params.id;
+
+            // First, check if the class level exists
+            const { data: classLevel, error: classLevelError } = await adminSupabase
+                .from('class_levels')
+                .select('id, name')
+                .eq('id', classLevelId)
+                .single();
+
+            if (classLevelError || !classLevel) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class level not found'
+                });
+            }
+
+            // Check if any class divisions under this level have students
+            const { data: classDivisionsWithStudents, error: studentsError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    students!inner(id)
+                `)
+                .eq('class_level_id', classLevelId);
+
+            if (studentsError) {
+                logger.error('Error checking students in class divisions:', studentsError);
+                throw studentsError;
+            }
+
+            if (classDivisionsWithStudents && classDivisionsWithStudents.length > 0) {
+                const divisionsWithStudents = classDivisionsWithStudents.map(cd => cd.division);
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Cannot delete class level because it has class divisions with enrolled students',
+                    data: {
+                        class_level_id: classLevelId,
+                        class_level_name: classLevel.name,
+                        divisions_with_students: divisionsWithStudents,
+                        total_divisions_with_students: divisionsWithStudents.length
+                    }
+                });
+            }
+
+            // Check if there are any class divisions under this level (even without students)
+            const { data: classDivisions, error: divisionsError } = await adminSupabase
+                .from('class_divisions')
+                .select('id, division')
+                .eq('class_level_id', classLevelId);
+
+            if (divisionsError) {
+                logger.error('Error checking class divisions:', divisionsError);
+                throw divisionsError;
+            }
+
+            if (classDivisions && classDivisions.length > 0) {
+                const divisionNames = classDivisions.map(cd => cd.division);
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Cannot delete class level because it has class divisions. Please delete the class divisions first.',
+                    data: {
+                        class_level_id: classLevelId,
+                        class_level_name: classLevel.name,
+                        existing_divisions: divisionNames,
+                        total_divisions: divisionNames.length
+                    }
+                });
+            }
+
+            // If no class divisions exist, we can safely delete the class level
+            const { error: deleteError } = await adminSupabase
+                .from('class_levels')
+                .delete()
+                .eq('id', classLevelId);
+
+            if (deleteError) {
+                logger.error('Error deleting class level:', deleteError);
+                throw deleteError;
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Class level deleted successfully',
+                data: {
+                    deleted_class_level: {
+                        id: classLevelId,
+                        name: classLevel.name
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in delete class level endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Delete class division (Admin/Principal only)
+router.delete('/class-divisions/:id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const classDivisionId = req.params.id;
+
+            // First, check if the class division exists
+            const { data: classDivision, error: classDivisionError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    class_levels!inner(id, name)
+                `)
+                .eq('id', classDivisionId)
+                .single();
+
+            if (classDivisionError || !classDivision) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class division not found'
+                });
+            }
+
+            // Check if this class division has any enrolled students
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students')
+                .select('id, first_name, last_name')
+                .eq('class_division_id', classDivisionId);
+
+            if (studentsError) {
+                logger.error('Error checking students in class division:', studentsError);
+                throw studentsError;
+            }
+
+            if (students && students.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Cannot delete class division because it has enrolled students',
+                    data: {
+                        class_division_id: classDivisionId,
+                        class_name: `${classDivision.class_levels.name} ${classDivision.division}`,
+                        enrolled_students_count: students.length,
+                        students: students.map(s => ({
+                            id: s.id,
+                            name: `${s.first_name} ${s.last_name}`
+                        }))
+                    }
+                });
+            }
+
+            // If no students are enrolled, we can safely delete the class division
+            // This will cascade delete related records (teacher assignments, subjects, etc.)
+            const { error: deleteError } = await adminSupabase
+                .from('class_divisions')
+                .delete()
+                .eq('id', classDivisionId);
+
+            if (deleteError) {
+                logger.error('Error deleting class division:', deleteError);
+                throw deleteError;
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Class division deleted successfully',
+                data: {
+                    deleted_class_division: {
+                        id: classDivisionId,
+                        class_name: `${classDivision.class_levels.name} ${classDivision.division}`,
+                        class_level_id: classDivision.class_levels.id,
+                        class_level_name: classDivision.class_levels.name,
+                        division: classDivision.division
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in delete class division endpoint:', error);
             next(error);
         }
     }
