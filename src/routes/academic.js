@@ -499,9 +499,38 @@ router.get('/my-teacher-id',
                 }));
             }
 
+            // Get student counts for each class division
+            const classDivisionIds = classesWithDetails.map(c => c.class_division_id);
+            let studentCounts = {};
+
+            if (classDivisionIds.length > 0) {
+                const { data: studentCountData, error: countError } = await adminSupabase
+                    .from('student_academic_records')
+                    .select('class_division_id')
+                    .in('class_division_id', classDivisionIds)
+                    .eq('status', 'ongoing');
+
+                if (!countError && studentCountData) {
+                    // Count students per class division
+                    studentCountData.forEach(record => {
+                        const classId = record.class_division_id;
+                        studentCounts[classId] = (studentCounts[classId] || 0) + 1;
+                    });
+                }
+            }
+
+            // Add student count to each class
+            const classesWithStudentCounts = classesWithDetails.map(classInfo => ({
+                ...classInfo,
+                student_count: studentCounts[classInfo.class_division_id] || 0
+            }));
+
             // Separate primary and non-primary classes
-            const primaryClasses = classesWithDetails.filter(c => c.is_primary);
-            const secondaryClasses = classesWithDetails.filter(c => !c.is_primary);
+            const primaryClasses = classesWithStudentCounts.filter(c => c.is_primary);
+            const secondaryClasses = classesWithStudentCounts.filter(c => !c.is_primary);
+
+            // Calculate total students across all assigned classes
+            const totalStudents = Object.values(studentCounts).reduce((sum, count) => sum + count, 0);
 
             res.json({
                 status: 'success',
@@ -520,13 +549,14 @@ router.get('/my-teacher-id',
                         // Alternative: use staff_id (will be resolved by backend)
                         staff_id: staffRecord?.id || null
                     },
-                    assigned_classes: classesWithDetails,
+                    assigned_classes: classesWithStudentCounts,
                     primary_classes: primaryClasses,
                     secondary_classes: secondaryClasses,
-                    total_assigned_classes: classesWithDetails.length,
+                    total_assigned_classes: classesWithStudentCounts.length,
                     total_primary_classes: primaryClasses.length,
                     total_secondary_classes: secondaryClasses.length,
-                    has_assignments: classesWithDetails.length > 0,
+                    total_students: totalStudents,
+                    has_assignments: classesWithStudentCounts.length > 0,
                     using_legacy_data: usingLegacyData,
                     assignment_summary: {
                         primary_teacher_for: primaryClasses.length,
@@ -534,7 +564,7 @@ router.get('/my-teacher-id',
                         assistant_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'assistant_teacher').length,
                         substitute_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'substitute_teacher').length
                     },
-                    subjects_taught: classesWithDetails
+                    subjects_taught: classesWithStudentCounts
                         .filter(c => c.assignment_type === 'subject_teacher' && c.subject)
                         .map(c => c.subject)
                         .filter((subject, index, arr) => arr.indexOf(subject) === index) // Remove duplicates

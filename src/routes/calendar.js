@@ -948,29 +948,20 @@ router.get('/events/class/:class_division_id',
     }
 );
 
-// Approve event (Principal only)
+// Approve event (Admin/Principal only)
 router.post('/events/:id/approve',
     authenticate,
-    [
-        body('approval_note').optional().isString().trim()
-    ],
     async (req, res, next) => {
         try {
-            const errors = validationResult(req);
-            if (!errors.isEmpty()) {
-                return res.status(400).json({ errors: errors.array() });
-            }
-
-            // Check if user is principal
-            if (req.user.role !== 'principal') {
+            // Check if user is admin or principal
+            if (!['admin', 'principal'].includes(req.user.role)) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'Only principals can approve events'
+                    message: 'Only admin and principal can approve events'
                 });
             }
 
             const { id } = req.params;
-            const { approval_note } = req.body;
 
             // Get the event
             const { data: event, error: fetchError } = await adminSupabase
@@ -1000,8 +991,7 @@ router.post('/events/:id/approve',
                 .update({
                     status: 'approved',
                     approved_by: req.user.id,
-                    approved_at: new Date().toISOString(),
-                    approval_note: approval_note || null
+                    approved_at: new Date().toISOString()
                 })
                 .eq('id', id)
                 .select(`
@@ -1043,11 +1033,11 @@ router.post('/events/:id/reject',
                 return res.status(400).json({ errors: errors.array() });
             }
 
-            // Check if user is principal
-            if (req.user.role !== 'principal') {
+            // Check if user is admin or principal
+            if (!['admin', 'principal'].includes(req.user.role)) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'Only principals can reject events'
+                    message: 'Only admin and principal can reject events'
                 });
             }
 

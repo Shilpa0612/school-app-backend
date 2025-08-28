@@ -1,4 +1,5 @@
 import express from 'express';
+import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
@@ -160,7 +161,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, periodId = null
         const academicYear = await getActiveAcademicYear();
 
         // Check if attendance already exists
-        const { data: existingAttendance, error: checkError } = await supabase
+        const { data: existingAttendance, error: checkError } = await adminSupabase
             .from('daily_attendance')
             .select('id')
             .eq('class_division_id', classDivisionId)
@@ -180,7 +181,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, periodId = null
         // If it's a holiday, mark as holiday and return
         if (attendanceHoliday.isHoliday || calendarHoliday.isHoliday) {
             const holiday = attendanceHoliday.holiday || calendarHoliday.event;
-            const { data: holidayAttendance, error: holidayError } = await supabase
+            const { data: holidayAttendance, error: holidayError } = await adminSupabase
                 .from('daily_attendance')
                 .insert([{
                     class_division_id: classDivisionId,
@@ -199,7 +200,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, periodId = null
         }
 
         // Create new daily attendance record
-        const { data: dailyAttendance, error: createError } = await supabase
+        const { data: dailyAttendance, error: createError } = await adminSupabase
             .from('daily_attendance')
             .insert([{
                 class_division_id: classDivisionId,
@@ -214,7 +215,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, periodId = null
         if (createError) throw createError;
 
         // Get all students in the class
-        const { data: students, error: studentsError } = await supabase
+        const { data: students, error: studentsError } = await adminSupabase
             .from('student_academic_records')
             .select('student_id')
             .eq('class_division_id', classDivisionId)
@@ -233,7 +234,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, periodId = null
                 marked_by: null
             }));
 
-            const { error: recordsError } = await supabase
+            const { error: recordsError } = await adminSupabase
                 .from('student_attendance_records')
                 .insert(defaultRecords);
 
@@ -254,7 +255,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, periodId = null
 // Get all attendance periods
 router.get('/periods', authenticate, async (req, res) => {
     try {
-        const { data: periods, error } = await supabase
+        const { data: periods, error } = await adminSupabase
             .from('attendance_periods')
             .select('*')
             .eq('is_active', true)
@@ -295,7 +296,7 @@ router.post('/periods', authenticate, async (req, res) => {
             });
         }
 
-        const { data: period, error } = await supabase
+        const { data: period, error } = await adminSupabase
             .from('attendance_periods')
             .insert([{ name, start_time, end_time }])
             .select()
@@ -363,7 +364,7 @@ router.post('/daily', authenticate, async (req, res) => {
         }
 
         // Update marked_by to current user
-        await supabase
+        await adminSupabase
             .from('daily_attendance')
             .update({ marked_by: req.user.id })
             .eq('id', dailyAttendance.id);
@@ -371,7 +372,7 @@ router.post('/daily', authenticate, async (req, res) => {
         // If present_students provided, update their status to present
         if (present_students && Array.isArray(present_students) && present_students.length > 0) {
             const updatePromises = present_students.map(async (studentId) => {
-                const { error } = await supabase
+                const { error } = await adminSupabase
                     .from('student_attendance_records')
                     .update({
                         status: 'present',
@@ -389,7 +390,7 @@ router.post('/daily', authenticate, async (req, res) => {
         }
 
         // Get all student records for this day
-        const { data: studentRecords, error: studentError } = await supabase
+        const { data: studentRecords, error: studentError } = await adminSupabase
             .from('student_attendance_records')
             .select(`
                 *,
@@ -450,7 +451,7 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
         const academicYear = await getActiveAcademicYear();
 
         // Get daily attendance
-        const { data: dailyAttendance, error: dailyError } = await supabase
+        const { data: dailyAttendance, error: dailyError } = await adminSupabase
             .from('daily_attendance')
             .select(`
                 *,
@@ -479,7 +480,7 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
         }
 
         // Get student attendance records
-        const { data: studentRecords, error: studentError } = await supabase
+        const { data: studentRecords, error: studentError } = await adminSupabase
             .from('student_attendance_records')
             .select(`
                 *,
@@ -520,7 +521,7 @@ router.put('/daily/:daily_attendance_id', authenticate, async (req, res) => {
         }
 
         // Get daily attendance to check permissions
-        const { data: dailyAttendance, error: fetchError } = await supabase
+        const { data: dailyAttendance, error: fetchError } = await adminSupabase
             .from('daily_attendance')
             .select('class_division_id, marked_by')
             .eq('id', daily_attendance_id)
@@ -546,7 +547,7 @@ router.put('/daily/:daily_attendance_id', authenticate, async (req, res) => {
 
         // Update student attendance records
         const updatePromises = student_attendance.map(async (record) => {
-            const { error } = await supabase
+            const { error } = await adminSupabase
                 .from('student_attendance_records')
                 .update({
                     status: record.status,
@@ -563,7 +564,7 @@ router.put('/daily/:daily_attendance_id', authenticate, async (req, res) => {
         await Promise.all(updatePromises);
 
         // Get updated records
-        const { data: updatedRecords, error: getError } = await supabase
+        const { data: updatedRecords, error: getError } = await adminSupabase
             .from('student_attendance_records')
             .select(`
                 *,
@@ -604,7 +605,7 @@ router.put('/student-record/:record_id', authenticate, async (req, res) => {
         }
 
         // Get the attendance record to check permissions
-        const { data: record, error: fetchError } = await supabase
+        const { data: record, error: fetchError } = await adminSupabase
             .from('student_attendance_records')
             .select(`
                 *,
@@ -635,7 +636,7 @@ router.put('/student-record/:record_id', authenticate, async (req, res) => {
         }
 
         // Update the record
-        const { data: updatedRecord, error: updateError } = await supabase
+        const { data: updatedRecord, error: updateError } = await adminSupabase
             .from('student_attendance_records')
             .update({
                 status,
@@ -687,7 +688,7 @@ router.put('/periods/:period_id', authenticate, async (req, res) => {
         }
 
         // Update the period
-        const { data: period, error } = await supabase
+        const { data: period, error } = await adminSupabase
             .from('attendance_periods')
             .update({
                 name,
@@ -731,7 +732,7 @@ router.put('/holidays/:holiday_id', authenticate, async (req, res) => {
         }
 
         // Update the holiday
-        const { data: holiday, error } = await supabase
+        const { data: holiday, error } = await adminSupabase
             .from('attendance_holidays')
             .update({
                 holiday_date,
@@ -778,7 +779,7 @@ router.delete('/periods/:period_id', authenticate, async (req, res) => {
         }
 
         // Check if period is being used in any attendance records
-        const { data: usageCheck, error: checkError } = await supabase
+        const { data: usageCheck, error: checkError } = await adminSupabase
             .from('daily_attendance')
             .select('id')
             .eq('period_id', period_id)
@@ -794,7 +795,7 @@ router.delete('/periods/:period_id', authenticate, async (req, res) => {
         }
 
         // Delete the period
-        const { error } = await supabase
+        const { error } = await adminSupabase
             .from('attendance_periods')
             .delete()
             .eq('id', period_id);
@@ -828,7 +829,7 @@ router.delete('/holidays/:holiday_id', authenticate, async (req, res) => {
         }
 
         // Delete the holiday
-        const { error } = await supabase
+        const { error } = await adminSupabase
             .from('attendance_holidays')
             .delete()
             .eq('id', holiday_id);
@@ -854,7 +855,7 @@ router.delete('/daily/:daily_attendance_id', authenticate, async (req, res) => {
         const { daily_attendance_id } = req.params;
 
         // Get daily attendance to check permissions
-        const { data: dailyAttendance, error: fetchError } = await supabase
+        const { data: dailyAttendance, error: fetchError } = await adminSupabase
             .from('daily_attendance')
             .select('class_division_id, attendance_date')
             .eq('id', daily_attendance_id)
@@ -879,7 +880,7 @@ router.delete('/daily/:daily_attendance_id', authenticate, async (req, res) => {
         }
 
         // Delete the daily attendance (cascades to student records)
-        const { error } = await supabase
+        const { error } = await adminSupabase
             .from('daily_attendance')
             .delete()
             .eq('id', daily_attendance_id);
@@ -920,7 +921,7 @@ router.get('/student/:student_id/summary', authenticate, async (req, res) => {
             }
         } else if (req.user.role === 'teacher') {
             // Teachers can view attendance for students in their classes
-            const { data: studentClass, error: classError } = await supabase
+            const { data: studentClass, error: classError } = await adminSupabase
                 .from('student_academic_records')
                 .select('class_division_id')
                 .eq('student_id', student_id)
@@ -956,7 +957,7 @@ router.get('/student/:student_id/summary', authenticate, async (req, res) => {
         }
 
         // Call the database function to get attendance summary
-        const { data: summary, error } = await supabase
+        const { data: summary, error } = await adminSupabase
             .rpc('get_student_attendance_summary', {
                 p_student_id: student_id,
                 p_academic_year_id: academicYearId,
@@ -967,7 +968,7 @@ router.get('/student/:student_id/summary', authenticate, async (req, res) => {
         if (error) throw error;
 
         // Get student details
-        const { data: student, error: studentError } = await supabase
+        const { data: student, error: studentError } = await adminSupabase
             .from('students_master')
             .select('full_name, admission_number')
             .eq('id', student_id)
@@ -1016,7 +1017,7 @@ router.get('/student/:student_id/details', authenticate, async (req, res) => {
                 });
             }
         } else if (req.user.role === 'teacher') {
-            const { data: studentClass, error: classError } = await supabase
+            const { data: studentClass, error: classError } = await adminSupabase
                 .from('student_academic_records')
                 .select('class_division_id')
                 .eq('student_id', student_id)
@@ -1052,7 +1053,7 @@ router.get('/student/:student_id/details', authenticate, async (req, res) => {
         }
 
         // Build query
-        let query = supabase
+        let query = adminSupabase
             .from('student_attendance_records')
             .select(`
                 *,
@@ -1168,7 +1169,7 @@ router.post('/holidays', authenticate, async (req, res) => {
             });
         }
 
-        const { data: holiday, error } = await supabase
+        const { data: holiday, error } = await adminSupabase
             .from('attendance_holidays')
             .insert([{
                 holiday_date,
@@ -1221,7 +1222,7 @@ router.post('/create-daily', authenticate, async (req, res) => {
         }
 
         // Get all active class divisions
-        const { data: classDivisions, error: classError } = await supabase
+        const { data: classDivisions, error: classError } = await adminSupabase
             .from('class_divisions')
             .select('id')
             .eq('academic_year_id', (await getActiveAcademicYear()).id);
@@ -1297,7 +1298,7 @@ router.post('/sync-calendar-holidays', authenticate, async (req, res) => {
         }
 
         // Get holiday events from calendar
-        const { data: holidayEvents, error: eventsError } = await supabase
+        const { data: holidayEvents, error: eventsError } = await adminSupabase
             .from('calendar_events')
             .select('*')
             .eq('event_category', 'holiday')
@@ -1313,7 +1314,7 @@ router.post('/sync-calendar-holidays', authenticate, async (req, res) => {
         for (const event of holidayEvents) {
             try {
                 // Check if holiday already exists
-                const { data: existingHoliday, error: checkError } = await supabase
+                const { data: existingHoliday, error: checkError } = await adminSupabase
                     .from('attendance_holidays')
                     .select('id')
                     .eq('holiday_date', event.event_date.split('T')[0])
@@ -1329,7 +1330,7 @@ router.post('/sync-calendar-holidays', authenticate, async (req, res) => {
                 }
 
                 // Create new holiday
-                const { data: holiday, error: createError } = await supabase
+                const { data: holiday, error: createError } = await adminSupabase
                     .from('attendance_holidays')
                     .insert([{
                         holiday_date: event.event_date.split('T')[0],
@@ -1411,7 +1412,7 @@ router.get('/status/:class_division_id', authenticate, async (req, res) => {
         const dailyAttendance = await createOrGetDailyAttendance(class_division_id, date, period_id);
 
         // Get student records
-        const { data: studentRecords, error: studentError } = await supabase
+        const { data: studentRecords, error: studentError } = await adminSupabase
             .from('student_attendance_records')
             .select(`
                 *,
@@ -1477,7 +1478,7 @@ router.get('/reports/class/:class_division_id', authenticate, async (req, res) =
         const academicYear = await getActiveAcademicYear();
 
         // Get class details
-        const { data: classDetails, error: classError } = await supabase
+        const { data: classDetails, error: classError } = await adminSupabase
             .from('class_divisions')
             .select(`
                 *,
@@ -1490,7 +1491,7 @@ router.get('/reports/class/:class_division_id', authenticate, async (req, res) =
         if (classError) throw classError;
 
         // Get students in the class
-        const { data: students, error: studentsError } = await supabase
+        const { data: students, error: studentsError } = await adminSupabase
             .from('student_academic_records')
             .select(`
                 student:students_master(id, full_name, admission_number),
@@ -1506,7 +1507,7 @@ router.get('/reports/class/:class_division_id', authenticate, async (req, res) =
         // Get attendance data for each student
         const attendanceData = await Promise.all(
             students.map(async (studentRecord) => {
-                const { data: summary } = await supabase
+                const { data: summary } = await adminSupabase
                     .rpc('get_student_attendance_summary', {
                         p_student_id: studentRecord.student.id,
                         p_academic_year_id: academicYear.id,
