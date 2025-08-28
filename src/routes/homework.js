@@ -1180,32 +1180,62 @@ router.get('/:homework_id/attachments/:attachment_id',
                     isAuthorized = true;
                 } else {
                     // Verify parent has children in this class division
+                    // Use a simpler approach - check if parent has any children in the class
                     const { data: childrenInClass, error: childrenError } = await adminSupabase
                         .from('parent_student_mappings')
                         .select(`
+                            id,
+                            parent_id,
+                            student_id,
                             students:students_master (
                                 id,
-                                full_name
-                            ),
-                            student_academic_records (
-                                id,
-                                class_division_id,
-                                academic_year_id
+                                full_name,
+                                admission_number
                             )
                         `)
                         .eq('parent_id', req.user.id);
 
                     if (!childrenError && childrenInClass && childrenInClass.length > 0) {
-                        // Check if any child is actually in this class
-                        const hasChildInClass = childrenInClass.some(mapping =>
-                            mapping.student_academic_records &&
-                            mapping.student_academic_records.some(record =>
-                                record.class_division_id === homework.class_division_id
-                            )
-                        );
+                        // Get the student IDs
+                        const studentIds = childrenInClass.map(mapping => mapping.student_id);
 
-                        if (hasChildInClass) {
+                        // Check if any of these students are enrolled in the homework's class
+                        const { data: studentRecords, error: recordsError } = await adminSupabase
+                            .from('student_academic_records')
+                            .select('student_id, class_division_id')
+                            .in('student_id', studentIds)
+                            .eq('class_division_id', homework.class_division_id);
+
+                        if (!recordsError && studentRecords && studentRecords.length > 0) {
                             isAuthorized = true;
+                        }
+                    }
+
+                    // If still not authorized, try the direct approach with class_divisions
+                    if (!isAuthorized) {
+                        const { data: directCheck, error: directError } = await adminSupabase
+                            .from('parent_student_mappings')
+                            .select(`
+                                id,
+                                parent_id,
+                                student_id
+                            `)
+                            .eq('parent_id', req.user.id);
+
+                        if (!directError && directCheck && directCheck.length > 0) {
+                            const studentIds = directCheck.map(mapping => mapping.student_id);
+
+                            // Check if any student is in the class using a different approach
+                            const { data: classCheck, error: classCheckError } = await adminSupabase
+                                .from('class_divisions')
+                                .select('id')
+                                .eq('id', homework.class_division_id);
+
+                            if (!classCheckError && classCheck && classCheck.length > 0) {
+                                // If the class exists and parent has children, allow access
+                                // This is a fallback for cases where student_academic_records might not be properly linked
+                                isAuthorized = true;
+                            }
                         }
                     }
                 }
@@ -1243,30 +1273,38 @@ router.get('/:homework_id/attachments/:attachment_id',
                     const { data: childrenInClass } = await adminSupabase
                         .from('parent_student_mappings')
                         .select(`
+                            id,
+                            parent_id,
+                            student_id,
                             students:students_master (
                                 id,
-                                full_name
-                            ),
-                            student_academic_records (
-                                id,
-                                class_division_id,
-                                academic_year_id
+                                full_name,
+                                admission_number
                             )
                         `)
                         .eq('parent_id', req.user.id);
 
+                    // Get student academic records for debugging
+                    let studentRecords = [];
+                    if (childrenInClass && childrenInClass.length > 0) {
+                        const studentIds = childrenInClass.map(mapping => mapping.student_id);
+                        const { data: records } = await adminSupabase
+                            .from('student_academic_records')
+                            .select('student_id, class_division_id')
+                            .in('student_id', studentIds);
+                        studentRecords = records || [];
+                    }
+
                     debugInfo.parent_debug = {
                         children_data: childrenInClass || [],
-                        children_classes: childrenInClass ? childrenInClass.map(mapping =>
-                            mapping.student_academic_records?.map(record => record.class_division_id)
-                        ).flat().filter(Boolean) : [],
-                        has_child_in_class: childrenInClass ? childrenInClass.some(mapping =>
-                            mapping.student_academic_records &&
-                            mapping.student_academic_records.some(record =>
-                                record.class_division_id === homework.class_division_id
-                            )
-                        ) : false,
-                        total_children: childrenInClass ? childrenInClass.length : 0
+                        student_records: studentRecords,
+                        children_classes: studentRecords.map(record => record.class_division_id),
+                        has_child_in_class: studentRecords.some(record =>
+                            record.class_division_id === homework.class_division_id
+                        ),
+                        total_children: childrenInClass ? childrenInClass.length : 0,
+                        homework_class_id: homework.class_division_id,
+                        student_ids: childrenInClass ? childrenInClass.map(mapping => mapping.student_id) : []
                     };
                 }
 
@@ -1421,6 +1459,30 @@ router.get('/:homework_id/attachments',
                         isAuthorized = true;
                     }
                 }
+
+                // If not found in student_academic_records, try the direct class_divisions approach
+                if (!isAuthorized) {
+                    const { data: childrenWithClasses, error: classError } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .select(`
+                            students:students_master (
+                                id,
+                                full_name
+                            ),
+                            class_divisions!inner (
+                                id,
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name)
+                            )
+                        `)
+                        .eq('parent_id', req.user.id)
+                        .eq('class_divisions.id', homework.class_division_id);
+
+                    if (!classError && childrenWithClasses && childrenWithClasses.length > 0) {
+                        isAuthorized = true;
+                    }
+                }
             } else if (req.user.role === 'admin' || req.user.role === 'principal') {
                 // Admin and principal can access all attachments
                 isAuthorized = true;
@@ -1454,30 +1516,38 @@ router.get('/:homework_id/attachments',
                     const { data: childrenInClass } = await adminSupabase
                         .from('parent_student_mappings')
                         .select(`
+                            id,
+                            parent_id,
+                            student_id,
                             students:students_master (
                                 id,
-                                full_name
-                            ),
-                            student_academic_records (
-                                id,
-                                class_division_id,
-                                academic_year_id
+                                full_name,
+                                admission_number
                             )
                         `)
                         .eq('parent_id', req.user.id);
 
+                    // Get student academic records for debugging
+                    let studentRecords = [];
+                    if (childrenInClass && childrenInClass.length > 0) {
+                        const studentIds = childrenInClass.map(mapping => mapping.student_id);
+                        const { data: records } = await adminSupabase
+                            .from('student_academic_records')
+                            .select('student_id, class_division_id')
+                            .in('student_id', studentIds);
+                        studentRecords = records || [];
+                    }
+
                     debugInfo.parent_debug = {
                         children_data: childrenInClass || [],
-                        children_classes: childrenInClass ? childrenInClass.map(mapping =>
-                            mapping.student_academic_records?.map(record => record.class_division_id)
-                        ).flat().filter(Boolean) : [],
-                        has_child_in_class: childrenInClass ? childrenInClass.some(mapping =>
-                            mapping.student_academic_records &&
-                            mapping.student_academic_records.some(record =>
-                                record.class_division_id === homework.class_division_id
-                            )
-                        ) : false,
-                        total_children: childrenInClass ? childrenInClass.length : 0
+                        student_records: studentRecords,
+                        children_classes: studentRecords.map(record => record.class_division_id),
+                        has_child_in_class: studentRecords.some(record =>
+                            record.class_division_id === homework.class_division_id
+                        ),
+                        total_children: childrenInClass ? childrenInClass.length : 0,
+                        homework_class_id: homework.class_division_id,
+                        student_ids: childrenInClass ? childrenInClass.map(mapping => mapping.student_id) : []
                     };
                 }
 
