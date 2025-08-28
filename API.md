@@ -1034,6 +1034,10 @@ GET /calendar/events
 - `class_division_id`: Filter by specific class
 - `event_type`: Filter by event type (`school_wide`, `class_specific`, `teacher_specific`)
 - `event_category`: Filter by category
+- `status`: Filter by approval status (`approved`, `pending`, `rejected`)
+  - **Admin/Principal**: Can filter by any status
+  - **Teachers**: Can filter by `approved`, `pending`, `rejected`
+  - **Other roles**: Can only filter by `approved`
 - `use_ist`: Set to `true` to get events in IST timezone (default: `true`)
 
 **Response:** List of events with IST timezone conversion
@@ -7969,6 +7973,100 @@ if (response.ok) {
   window.URL.revokeObjectURL(url);
 }
 ```
+
+### Edit Homework Attachments (Replace All)
+
+```http
+PUT /api/homework/:homework_id/attachments
+```
+
+**Access**:
+
+- **Teachers**: Homework creator OR assigned to the class
+- **Parents**: Children enrolled in the class
+- **Admin/Principal**: All homework (full access)
+
+**Description**: Replace all existing attachments with new files. This endpoint will:
+
+1. Delete all existing attachments (files and database records)
+2. Upload new files
+3. Create new database records for the uploaded files
+
+**Request**:
+
+- **Method**: `PUT`
+- **Content-Type**: `multipart/form-data`
+- **Body**: Form data with files
+  - `attachments`: Array of files (max 10 files)
+
+**Example Request**:
+
+```javascript
+const formData = new FormData();
+formData.append("attachments", file1);
+formData.append("attachments", file2);
+formData.append("attachments", file3);
+
+const response = await fetch("/api/homework/uuid/attachments", {
+  method: "PUT",
+  headers: {
+    Authorization: `Bearer ${token}`,
+  },
+  body: formData,
+});
+```
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "message": "Successfully replaced attachments. 3 new files uploaded.",
+  "data": {
+    "homework_id": "uuid",
+    "new_attachments": [
+      {
+        "id": "uuid",
+        "file_name": "chapter5.pdf",
+        "file_type": "application/pdf",
+        "storage_path": "homework-id/timestamp_filename.pdf"
+      },
+      {
+        "id": "uuid",
+        "file_name": "exercises.docx",
+        "file_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "storage_path": "homework-id/timestamp_filename.docx"
+      }
+    ],
+    "total_files": 2
+  }
+}
+```
+
+**Error Response** (if some files fail):
+
+```json
+{
+  "status": "success",
+  "message": "Successfully replaced attachments. 2 new files uploaded. 1 files failed to upload.",
+  "data": {
+    "homework_id": "uuid",
+    "new_attachments": [...],
+    "total_files": 2
+  },
+  "warnings": [
+    "Failed to upload large_file.pdf: File size exceeds limit"
+  ]
+}
+```
+
+**Notes**:
+
+- All existing attachments will be permanently deleted
+- Maximum 10 files can be uploaded at once
+- File size limit: 10MB per file (configurable)
+- Supported file types: Images, PDFs, Documents, Text files
+- Files are stored with timestamp prefixes to avoid conflicts
 
 ### Get Homework Filters
 

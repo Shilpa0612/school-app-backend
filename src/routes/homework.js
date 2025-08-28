@@ -1889,4 +1889,341 @@ router.get('/filters',
     }
 );
 
+// ============================================================================
+// DELETE HOMEWORK ATTACHMENT
+// ============================================================================
+
+// Delete homework attachment
+router.delete('/:homework_id/attachments/:attachment_id',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { homework_id, attachment_id } = req.params;
+
+            // Get the homework to check permissions
+            const { data: homework, error: homeworkError } = await adminSupabase
+                .from('homework')
+                .select(`
+                    *,
+                    class_division:class_division_id (
+                        id,
+                        division,
+                        level:class_level_id (name)
+                    )
+                `)
+                .eq('id', homework_id)
+                .single();
+
+            if (homeworkError || !homework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            // Get the attachment to check if it exists
+            const { data: attachment, error: attachmentError } = await adminSupabase
+                .from('homework_files')
+                .select('*')
+                .eq('id', attachment_id)
+                .eq('homework_id', homework_id)
+                .single();
+
+            if (attachmentError || !attachment) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Attachment not found'
+                });
+            }
+
+            // Check permissions based on user role
+            let isAuthorized = false;
+
+            if (req.user.role === 'teacher') {
+                // Teachers can delete attachments for homework in their assigned classes
+                const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id')
+                    .eq('class_division_id', homework.class_division_id)
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true);
+
+                if (!assignmentError && teacherAssignments && teacherAssignments.length > 0) {
+                    isAuthorized = true;
+                }
+            } else if (req.user.role === 'parent') {
+                // Parents can delete attachments for homework in their children's classes
+                const { data: parentMappings, error: mappingError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select('student_id')
+                    .eq('parent_id', req.user.id);
+
+                if (!mappingError && parentMappings && parentMappings.length > 0) {
+                    const studentIds = parentMappings.map(mapping => mapping.student_id);
+
+                    // Check if any of the parent's children are in this class
+                    const { data: studentRecords, error: recordsError } = await adminSupabase
+                        .from('student_academic_records')
+                        .select('id')
+                        .in('student_id', studentIds)
+                        .eq('class_division_id', homework.class_division_id)
+                        .eq('status', 'ongoing');
+
+                    if (!recordsError && studentRecords && studentRecords.length > 0) {
+                        isAuthorized = true;
+                    }
+                }
+            } else if (req.user.role === 'admin' || req.user.role === 'principal') {
+                // Admin and principal can delete any attachment
+                isAuthorized = true;
+            }
+
+            if (!isAuthorized) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Not authorized to delete this attachment'
+                });
+            }
+
+            // Delete the file from storage
+            const { error: storageError } = await adminSupabase.storage
+                .from('homework-attachments')
+                .remove([attachment.storage_path]);
+
+            if (storageError) {
+                console.error('Storage deletion error:', storageError);
+                // Continue with database deletion even if storage deletion fails
+            }
+
+            // Delete the attachment record from database
+            const { error: deleteError } = await adminSupabase
+                .from('homework_files')
+                .delete()
+                .eq('id', attachment_id)
+                .eq('homework_id', homework_id);
+
+            if (deleteError) {
+                throw deleteError;
+            }
+
+            res.json({
+                status: 'success',
+                message: 'Attachment deleted successfully',
+                data: {
+                    deleted_attachment: {
+                        id: attachment_id,
+                        file_name: attachment.file_name,
+                        homework_id: homework_id
+                    }
+                }
+            });
+
+        } catch (error) {
+            console.error('Delete attachment error:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Failed to delete attachment'
+            });
+        }
+    }
+);
+
+// Edit homework attachments (replace all existing attachments with new ones)
+router.put('/:homework_id/attachments',
+    authenticate,
+    authorize(['teacher', 'parent']),
+    upload.array('attachments', 10), // Allow up to 10 files
+    async (req, res, next) => {
+        try {
+            const { homework_id } = req.params;
+            const files = req.files;
+
+            if (!files || files.length === 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'No files provided'
+                });
+            }
+
+            // Get the homework to verify it exists and check permissions
+            const { data: homework, error: homeworkError } = await adminSupabase
+                .from('homework')
+                .select('id, class_division_id, teacher_id')
+                .eq('id', homework_id)
+                .single();
+
+            if (homeworkError || !homework) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Homework not found'
+                });
+            }
+
+            // Check permissions based on user role
+            let isAuthorized = false;
+
+            if (req.user.role === 'teacher') {
+                // Teachers can edit attachments for homework in their assigned classes
+                const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id')
+                    .eq('class_division_id', homework.class_division_id)
+                    .eq('teacher_id', req.user.id)
+                    .eq('is_active', true);
+
+                if (!assignmentError && teacherAssignments && teacherAssignments.length > 0) {
+                    isAuthorized = true;
+                }
+            } else if (req.user.role === 'parent') {
+                // Parents can edit attachments for homework in their children's classes
+                const { data: parentMappings, error: mappingError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select('student_id')
+                    .eq('parent_id', req.user.id);
+
+                if (!mappingError && parentMappings && parentMappings.length > 0) {
+                    const studentIds = parentMappings.map(mapping => mapping.student_id);
+
+                    // Check if any of the parent's children are in this class
+                    const { data: studentRecords, error: recordsError } = await adminSupabase
+                        .from('student_academic_records')
+                        .select('id')
+                        .in('student_id', studentIds)
+                        .eq('class_division_id', homework.class_division_id)
+                        .eq('status', 'ongoing');
+
+                    if (!recordsError && studentRecords && studentRecords.length > 0) {
+                        isAuthorized = true;
+                    }
+                }
+            } else if (req.user.role === 'admin' || req.user.role === 'principal') {
+                // Admin and principal can edit any attachments
+                isAuthorized = true;
+            }
+
+            if (!isAuthorized) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Not authorized to edit this homework'
+                });
+            }
+
+            // Get existing attachments to delete them
+            const { data: existingAttachments, error: existingError } = await adminSupabase
+                .from('homework_files')
+                .select('id, storage_path')
+                .eq('homework_id', homework_id);
+
+            if (existingError) {
+                throw existingError;
+            }
+
+            // Delete existing files from storage
+            if (existingAttachments && existingAttachments.length > 0) {
+                const storagePaths = existingAttachments.map(att => att.storage_path);
+
+                const { error: storageDeleteError } = await adminSupabase.storage
+                    .from('homework-attachments')
+                    .remove(storagePaths);
+
+                if (storageDeleteError) {
+                    console.error('Storage deletion error:', storageDeleteError);
+                    // Continue with the process even if storage deletion fails
+                }
+
+                // Delete existing attachment records from database
+                const { error: deleteError } = await adminSupabase
+                    .from('homework_files')
+                    .delete()
+                    .eq('homework_id', homework_id);
+
+                if (deleteError) {
+                    throw deleteError;
+                }
+            }
+
+            // Upload new files
+            const uploadedFiles = [];
+            const errors = [];
+
+            for (const file of files) {
+                try {
+                    const fileName = `${Date.now()}_${file.originalname}`;
+                    const storagePath = `${homework_id}/${fileName}`;
+
+                    // Upload to Supabase storage
+                    const { error: uploadError } = await adminSupabase.storage
+                        .from('homework-attachments')
+                        .upload(storagePath, file.buffer, {
+                            contentType: file.mimetype,
+                            cacheControl: '3600'
+                        });
+
+                    if (uploadError) {
+                        errors.push(`Failed to upload ${file.originalname}: ${uploadError.message}`);
+                        continue;
+                    }
+
+                    // Save file record to database
+                    const { data: fileRecord, error: dbError } = await adminSupabase
+                        .from('homework_files')
+                        .insert({
+                            homework_id: homework_id,
+                            file_name: file.originalname,
+                            file_type: file.mimetype,
+                            storage_path: storagePath
+                        })
+                        .select()
+                        .single();
+
+                    if (dbError) {
+                        // Clean up uploaded file if database insert fails
+                        await adminSupabase.storage
+                            .from('homework-attachments')
+                            .remove([storagePath]);
+
+                        errors.push(`Failed to save ${file.originalname}: ${dbError.message}`);
+                        continue;
+                    }
+
+                    uploadedFiles.push({
+                        id: fileRecord.id,
+                        file_name: file.originalname,
+                        file_type: file.mimetype,
+                        storage_path: storagePath
+                    });
+
+                } catch (error) {
+                    errors.push(`Error processing ${file.originalname}: ${error.message}`);
+                }
+            }
+
+            // Prepare response
+            const response = {
+                status: 'success',
+                message: `Successfully replaced attachments. ${uploadedFiles.length} new files uploaded.`,
+                data: {
+                    homework_id: homework_id,
+                    new_attachments: uploadedFiles,
+                    total_files: uploadedFiles.length
+                }
+            };
+
+            if (errors.length > 0) {
+                response.warnings = errors;
+                response.message += ` ${errors.length} files failed to upload.`;
+            }
+
+            res.json(response);
+
+        } catch (error) {
+            console.error('Edit attachments error:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Failed to edit attachments'
+            });
+        }
+    }
+);
+
 export default router; 
