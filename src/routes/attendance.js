@@ -2297,7 +2297,7 @@ router.get('/principal/all-classes-summary', authenticate, async (req, res) => {
                 if (recordsError) throw recordsError;
 
                 const total = records.length;
-                const present = records.filter(r => r.status === 'full_day').length;
+                const present = records.filter(r => r.status === 'present').length;
                 const absent = records.filter(r => r.status === 'absent').length;
                 const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
 
@@ -2415,7 +2415,7 @@ router.get('/principal/class/:class_division_id', authenticate, async (req, res)
 
         // Calculate summary
         const total = studentRecords.length;
-        const present = studentRecords.filter(r => r.status === 'full_day').length;
+        const present = studentRecords.filter(r => r.status === 'present').length;
         const absent = studentRecords.filter(r => r.status === 'absent').length;
         const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
 
@@ -2514,7 +2514,7 @@ router.get('/principal/date-range', authenticate, async (req, res) => {
                 if (recordsError) throw recordsError;
 
                 const total = records.length;
-                const present = records.filter(r => r.status === 'full_day').length;
+                const present = records.filter(r => r.status === 'present').length;
                 const absent = records.filter(r => r.status === 'absent').length;
                 const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
 
@@ -2740,7 +2740,7 @@ router.get('/teacher/summary', authenticate, async (req, res) => {
                             .eq('daily_attendance_id', dailyRecord.id);
 
                         if (studentRecords && studentRecords.length > 0) {
-                            const presentCount = studentRecords.filter(r => r.status === 'full_day').length;
+                            const presentCount = studentRecords.filter(r => r.status === 'present').length;
                             const absentCount = studentRecords.filter(r => r.status === 'absent').length;
                             const dayTotal = studentRecords.length;
                             const dayPercentage = dayTotal > 0 ? Math.round((presentCount / dayTotal) * 100) : 0;
