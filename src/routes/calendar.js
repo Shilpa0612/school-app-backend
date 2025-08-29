@@ -3,6 +3,23 @@ import { body, validationResult } from 'express-validator';
 import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate } from '../middleware/auth.js';
 
+// Import getActiveAcademicYear function from attendance routes
+async function getActiveAcademicYear() {
+    try {
+        const { data: academicYear, error } = await adminSupabase
+            .from('academic_years')
+            .select('*')
+            .eq('is_active', true)
+            .single();
+
+        if (error) throw error;
+        return academicYear;
+    } catch (error) {
+        console.error('Error getting active academic year:', error);
+        throw error;
+    }
+}
+
 const router = express.Router();
 
 // Create event
@@ -196,6 +213,52 @@ router.post('/events',
                     }
                 } catch (err) {
                     console.log('Could not fetch class details for multi-class event:', err.message);
+                }
+            }
+
+            // Auto-sync to attendance holidays if this is a holiday/exam event (optimized inline sync)
+            if (['holiday', 'exam'].includes(event_category)) {
+                try {
+                    const eventDate = data.event_date.split('T')[0];
+
+                    // Check if holiday already exists
+                    const { data: existingHoliday, error: checkError } = await adminSupabase
+                        .from('attendance_holidays')
+                        .select('id')
+                        .eq('holiday_date', eventDate)
+                        .eq('academic_year_id', (await getActiveAcademicYear()).id)
+                        .single();
+
+                    if (existingHoliday) {
+                        // Update existing holiday
+                        await adminSupabase
+                            .from('attendance_holidays')
+                            .update({
+                                holiday_name: data.title,
+                                holiday_type: event_category === 'exam' ? 'exam' :
+                                    (data.event_type === 'school_wide' ? 'school' : 'class_specific'),
+                                description: data.description,
+                                updated_at: new Date().toISOString()
+                            })
+                            .eq('id', existingHoliday.id);
+                    } else {
+                        // Create new holiday
+                        await adminSupabase
+                            .from('attendance_holidays')
+                            .insert([{
+                                holiday_date: eventDate,
+                                holiday_name: data.title,
+                                holiday_type: event_category === 'exam' ? 'exam' :
+                                    (data.event_type === 'school_wide' ? 'school' : 'class_specific'),
+                                description: data.description,
+                                academic_year_id: (await getActiveAcademicYear()).id
+                            }]);
+                    }
+
+                    console.log('Auto-synced calendar event to holiday:', data.title);
+                } catch (syncError) {
+                    console.error('Error auto-syncing calendar event to holiday:', syncError);
+                    // Don't fail the main request if sync fails
                 }
             }
 
@@ -1111,6 +1174,52 @@ router.put('/events/:id',
                 });
             }
 
+            // Auto-sync to attendance holidays if this is a holiday/exam event (optimized inline sync)
+            if (['holiday', 'exam'].includes(data.event_category)) {
+                try {
+                    const eventDate = data.event_date.split('T')[0];
+
+                    // Check if holiday already exists
+                    const { data: existingHoliday, error: checkError } = await adminSupabase
+                        .from('attendance_holidays')
+                        .select('id')
+                        .eq('holiday_date', eventDate)
+                        .eq('academic_year_id', (await getActiveAcademicYear()).id)
+                        .single();
+
+                    if (existingHoliday) {
+                        // Update existing holiday
+                        await adminSupabase
+                            .from('attendance_holidays')
+                            .update({
+                                holiday_name: data.title,
+                                holiday_type: data.event_category === 'exam' ? 'exam' :
+                                    (data.event_type === 'school_wide' ? 'school' : 'class_specific'),
+                                description: data.description,
+                                updated_at: new Date().toISOString()
+                            })
+                            .eq('id', existingHoliday.id);
+                    } else {
+                        // Create new holiday
+                        await adminSupabase
+                            .from('attendance_holidays')
+                            .insert([{
+                                holiday_date: eventDate,
+                                holiday_name: data.title,
+                                holiday_type: data.event_category === 'exam' ? 'exam' :
+                                    (data.event_type === 'school_wide' ? 'school' : 'class_specific'),
+                                description: data.description,
+                                academic_year_id: (await getActiveAcademicYear()).id
+                            }]);
+                    }
+
+                    console.log('Auto-synced updated calendar event to holiday:', data.title);
+                } catch (syncError) {
+                    console.error('Error auto-syncing updated calendar event to holiday:', syncError);
+                    // Don't fail the main request if sync fails
+                }
+            }
+
             res.json({
                 status: 'success',
                 data: { event: data }
@@ -1131,7 +1240,7 @@ router.delete('/events/:id',
             // First check if user has permission to delete this event
             const { data: event, error: fetchError } = await adminSupabase
                 .from('calendar_events')
-                .select('event_type, class_division_id, created_by')
+                .select('event_type, class_division_id, created_by, event_category')
                 .eq('id', id)
                 .single();
 
@@ -1156,6 +1265,38 @@ router.delete('/events/:id',
                 .eq('id', id);
 
             if (error) throw error;
+
+            // Auto-sync to attendance holidays if this was a holiday/exam event (optimized inline sync)
+            if (['holiday', 'exam'].includes(event.event_category)) {
+                try {
+                    const eventDate = new Date(event.event_date).toISOString().split('T')[0];
+
+                    // Check if there are other holiday/exam events for this date
+                    const { data: otherEvents, error: otherError } = await adminSupabase
+                        .from('calendar_events')
+                        .select('id')
+                        .eq('event_date::date', eventDate)
+                        .in('event_category', ['holiday', 'exam'])
+                        .eq('status', 'approved')
+                        .neq('id', id);
+
+                    // If no other events, delete the holiday
+                    if (!otherEvents || otherEvents.length === 0) {
+                        await adminSupabase
+                            .from('attendance_holidays')
+                            .delete()
+                            .eq('holiday_date', eventDate)
+                            .eq('academic_year_id', (await getActiveAcademicYear()).id);
+
+                        console.log('Auto-synced deleted calendar event to holiday:', event.title);
+                    } else {
+                        console.log('Event deleted but other holiday events exist for this date');
+                    }
+                } catch (syncError) {
+                    console.error('Error auto-syncing deleted calendar event to holiday:', syncError);
+                    // Don't fail the main request if sync fails
+                }
+            }
 
             res.json({
                 status: 'success',

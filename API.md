@@ -4601,38 +4601,6 @@ POST /api/chat/unsubscribe
 
 ```javascript
 const ws = new WebSocket("ws://localhost:3000?token=YOUR_JWT_TOKEN");
-
-ws.onopen = () => {
-  console.log("Connected to WebSocket");
-
-  // Subscribe to a specific thread
-  ws.send(
-    JSON.stringify({
-      type: "subscribe_thread",
-      thread_id: "uuid",
-    })
-  );
-};
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-
-  switch (data.type) {
-    case "new_message":
-      console.log("New message:", data.message);
-      break;
-    case "message_read":
-      console.log("Message read:", data.thread_id);
-      break;
-    case "pong":
-      console.log("Ping response");
-      break;
-  }
-};
-
-ws.onclose = () => {
-  console.log("WebSocket connection closed");
-};
 ```
 
 #### WebSocket Message Types
