@@ -402,7 +402,21 @@ router.post('/daily', authenticate, async (req, res) => {
     try {
         const { class_division_id, attendance_date, present_students } = req.body;
 
+        // Debug logging
+        logger.info('Attendance request received:', {
+            class_division_id,
+            attendance_date,
+            present_students_count: present_students?.length || 0,
+            user_id: req.user.id,
+            user_role: req.user.role
+        });
+
         if (!class_division_id || !attendance_date || !present_students) {
+            logger.error('Missing required fields:', {
+                class_division_id: !!class_division_id,
+                attendance_date: !!attendance_date,
+                present_students: !!present_students
+            });
             return res.status(400).json({
                 status: 'error',
                 message: 'class_division_id, attendance_date, and present_students are required'
