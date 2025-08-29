@@ -195,9 +195,19 @@ async function isCalendarEventHoliday(date, classDivisionId = null) {
 // Helper function to create or get daily attendance record (simplified - no periods)
 async function createOrGetDailyAttendance(classDivisionId, date, teacherId = null) {
     try {
+        logger.info('createOrGetDailyAttendance called:', {
+            classDivisionId,
+            date,
+            teacherId
+        });
+
         let academicYear;
         try {
             academicYear = await getActiveAcademicYear();
+            logger.info('Active academic year found:', {
+                id: academicYear.id,
+                year_name: academicYear.year_name
+            });
         } catch (error) {
             // Fallback: get academic year from class division
             logger.warn('Falling back to get academic year from class division');
@@ -224,8 +234,36 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
             .eq('attendance_date', date)
             .single();
 
+        logger.info('Existing attendance check:', {
+            existingAttendance: !!existingAttendance,
+            error: checkError?.message
+        });
+
         if (existingAttendance) {
-            return existingAttendance;
+            logger.info('Found existing attendance, checking for student records:', existingAttendance.id);
+
+            // Check if student records exist for this attendance
+            const { data: existingStudentRecords, error: studentCheckError } = await adminSupabase
+                .from('student_attendance_records')
+                .select('student_id')
+                .eq('daily_attendance_id', existingAttendance.id);
+
+            if (studentCheckError) {
+                logger.error('Error checking existing student records:', studentCheckError);
+            } else {
+                logger.info('Existing student records found:', {
+                    count: existingStudentRecords?.length || 0
+                });
+            }
+
+            // If no student records exist, we need to create them
+            if (!existingStudentRecords || existingStudentRecords.length === 0) {
+                logger.info('No student records found, will create them');
+                // We'll continue to create student records below
+            } else {
+                logger.info('Student records already exist, returning existing attendance');
+                return existingAttendance;
+            }
         }
 
         // Check for holidays
@@ -255,29 +293,107 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
             return holidayAttendance;
         }
 
-        // Create new daily attendance record
-        const { data: dailyAttendance, error: createError } = await adminSupabase
-            .from('daily_attendance')
-            .insert([{
-                class_division_id: classDivisionId,
-                academic_year_id: academicYear.id,
-                attendance_date: date,
-                marked_by: null // Will be updated when teacher marks attendance
-            }])
-            .select()
-            .single();
+        // Create new daily attendance record (if not already existing)
+        let dailyAttendance;
+        if (!existingAttendance) {
+            const { data: newAttendance, error: createError } = await adminSupabase
+                .from('daily_attendance')
+                .insert([{
+                    class_division_id: classDivisionId,
+                    academic_year_id: academicYear.id,
+                    attendance_date: date,
+                    marked_by: null // Will be updated when teacher marks attendance
+                }])
+                .select()
+                .single();
 
-        if (createError) throw createError;
+            if (createError) throw createError;
+            dailyAttendance = newAttendance;
 
-        // Get all students in the class
-        const { data: students, error: studentsError } = await adminSupabase
+            logger.info('New daily attendance created:', {
+                id: dailyAttendance.id,
+                class_division_id: dailyAttendance.class_division_id,
+                academic_year_id: dailyAttendance.academic_year_id,
+                attendance_date: dailyAttendance.attendance_date
+            });
+        } else {
+            dailyAttendance = existingAttendance;
+            logger.info('Using existing daily attendance:', {
+                id: dailyAttendance.id,
+                class_division_id: dailyAttendance.class_division_id,
+                academic_year_id: dailyAttendance.academic_year_id,
+                attendance_date: dailyAttendance.attendance_date
+            });
+        }
+
+        // Get all students in the class (try with academic year first, then without if no results)
+        let students = [];
+        let studentsError = null;
+
+        // First try with academic year
+        const { data: studentsWithYear, error: errorWithYear } = await adminSupabase
             .from('student_academic_records')
-            .select('student_id')
+            .select('student_id, academic_year_id')
             .eq('class_division_id', classDivisionId)
             .eq('academic_year_id', academicYear.id)
             .eq('status', 'ongoing');
 
+        logger.info('Students query with academic year:', {
+            class_division_id: classDivisionId,
+            academic_year_id: academicYear.id,
+            students_found: studentsWithYear?.length || 0,
+            error: errorWithYear?.message
+        });
+
+        if (errorWithYear) {
+            studentsError = errorWithYear;
+        } else if (studentsWithYear && studentsWithYear.length > 0) {
+            students = studentsWithYear;
+        } else {
+            // If no students found with academic year, try without academic year filter
+            logger.warn('No students found with academic year, trying without academic year filter');
+            const { data: studentsWithoutYear, error: errorWithoutYear } = await adminSupabase
+                .from('student_academic_records')
+                .select('student_id, academic_year_id')
+                .eq('class_division_id', classDivisionId)
+                .eq('status', 'ongoing');
+
+            logger.info('Students query without academic year:', {
+                class_division_id: classDivisionId,
+                students_found: studentsWithoutYear?.length || 0,
+                error: errorWithoutYear?.message,
+                students_with_different_years: studentsWithoutYear?.map(s => ({
+                    student_id: s.student_id,
+                    academic_year_id: s.academic_year_id
+                })) || []
+            });
+
+            if (errorWithoutYear) {
+                studentsError = errorWithoutYear;
+            } else {
+                students = studentsWithoutYear || [];
+            }
+        }
+
         if (studentsError) throw studentsError;
+
+        // Debug logging
+        logger.info('Students found in class:', {
+            class_division_id: classDivisionId,
+            academic_year_id: academicYear.id,
+            academic_year_name: academicYear.year_name,
+            students_count: students?.length || 0,
+            teacher_id: teacherId,
+            students: students?.map(s => s.student_id) || []
+        });
+
+        // If no students found, log a warning
+        if (!students || students.length === 0) {
+            logger.warn('No students found in class for attendance creation', {
+                class_division_id: classDivisionId,
+                academic_year_id: academicYear.id
+            });
+        }
 
         // Create default absent records for all students (only if they don't already exist)
         if (students && students.length > 0) {
@@ -291,11 +407,23 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
 
                 if (checkError) throw checkError;
 
+                logger.info('Existing attendance records check:', {
+                    daily_attendance_id: dailyAttendance.id,
+                    existing_records_count: existingRecords?.length || 0,
+                    existing_student_ids: existingRecords?.map(r => r.student_id) || []
+                });
+
                 // Only create records for students who don't already have attendance records
                 const existingStudentIds = existingRecords ? existingRecords.map(r => r.student_id) : [];
                 const studentsNeedingRecords = students.filter(student =>
                     !existingStudentIds.includes(student.student_id)
                 );
+
+                logger.info('Creating attendance records:', {
+                    total_students: students.length,
+                    existing_records: existingStudentIds.length,
+                    students_needing_records: studentsNeedingRecords.length
+                });
 
                 if (studentsNeedingRecords.length > 0) {
                     const defaultRecords = studentsNeedingRecords.map(student => ({
@@ -310,7 +438,14 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
                         .from('student_attendance_records')
                         .insert(defaultRecords);
 
-                    if (recordsError) throw recordsError;
+                    if (recordsError) {
+                        logger.error('Error creating attendance records:', recordsError);
+                        throw recordsError;
+                    }
+
+                    logger.info('Successfully created attendance records for students');
+                } else {
+                    logger.info('No new attendance records needed - all students already have records');
                 }
             } else {
                 logger.warn('No teacher ID provided, skipping default student attendance records creation');
