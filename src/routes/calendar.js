@@ -278,7 +278,7 @@ router.post('/events',
     }
 );
 
-// Get events
+// Get events (ULTRA-OPTIMIZED VERSION)
 router.get('/events',
     authenticate,
     async (req, res, next) => {
@@ -293,286 +293,109 @@ router.get('/events',
                 use_ist = 'true'
             } = req.query;
 
-            let query;
+            // Try to use the optimized database function first
+            let events = [];
+            let error = null;
 
-            // Filter events based on user role and approval status
-            let statusFilter = 'approved'; // Default: only show approved events
+            try {
+                const result = await adminSupabase.rpc('get_optimized_calendar_events', {
+                    p_start_date: start_date || null,
+                    p_end_date: end_date || null,
+                    p_event_type: event_type || null,
+                    p_event_category: event_category || null,
+                    p_status: status || null,
+                    p_class_division_id: class_division_id || null,
+                    p_user_role: req.user.role,
+                    p_user_id: req.user.id
+                });
+                events = result.data || [];
+                error = result.error;
+            } catch (rpcError) {
+                // Fallback to optimized direct query if function doesn't exist
+                console.log('Using fallback optimized query...');
 
-            // If status parameter is provided, use it (with role-based validation)
-            if (status) {
-                if (['admin', 'principal'].includes(req.user.role)) {
-                    // Admin/Principal can filter by any status
-                    statusFilter = status;
-                } else if (req.user.role === 'teacher') {
-                    // Teachers can filter by approved, pending, or rejected
-                    if (['approved', 'pending', 'rejected'].includes(status)) {
+                // Determine status filter based on user role
+                let statusFilter = 'approved';
+                if (status) {
+                    if (['admin', 'principal'].includes(req.user.role)) {
                         statusFilter = status;
-                    } else {
-                        return res.status(400).json({
-                            status: 'error',
-                            message: 'Invalid status filter. Teachers can only filter by: approved, pending, rejected'
-                        });
-                    }
-                } else {
-                    // Other roles can only see approved events
-                    if (status !== 'approved') {
+                    } else if (req.user.role === 'teacher' && ['approved', 'pending', 'rejected'].includes(status)) {
+                        statusFilter = status;
+                    } else if (status !== 'approved') {
                         return res.status(400).json({
                             status: 'error',
                             message: 'You can only view approved events'
                         });
                     }
-                    statusFilter = status;
+                } else if (['admin', 'principal'].includes(req.user.role)) {
+                    statusFilter = null; // Show all events
                 }
-            } else {
-                // No status parameter provided - use role-based defaults
-                if (['admin', 'principal'].includes(req.user.role)) {
-                    // Admin/Principal can see all events (approved, pending, rejected)
-                    statusFilter = null;
-                } else if (req.user.role === 'teacher') {
-                    // Teachers can see approved events + their own pending events
-                    statusFilter = null; // We'll handle this in post-processing
+
+                // Build optimized query with joins
+                let query = adminSupabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by(id, full_name, role),
+                        approver:approved_by(id, full_name, role),
+                        class_division:class_division_id(
+                            id,
+                            division,
+                            class_level:class_levels(name, sequence_number)
+                        )
+                    `);
+
+                // Apply filters
+                if (statusFilter) {
+                    query = query.eq('status', statusFilter);
                 }
-                // Parents and other roles only see approved events (default)
-            }
-
-            // Use adminSupabase to bypass RLS policies and get all events
-            query = adminSupabase
-                .from('calendar_events')
-                .select('*');
-
-            // Debug: Log the base query
-            console.log(`🔍 Base query created for calendar_events table`);
-
-            // Debug: Log the base query
-            console.log(`🔍 Base query created for calendar_events table`);
-
-            // Apply status filter
-            if (statusFilter) {
-                query = query.eq('status', statusFilter);
-            }
-
-            // Apply filters
-            if (start_date) {
-                query = query.gte('event_date', start_date);
-            }
-            if (end_date) {
-                query = query.lte('event_date', end_date);
-            }
-            if (class_division_id) {
-                // Filter by class_division_id OR by class_divisions containing the ID
-                query = query.or(`class_division_id.eq.${class_division_id},class_divisions.cs.{${class_division_id}}`);
-            }
-            if (event_type) {
-                query = query.eq('event_type', event_type);
-            }
-            if (event_category) {
-                query = query.eq('event_category', event_category);
-            }
-
-            query = query.order('event_date', { ascending: true });
-
-            // Debug: Log the query being executed
-            console.log(`🔍 Status filter: ${statusFilter}`);
-            console.log(`🔍 Final query filters applied`);
-
-            // Add a large limit to ensure we get all events
-            query = query.limit(1000);
-            console.log(`🔍 Added limit(1000) to ensure all events are returned`);
-
-            const { data, error } = await query;
-
-            if (error) throw error;
-
-            // Debug: Log raw data from database
-            console.log(`🔍 Raw data from database: ${data?.length || 0} events`);
-            console.log(`🔍 Query parameters:`, { start_date, end_date, class_division_id, event_type, event_category, status });
-
-            // Debug: Check if the missing event is in raw data
-            const missingEventInRaw = data?.find(e => e.id === '94f9c3db-4a32-4b82-9e7e-d2af0b034106');
-            if (missingEventInRaw) {
-                console.log(`🔍 Found missing event in raw data:`, {
-                    id: missingEventInRaw.id,
-                    title: missingEventInRaw.title,
-                    status: missingEventInRaw.status,
-                    event_type: missingEventInRaw.event_type,
-                    class_divisions: missingEventInRaw.class_divisions
-                });
-            } else {
-                console.log(`❌ Missing event not found in raw data`);
-            }
-
-            // Post-process events to handle multi-class events and add class information
-            let processedEvents = [];
-            let skippedEvents = [];
-
-            console.log(`🔍 Starting to process ${data?.length || 0} events`);
-
-            for (const event of data || []) {
-                try {
-                    let processedEvent = { ...event };
-
-                    // Use the new consolidated class_divisions column
-                    let classDivisions = [];
-                    if (event.class_divisions) {
-                        // Handle both JSONB arrays and JSON strings
-                        if (typeof event.class_divisions === 'string') {
-                            try {
-                                classDivisions = JSON.parse(event.class_divisions);
-                            } catch (e) {
-                                console.log('Error parsing class_divisions:', event.class_divisions);
-                                classDivisions = [];
-                            }
-                        } else if (Array.isArray(event.class_divisions)) {
-                            classDivisions = event.class_divisions;
-                        }
-                    }
-                    const isMultiClass = classDivisions.length > 1;
-                    const isSingleClass = classDivisions.length === 1;
-                    const isSchoolWide = classDivisions.length === 0 && event.event_type === 'school_wide';
-
-                    if (isMultiClass) {
-                        // Multi-class event
-                        processedEvent.class_info = {
-                            type: 'multi_class',
-                            class_count: classDivisions.length,
-                            class_ids: classDivisions,
-                            message: `Applies to ${classDivisions.length} classes`
-                        };
-                    } else if (isSingleClass) {
-                        // Single class event - fetch class info separately
-                        if (classDivisions[0]) {
-                            const { data: classData } = await adminSupabase
-                                .from('class_divisions')
-                                .select(`
-                                id,
-                                division,
-                                academic_year:academic_year_id (year_name),
-                                class_level:class_level_id (name)
-                            `)
-                                .eq('id', classDivisions[0])
-                                .single();
-
-                            processedEvent.class_info = classData || {
-                                type: 'single_class',
-                                class_count: 1,
-                                message: 'Class information not available'
-                            };
-                        } else {
-                            processedEvent.class_info = {
-                                type: 'single_class',
-                                class_count: 1,
-                                message: 'Class information not available'
-                            };
-                        }
-                    } else if (isSchoolWide) {
-                        // School-wide event
-                        processedEvent.class_info = {
-                            type: 'school_wide',
-                            class_count: 0,
-                            message: 'Applies to all classes'
-                        };
-                    } else {
-                        // Handle events with no class information or empty class_divisions
-                        if (event.event_type === 'school_wide') {
-                            processedEvent.class_info = {
-                                type: 'school_wide',
-                                class_count: 0,
-                                message: 'Applies to all classes'
-                            };
-                        } else if (event.class_division_id) {
-                            // Single class event with class_division_id but no class_divisions
-                            const { data: classData } = await adminSupabase
-                                .from('class_divisions')
-                                .select(`
-                                id,
-                                division,
-                                academic_year:academic_year_id (year_name),
-                                class_level:class_level_id (name)
-                            `)
-                                .eq('id', event.class_division_id)
-                                .single();
-
-                            processedEvent.class_info = classData || {
-                                type: 'single_class',
-                                class_count: 1,
-                                message: 'Class information not available'
-                            };
-                        } else {
-                            // Fallback for other cases
-                            processedEvent.class_info = {
-                                type: 'unknown',
-                                class_count: 0,
-                                message: 'Class information not available'
-                            };
-                        }
-                    }
-
-                    processedEvents.push(processedEvent);
-                } catch (error) {
-                    console.log(`❌ Error processing event ${event.id}:`, error.message);
-                    skippedEvents.push({ id: event.id, title: event.title, error: error.message });
+                if (start_date) {
+                    query = query.gte('event_date', start_date);
                 }
-            }
+                if (end_date) {
+                    query = query.lte('event_date', end_date);
+                }
+                if (class_division_id) {
+                    query = query.or(`class_division_id.eq.${class_division_id},class_divisions.cs.{${class_division_id}}`);
+                }
+                if (event_type) {
+                    query = query.eq('event_type', event_type);
+                }
+                if (event_category) {
+                    query = query.eq('event_category', event_category);
+                }
 
-            console.log(`🔍 Processing complete: ${processedEvents.length} processed, ${skippedEvents.length} skipped`);
-            if (skippedEvents.length > 0) {
-                console.log(`❌ Skipped events:`, skippedEvents);
-            }
+                query = query.order('event_date', { ascending: true }).limit(1000);
 
-            // Post-process to filter by status
-            let filteredEvents = processedEvents;
-            if (statusFilter) {
-                filteredEvents = filteredEvents.filter(event => event.status === statusFilter);
-            }
+                const result = await query;
+                events = result.data || [];
+                error = result.error;
 
-            // Debug: Log the number of events before teacher filtering
-            console.log(`🔍 Before teacher filtering: ${processedEvents.length} events`);
-            console.log(`👤 User role: ${req.user.role}, User ID: ${req.user.id}`);
+                // Apply teacher filtering if needed
+                if (req.user.role === 'teacher' && !status && !error) {
+                    const { data: assignments } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('class_division_id')
+                        .eq('teacher_id', req.user.id)
+                        .eq('is_active', true);
 
-            // Debug: Check for the specific missing event
-            const missingEvent = processedEvents.find(e => e.id === '94f9c3db-4a32-4b82-9e7e-d2af0b034106');
-            if (missingEvent) {
-                console.log(`🔍 Found missing event:`, {
-                    id: missingEvent.id,
-                    title: missingEvent.title,
-                    status: missingEvent.status,
-                    created_by: missingEvent.created_by,
-                    event_type: missingEvent.event_type,
-                    is_multi_class: missingEvent.is_multi_class,
-                    class_divisions: missingEvent.class_divisions
-                });
-            } else {
-                console.log(`❌ Missing event not found in processed events`);
-            }
+                    const teacherClassIds = assignments?.map(a => a.class_division_id) || [];
 
-            // Special handling for teachers when no specific status filter is provided
-            if (req.user.role === 'teacher' && !status) {
-                console.log(`🔍 Applying teacher filtering logic`);
-                // Get teacher's assigned classes to include class-specific events
-                const { data: teacherAssignments, error: assignmentsError } = await supabase
-                    .from('class_teacher_assignments')
-                    .select('class_division_id')
-                    .eq('teacher_id', req.user.id)
-                    .eq('is_active', true);
-
-                if (!assignmentsError) {
-                    const assignedClassIds = teacherAssignments?.map(assignment => assignment.class_division_id) || [];
-
-                    filteredEvents = filteredEvents.filter(event => {
+                    events = events.filter(event => {
                         // Show approved events
                         if (event.status === 'approved') return true;
 
                         // Show teacher's own pending events
                         if (event.status === 'pending' && event.created_by === req.user.id) return true;
 
-                        // Show school-wide events (regardless of status for teachers)
+                        // Show school-wide events
                         if (event.event_type === 'school_wide') return true;
 
-                        // Show events for teacher's assigned classes (single class)
-                        if (event.class_division_id && assignedClassIds.includes(event.class_division_id)) return true;
+                        // Show events for teacher's assigned classes
+                        if (event.class_division_id && teacherClassIds.includes(event.class_division_id)) return true;
 
-                        // Show events for teacher's assigned classes (multi-class)
-                        if (event.is_multi_class && event.class_divisions) {
+                        // Show multi-class events for teacher's classes
+                        if (event.class_divisions) {
                             let classDivisions = [];
                             if (typeof event.class_divisions === 'string') {
                                 try {
@@ -583,39 +406,75 @@ router.get('/events',
                             } else if (Array.isArray(event.class_divisions)) {
                                 classDivisions = event.class_divisions;
                             }
-
-                            return classDivisions.some(classId => assignedClassIds.includes(classId));
+                            return classDivisions.some(classId => teacherClassIds.includes(classId));
                         }
 
                         return false;
                     });
-                } else {
-                    // Fallback: show approved events + teacher's own pending events + school-wide events
-                    filteredEvents = filteredEvents.filter(event =>
-                        event.status === 'approved' ||
-                        (event.status === 'pending' && event.created_by === req.user.id) ||
-                        event.event_type === 'school_wide'
-                    );
                 }
             }
 
-            // Debug: Log the number of events after teacher filtering
-            console.log(`🔍 After teacher filtering: ${filteredEvents.length} events`);
+            if (error) throw error;
 
-            // Add status fields if they're missing (for backward compatibility)
-            filteredEvents = filteredEvents.map(event => ({
-                ...event,
-                status: event.status || 'approved', // Default to approved if missing
-                approved_by: event.approved_by || null,
-                approved_at: event.approved_at || null,
-                rejection_reason: event.rejection_reason || null
-            }));
+            // Minimal post-processing for class info
+            const processedEvents = events.map(event => {
+                let classDivisions = [];
+                if (event.class_divisions) {
+                    if (typeof event.class_divisions === 'string') {
+                        try {
+                            classDivisions = JSON.parse(event.class_divisions);
+                        } catch (e) {
+                            classDivisions = [];
+                        }
+                    } else if (Array.isArray(event.class_divisions)) {
+                        classDivisions = event.class_divisions;
+                    }
+                }
 
-            console.log(`🔍 Final response: ${filteredEvents.length} events`);
+                // Set class info based on type
+                let classInfo;
+                if (classDivisions.length > 1) {
+                    classInfo = {
+                        type: 'multi_class',
+                        class_count: classDivisions.length,
+                        class_ids: classDivisions,
+                        message: `Applies to ${classDivisions.length} classes`
+                    };
+                } else if (classDivisions.length === 1) {
+                    classInfo = {
+                        type: 'single_class',
+                        class_count: 1,
+                        message: 'Class-specific event'
+                    };
+                } else if (event.event_type === 'school_wide') {
+                    classInfo = {
+                        type: 'school_wide',
+                        class_count: 0,
+                        message: 'Applies to all classes'
+                    };
+                } else if (event.class_division) {
+                    classInfo = event.class_division;
+                } else {
+                    classInfo = {
+                        type: 'unknown',
+                        class_count: 0,
+                        message: 'Class information not available'
+                    };
+                }
+
+                return {
+                    ...event,
+                    class_info: classInfo,
+                    status: event.status || 'approved',
+                    approved_by: event.approved_by || null,
+                    approved_at: event.approved_at || null,
+                    rejection_reason: event.rejection_reason || null
+                };
+            });
 
             res.json({
                 status: 'success',
-                data: { events: filteredEvents }
+                data: { events: processedEvents }
             });
         } catch (error) {
             next(error);
@@ -1351,7 +1210,7 @@ router.get('/events/class/:class_division_id',
                         class_level:class_level_id (name)
                     )
                 `)
-                .or(`class_division_id.eq.${class_division_id},class_division_ids.cs.{${class_division_id}}`)
+                .or(`class_division_id.eq.${class_division_id},class_divisions.cs.{${class_division_id}}`)
                 .or(`event_type.eq.class_specific`);
 
             if (start_date) {
