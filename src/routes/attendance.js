@@ -279,23 +279,39 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
 
         if (studentsError) throw studentsError;
 
-        // Create default absent records for all students
+        // Create default absent records for all students (only if they don't already exist)
         if (students && students.length > 0) {
             // Only create default records if we have a teacher ID
             if (teacherId) {
-                const defaultRecords = students.map(student => ({
-                    daily_attendance_id: dailyAttendance.id,
-                    student_id: student.student_id,
-                    status: 'absent',
-                    remarks: 'Not marked by teacher - default status',
-                    marked_by: teacherId
-                }));
-
-                const { error: recordsError } = await adminSupabase
+                // Check if attendance records already exist for this daily attendance
+                const { data: existingRecords, error: checkError } = await adminSupabase
                     .from('student_attendance_records')
-                    .insert(defaultRecords);
+                    .select('student_id')
+                    .eq('daily_attendance_id', dailyAttendance.id);
 
-                if (recordsError) throw recordsError;
+                if (checkError) throw checkError;
+
+                // Only create records for students who don't already have attendance records
+                const existingStudentIds = existingRecords ? existingRecords.map(r => r.student_id) : [];
+                const studentsNeedingRecords = students.filter(student =>
+                    !existingStudentIds.includes(student.student_id)
+                );
+
+                if (studentsNeedingRecords.length > 0) {
+                    const defaultRecords = studentsNeedingRecords.map(student => ({
+                        daily_attendance_id: dailyAttendance.id,
+                        student_id: student.student_id,
+                        status: 'absent',
+                        remarks: 'Not marked by teacher - default status',
+                        marked_by: teacherId
+                    }));
+
+                    const { error: recordsError } = await adminSupabase
+                        .from('student_attendance_records')
+                        .insert(defaultRecords);
+
+                    if (recordsError) throw recordsError;
+                }
             } else {
                 logger.warn('No teacher ID provided, skipping default student attendance records creation');
             }
