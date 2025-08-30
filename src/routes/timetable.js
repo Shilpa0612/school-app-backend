@@ -1,988 +1,1136 @@
-// import express from 'express';
-// import { body, validationResult } from 'express-validator';
-// import { adminSupabase } from '../config/supabase.js';
-// import { authenticate, authorize } from '../middleware/auth.js';
-// import { logger } from '../utils/logger.js';
-
-// const router = express.Router();
-
-// // ==================== PERIODS MANAGEMENT ====================
-
-// // Create period
-// router.post('/periods',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     [
-//         body('name').isString().trim().notEmpty().withMessage('Period name is required'),
-//         body('start_time').matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).withMessage('Start time must be in HH:MM:SS format'),
-//         body('end_time').matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).withMessage('End time must be in HH:MM:SS format'),
-//         body('period_type').optional().isIn(['academic', 'break', 'lunch', 'assembly', 'other']).withMessage('Invalid period type'),
-//         body('sequence_number').isInt({ min: 1 }).withMessage('Sequence number must be a positive integer')
-//     ],
-//     async (req, res, next) => {
-//         try {
-//             const errors = validationResult(req);
-//             if (!errors.isEmpty()) {
-//                 return res.status(400).json({ errors: errors.array() });
-//             }
-
-//             const { name, start_time, end_time, period_type = 'academic', sequence_number } = req.body;
-
-//             // Check for time conflicts
-//             const { data: conflictingPeriods, error: conflictError } = await adminSupabase
-//                 .from('periods')
-//                 .select('id, name, start_time, end_time')
-//                 .eq('is_active', true)
-//                 .or(`start_time.lt.${end_time},end_time.gt.${start_time}`);
-
-//             if (conflictError) {
-//                 logger.error('Error checking period conflicts:', conflictError);
-//                 return res.status(500).json({
-//                     status: 'error',
-//                     message: 'Failed to check period conflicts'
-//                 });
-//             }
-
-//             if (conflictingPeriods && conflictingPeriods.length > 0) {
-//                 return res.status(400).json({
-//                     status: 'error',
-//                     message: 'Period time conflicts with existing periods',
-//                     conflicts: conflictingPeriods
-//                 });
-//             }
-
-//             const { data, error } = await adminSupabase
-//                 .from('periods')
-//                 .insert([{
-//                     name,
-//                     start_time,
-//                     end_time,
-//                     period_type,
-//                     sequence_number
-//                 }])
-//                 .select()
-//                 .single();
-
-//             if (error) throw error;
-
-//             res.status(201).json({
-//                 status: 'success',
-//                 data: { period: data }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Get all periods
-// router.get('/periods',
-//     authenticate,
-//     async (req, res, next) => {
-//         try {
-//             const { include_inactive = 'false' } = req.query;
-
-//             let query = adminSupabase
-//                 .from('periods')
-//                 .select('*')
-//                 .order('sequence_number');
-
-//             if (include_inactive !== 'true') {
-//                 query = query.eq('is_active', true);
-//             }
-
-//             const { data, error } = await query;
-
-//             if (error) throw error;
-
-//             res.json({
-//                 status: 'success',
-//                 data: { periods: data }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Update period
-// router.put('/periods/:id',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     [
-//         body('name').optional().isString().trim().notEmpty().withMessage('Period name cannot be empty'),
-//         body('start_time').optional().matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).withMessage('Start time must be in HH:MM:SS format'),
-//         body('end_time').optional().matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]$/).withMessage('End time must be in HH:MM:SS format'),
-//         body('period_type').optional().isIn(['academic', 'break', 'lunch', 'assembly', 'other']).withMessage('Invalid period type'),
-//         body('sequence_number').optional().isInt({ min: 1 }).withMessage('Sequence number must be a positive integer'),
-//         body('is_active').optional().isBoolean().withMessage('is_active must be boolean')
-//     ],
-//     async (req, res, next) => {
-//         try {
-//             const errors = validationResult(req);
-//             if (!errors.isEmpty()) {
-//                 return res.status(400).json({ errors: errors.array() });
-//             }
-
-//             const { id } = req.params;
-//             const updates = req.body;
-
-//             // If updating times, check for conflicts
-//             if (updates.start_time || updates.end_time) {
-//                 const { data: currentPeriod } = await adminSupabase
-//                     .from('periods')
-//                     .select('start_time, end_time')
-//                     .eq('id', id)
-//                     .single();
-
-//                 const startTime = updates.start_time || currentPeriod?.start_time;
-//                 const endTime = updates.end_time || currentPeriod?.end_time;
-
-//                 const { data: conflictingPeriods, error: conflictError } = await adminSupabase
-//                     .from('periods')
-//                     .select('id, name, start_time, end_time')
-//                     .eq('is_active', true)
-//                     .neq('id', id)
-//                     .or(`start_time.lt.${endTime},end_time.gt.${startTime}`);
-
-//                 if (conflictError) {
-//                     logger.error('Error checking period conflicts:', conflictError);
-//                     return res.status(500).json({
-//                         status: 'error',
-//                         message: 'Failed to check period conflicts'
-//                     });
-//                 }
-
-//                 if (conflictingPeriods && conflictingPeriods.length > 0) {
-//                     return res.status(400).json({
-//                         status: 'error',
-//                         message: 'Period time conflicts with existing periods',
-//                         conflicts: conflictingPeriods
-//                     });
-//                 }
-//             }
-
-//             const { data, error } = await adminSupabase
-//                 .from('periods')
-//                 .update(updates)
-//                 .eq('id', id)
-//                 .select()
-//                 .single();
-
-//             if (error) throw error;
-
-//             res.json({
-//                 status: 'success',
-//                 data: { period: data }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Delete period (soft delete)
-// router.delete('/periods/:id',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     async (req, res, next) => {
-//         try {
-//             const { id } = req.params;
-
-//             // Check if period is used in any timetables
-//             const { data: usedInTimetables, error: checkError } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .select('id')
-//                 .eq('period_id', id)
-//                 .eq('is_active', true)
-//                 .limit(1);
-
-//             if (checkError) {
-//                 logger.error('Error checking period usage:', checkError);
-//                 return res.status(500).json({
-//                     status: 'error',
-//                     message: 'Failed to check period usage'
-//                 });
-//             }
-
-//             if (usedInTimetables && usedInTimetables.length > 0) {
-//                 return res.status(400).json({
-//                     status: 'error',
-//                     message: 'Cannot delete period that is used in timetables'
-//                 });
-//             }
-
-//             const { error } = await adminSupabase
-//                 .from('periods')
-//                 .update({ is_active: false })
-//                 .eq('id', id);
-
-//             if (error) throw error;
-
-//             res.json({
-//                 status: 'success',
-//                 message: 'Period deactivated successfully'
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // ==================== TIMETABLE MANAGEMENT ====================
-
-// // Create timetable entry
-// router.post('/entries',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     [
-//         body('class_division_id').isUUID().withMessage('Valid class division ID is required'),
-//         body('academic_year_id').isUUID().withMessage('Valid academic year ID is required'),
-//         body('period_id').isUUID().withMessage('Valid period ID is required'),
-//         body('day_of_week').isInt({ min: 1, max: 6 }).withMessage('Day of week must be 1-6 (1=Monday, 2=Tuesday, etc., 6=Saturday)'),
-//         body('subject').optional().isString().trim().withMessage('Subject must be a string'),
-//         body('teacher_id').optional().isUUID().withMessage('Valid teacher ID if provided'),
-//         body('notes').optional().isString().trim().withMessage('Notes must be a string')
-//     ],
-//     async (req, res, next) => {
-//         try {
-//             const errors = validationResult(req);
-//             if (!errors.isEmpty()) {
-//                 return res.status(400).json({ errors: errors.array() });
-//             }
-
-//             const {
-//                 class_division_id,
-//                 academic_year_id,
-//                 period_id,
-//                 day_of_week,
-//                 subject,
-//                 teacher_id,
-//                 notes
-//             } = req.body;
-
-//             // Verify class division exists
-//             const { data: classDivision, error: classError } = await adminSupabase
-//                 .from('class_divisions')
-//                 .select('id')
-//                 .eq('id', class_division_id)
-//                 .single();
-
-//             if (classError || !classDivision) {
-//                 return res.status(404).json({
-//                     status: 'error',
-//                     message: 'Class division not found'
-//                 });
-//             }
-
-//             // Verify period exists
-//             const { data: period, error: periodError } = await adminSupabase
-//                 .from('periods')
-//                 .select('id, period_type')
-//                 .eq('id', period_id)
-//                 .eq('is_active', true)
-//                 .single();
-
-//             if (periodError || !period) {
-//                 return res.status(404).json({
-//                     status: 'error',
-//                     message: 'Period not found or inactive'
-//                 });
-//             }
-
-//             // Verify teacher exists if provided
-//             if (teacher_id) {
-//                 const { data: teacher, error: teacherError } = await adminSupabase
-//                     .from('users')
-//                     .select('id, role')
-//                     .eq('id', teacher_id)
-//                     .eq('role', 'teacher')
-//                     .single();
-
-//                 if (teacherError || !teacher) {
-//                     return res.status(404).json({
-//                         status: 'error',
-//                         message: 'Teacher not found or invalid role'
-//                     });
-//                 }
-//             }
-
-//             // Check for conflicts
-//             const { data: existingEntry, error: conflictError } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .select('id, subject, teacher_id')
-//                 .eq('class_division_id', class_division_id)
-//                 .eq('academic_year_id', academic_year_id)
-//                 .eq('period_id', period_id)
-//                 .eq('day_of_week', day_of_week)
-//                 .eq('is_active', true)
-//                 .single();
-
-//             if (conflictError && conflictError.code !== 'PGRST116') {
-//                 logger.error('Error checking timetable conflicts:', conflictError);
-//                 return res.status(500).json({
-//                     status: 'error',
-//                     message: 'Failed to check timetable conflicts'
-//                 });
-//             }
-
-//             if (existingEntry) {
-//                 return res.status(400).json({
-//                     status: 'error',
-//                     message: 'Timetable entry already exists for this class, period, and day',
-//                     existing_entry: existingEntry
-//                 });
-//             }
-
-//             // Check teacher conflicts if teacher is assigned
-//             if (teacher_id) {
-//                 const { data: teacherConflict, error: teacherConflictError } = await adminSupabase
-//                     .from('timetable_entries')
-//                     .select('id, class_division_id, subject')
-//                     .eq('teacher_id', teacher_id)
-//                     .eq('academic_year_id', academic_year_id)
-//                     .eq('period_id', period_id)
-//                     .eq('day_of_week', day_of_week)
-//                     .eq('is_active', true)
-//                     .single();
-
-//                 if (teacherConflictError && teacherConflictError.code !== 'PGRST116') {
-//                     logger.error('Error checking teacher conflicts:', teacherConflictError);
-//                     return res.status(500).json({
-//                         status: 'error',
-//                         message: 'Failed to check teacher conflicts'
-//                     });
-//                 }
-
-//                 if (teacherConflict) {
-//                     return res.status(400).json({
-//                         status: 'error',
-//                         message: 'Teacher is already assigned to another class during this period',
-//                         teacher_conflict: teacherConflict
-//                     });
-//                 }
-//             }
-
-//             const { data, error } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .insert([{
-//                     class_division_id,
-//                     academic_year_id,
-//                     period_id,
-//                     day_of_week,
-//                     subject,
-//                     teacher_id,
-//                     notes,
-//                     created_by: req.user.id
-//                 }])
-//                 .select(`
-//                     *,
-//                     period:period_id (
-//                         id,
-//                         name,
-//                         start_time,
-//                         end_time,
-//                         period_type
-//                     ),
-//                     teacher:teacher_id (
-//                         id,
-//                         full_name
-//                     ),
-//                     class_division:class_division_id (
-//                         id,
-//                         division,
-//                         class_level:class_level_id (
-//                             name
-//                         )
-//                     )
-//                 `)
-//                 .single();
-
-//             if (error) throw error;
-
-//             res.status(201).json({
-//                 status: 'success',
-//                 data: { timetable_entry: data }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Get timetable for a class
-// router.get('/class/:class_division_id',
-//     authenticate,
-//     async (req, res, next) => {
-//         try {
-//             const { class_division_id } = req.params;
-//             const { day_of_week } = req.query;
-
-//             // Verify class division exists
-//             const { data: classDivision, error: classError } = await adminSupabase
-//                 .from('class_divisions')
-//                 .select(`
-//                     id,
-//                     division,
-//                     class_level:class_level_id (
-//                         name
-//                     ),
-//                     academic_year:academic_year_id (
-//                         year_name
-//                     )
-//                 `)
-//                 .eq('id', class_division_id)
-//                 .single();
-
-//             if (classError || !classDivision) {
-//                 return res.status(404).json({
-//                     status: 'error',
-//                     message: 'Class division not found'
-//                 });
-//             }
-
-//             // Check access permissions
-//             if (req.user.role === 'teacher') {
-//                 const { data: assignment, error: assignmentError } = await adminSupabase
-//                     .from('class_teacher_assignments')
-//                     .select('id')
-//                     .eq('class_division_id', class_division_id)
-//                     .eq('teacher_id', req.user.id)
-//                     .eq('is_active', true)
-//                     .single();
-
-//                 if (assignmentError || !assignment) {
-//                     return res.status(403).json({
-//                         status: 'error',
-//                         message: 'You can only view timetables for your assigned classes'
-//                     });
-//                 }
-//             } else if (req.user.role === 'parent') {
-//                 // Parents can view timetables for their children's classes
-//                 const { data: childClasses, error: childError } = await adminSupabase
-//                     .from('student_academic_records')
-//                     .select('class_division_id')
-//                     .eq('student_id', req.user.id) // Assuming parent can access their children's data
-//                     .eq('status', 'ongoing');
-
-//                 if (childError) {
-//                     logger.error('Error checking parent access:', childError);
-//                     return res.status(500).json({
-//                         status: 'error',
-//                         message: 'Failed to verify access permissions'
-//                     });
-//                 }
-
-//                 const hasAccess = childClasses?.some(record => record.class_division_id === class_division_id);
-//                 if (!hasAccess) {
-//                     return res.status(403).json({
-//                         status: 'error',
-//                         message: 'You can only view timetables for your children\'s classes'
-//                     });
-//                 }
-//             }
-
-//             // Build query
-//             let query = adminSupabase
-//                 .from('timetable_entries')
-//                 .select(`
-//                     *,
-//                     period:period_id (
-//                         id,
-//                         name,
-//                         start_time,
-//                         end_time,
-//                         period_type,
-//                         sequence_number
-//                     ),
-//                     teacher:teacher_id (
-//                         id,
-//                         full_name
-//                     )
-//                 `)
-//                 .eq('class_division_id', class_division_id)
-//                 .eq('is_active', true)
-//                 .order('period(sequence_number)');
-
-//             if (day_of_week !== undefined) {
-//                 query = query.eq('day_of_week', parseInt(day_of_week));
-//             }
-
-//             const { data: entries, error } = await query;
-
-//             if (error) throw error;
-
-//             // Group by day of week (Monday to Saturday)
-//             const timetableByDay = {};
-//             const dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-//             for (let day = 1; day <= 6; day++) {
-//                 timetableByDay[day] = {
-//                     day_name: dayNames[day],
-//                     day_number: day,
-//                     entries: []
-//                 };
-//             }
-
-//             entries.forEach(entry => {
-//                 if (timetableByDay[entry.day_of_week]) {
-//                     timetableByDay[entry.day_of_week].entries.push(entry);
-//                 }
-//             });
-
-//             // Sort entries by period sequence within each day
-//             Object.values(timetableByDay).forEach(day => {
-//                 day.entries.sort((a, b) => a.period.sequence_number - b.period.sequence_number);
-//             });
-
-//             res.json({
-//                 status: 'success',
-//                 data: {
-//                     class_division: classDivision,
-//                     timetable: timetableByDay,
-//                     total_entries: entries.length
-//                 }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Get teacher's timetable
-// router.get('/teacher/:teacher_id',
-//     authenticate,
-//     async (req, res, next) => {
-//         try {
-//             const { teacher_id } = req.params;
-//             const { day_of_week } = req.query;
-
-//             // Verify teacher exists
-//             const { data: teacher, error: teacherError } = await adminSupabase
-//                 .from('users')
-//                 .select('id, full_name, role')
-//                 .eq('id', teacher_id)
-//                 .eq('role', 'teacher')
-//                 .single();
-
-//             if (teacherError || !teacher) {
-//                 return res.status(404).json({
-//                     status: 'error',
-//                     message: 'Teacher not found'
-//                 });
-//             }
-
-//             // Check access permissions
-//             if (req.user.role === 'teacher' && req.user.id !== teacher_id) {
-//                 return res.status(403).json({
-//                     status: 'error',
-//                     message: 'You can only view your own timetable'
-//                 });
-//             }
-
-//             // Build query
-//             let query = adminSupabase
-//                 .from('timetable_entries')
-//                 .select(`
-//                     *,
-//                     period:period_id (
-//                         id,
-//                         name,
-//                         start_time,
-//                         end_time,
-//                         period_type,
-//                         sequence_number
-//                     ),
-//                     class_division:class_division_id (
-//                         id,
-//                         division,
-//                         class_level:class_level_id (
-//                             name
-//                         ),
-//                         academic_year:academic_year_id (
-//                             year_name
-//                         )
-//                     )
-//                 `)
-//                 .eq('teacher_id', teacher_id)
-//                 .eq('is_active', true)
-//                 .order('period(sequence_number)');
-
-//             if (day_of_week !== undefined) {
-//                 query = query.eq('day_of_week', parseInt(day_of_week));
-//             }
-
-//             const { data: entries, error } = await query;
-
-//             if (error) throw error;
-
-//             // Group by day of week (Monday to Saturday)
-//             const timetableByDay = {};
-//             const dayNames = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-//             for (let day = 1; day <= 6; day++) {
-//                 timetableByDay[day] = {
-//                     day_name: dayNames[day],
-//                     day_number: day,
-//                     entries: []
-//                 };
-//             }
-
-//             entries.forEach(entry => {
-//                 if (timetableByDay[entry.day_of_week]) {
-//                     timetableByDay[entry.day_of_week].entries.push(entry);
-//                 }
-//             });
-
-//             // Sort entries by period sequence within each day
-//             Object.values(timetableByDay).forEach(day => {
-//                 day.entries.sort((a, b) => a.period.sequence_number - b.period.sequence_number);
-//             });
-
-//             res.json({
-//                 status: 'success',
-//                 data: {
-//                     teacher: {
-//                         id: teacher.id,
-//                         full_name: teacher.full_name
-//                     },
-//                     timetable: timetableByDay,
-//                     total_entries: entries.length
-//                 }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Update timetable entry
-// router.put('/entries/:id',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     [
-//         body('subject').optional().isString().trim().withMessage('Subject must be a string'),
-//         body('teacher_id').optional().isUUID().withMessage('Valid teacher ID if provided'),
-//         body('notes').optional().isString().trim().withMessage('Notes must be a string')
-//     ],
-//     async (req, res, next) => {
-//         try {
-//             const errors = validationResult(req);
-//             if (!errors.isEmpty()) {
-//                 return res.status(400).json({ errors: errors.array() });
-//             }
-
-//             const { id } = req.params;
-//             const updates = req.body;
-
-//             // Verify entry exists
-//             const { data: existingEntry, error: fetchError } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .select('*')
-//                 .eq('id', id)
-//                 .eq('is_active', true)
-//                 .single();
-
-//             if (fetchError || !existingEntry) {
-//                 return res.status(404).json({
-//                     status: 'error',
-//                     message: 'Timetable entry not found'
-//                 });
-//             }
-
-//             // Verify teacher exists if updating
-//             if (updates.teacher_id) {
-//                 const { data: teacher, error: teacherError } = await adminSupabase
-//                     .from('users')
-//                     .select('id, role')
-//                     .eq('id', updates.teacher_id)
-//                     .eq('role', 'teacher')
-//                     .single();
-
-//                 if (teacherError || !teacher) {
-//                     return res.status(404).json({
-//                         status: 'error',
-//                         message: 'Teacher not found or invalid role'
-//                     });
-//                 }
-
-//                 // Check teacher conflicts
-//                 const { data: teacherConflict, error: teacherConflictError } = await adminSupabase
-//                     .from('timetable_entries')
-//                     .select('id, class_division_id, subject')
-//                     .eq('teacher_id', updates.teacher_id)
-//                     .eq('period_id', existingEntry.period_id)
-//                     .eq('day_of_week', existingEntry.day_of_week)
-//                     .eq('is_active', true)
-//                     .neq('id', id)
-//                     .single();
-
-//                 if (teacherConflictError && teacherConflictError.code !== 'PGRST116') {
-//                     logger.error('Error checking teacher conflicts:', teacherConflictError);
-//                     return res.status(500).json({
-//                         status: 'error',
-//                         message: 'Failed to check teacher conflicts'
-//                     });
-//                 }
-
-//                 if (teacherConflict) {
-//                     return res.status(400).json({
-//                         status: 'error',
-//                         message: 'Teacher is already assigned to another class during this period',
-//                         teacher_conflict: teacherConflict
-//                     });
-//                 }
-//             }
-
-//             const { data, error } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .update(updates)
-//                 .eq('id', id)
-//                 .select(`
-//                     *,
-//                     period:period_id (
-//                         id,
-//                         name,
-//                         start_time,
-//                         end_time,
-//                         period_type
-//                     ),
-//                     teacher:teacher_id (
-//                         id,
-//                         full_name
-//                     ),
-//                     class_division:class_division_id (
-//                         id,
-//                         division,
-//                         class_level:class_level_id (
-//                             name
-//                         )
-//                     )
-//                 `)
-//                 .single();
-
-//             if (error) throw error;
-
-//             res.json({
-//                 status: 'success',
-//                 data: { timetable_entry: data }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Delete timetable entry (soft delete)
-// router.delete('/entries/:id',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     async (req, res, next) => {
-//         try {
-//             const { id } = req.params;
-
-//             const { error } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .update({ is_active: false })
-//                 .eq('id', id);
-
-//             if (error) throw error;
-
-//             res.json({
-//                 status: 'success',
-//                 message: 'Timetable entry deleted successfully'
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // ==================== TEMPLATE MANAGEMENT ====================
-
-// // Create timetable template
-// router.post('/templates',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     [
-//         body('name').isString().trim().notEmpty().withMessage('Template name is required'),
-//         body('description').optional().isString().trim().withMessage('Description must be a string'),
-//         body('academic_year_id').optional().isUUID().withMessage('Valid academic year ID if provided'),
-//         body('class_level_id').optional().isUUID().withMessage('Valid class level ID if provided')
-//     ],
-//     async (req, res, next) => {
-//         try {
-//             const errors = validationResult(req);
-//             if (!errors.isEmpty()) {
-//                 return res.status(400).json({ errors: errors.array() });
-//             }
-
-//             const { name, description, academic_year_id, class_level_id } = req.body;
-
-//             const { data, error } = await adminSupabase
-//                 .from('timetable_templates')
-//                 .insert([{
-//                     name,
-//                     description,
-//                     academic_year_id,
-//                     class_level_id,
-//                     created_by: req.user.id
-//                 }])
-//                 .select()
-//                 .single();
-
-//             if (error) throw error;
-
-//             res.status(201).json({
-//                 status: 'success',
-//                 data: { template: data }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Get all templates
-// router.get('/templates',
-//     authenticate,
-//     async (req, res, next) => {
-//         try {
-//             const { include_inactive = 'false' } = req.query;
-
-//             let query = adminSupabase
-//                 .from('timetable_templates')
-//                 .select(`
-//                     *,
-//                     academic_year:academic_year_id (
-//                         year_name
-//                     ),
-//                     class_level:class_level_id (
-//                         name
-//                     ),
-//                     creator:created_by (
-//                         full_name
-//                     )
-//                 `)
-//                 .order('created_at', { ascending: false });
-
-//             if (include_inactive !== 'true') {
-//                 query = query.eq('is_active', true);
-//             }
-
-//             const { data, error } = await query;
-
-//             if (error) throw error;
-
-//             res.json({
-//                 status: 'success',
-//                 data: { templates: data }
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// // Apply template to class
-// router.post('/templates/:template_id/apply/:class_division_id',
-//     authenticate,
-//     authorize(['admin', 'principal']),
-//     async (req, res, next) => {
-//         try {
-//             const { template_id, class_division_id } = req.params;
-
-//             // Verify template exists
-//             const { data: template, error: templateError } = await adminSupabase
-//                 .from('timetable_templates')
-//                 .select('*')
-//                 .eq('id', template_id)
-//                 .eq('is_active', true)
-//                 .single();
-
-//             if (templateError || !template) {
-//                 return res.status(404).json({
-//                     status: 'error',
-//                     message: 'Template not found'
-//                 });
-//             }
-
-//             // Verify class division exists
-//             const { data: classDivision, error: classError } = await adminSupabase
-//                 .from('class_divisions')
-//                 .select('id')
-//                 .eq('id', class_division_id)
-//                 .single();
-
-//             if (classError || !classDivision) {
-//                 return res.status(404).json({
-//                     status: 'error',
-//                     message: 'Class division not found'
-//                 });
-//             }
-
-//             // Get template entries
-//             const { data: templateEntries, error: entriesError } = await adminSupabase
-//                 .from('template_entries')
-//                 .select('*')
-//                 .eq('template_id', template_id)
-//                 .eq('is_active', true);
-
-//             if (entriesError) throw entriesError;
-
-//             if (!templateEntries || templateEntries.length === 0) {
-//                 return res.status(400).json({
-//                     status: 'error',
-//                     message: 'Template has no entries'
-//                 });
-//             }
-
-//             // Clear existing timetable entries for this class
-//             const { error: clearError } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .update({ is_active: false })
-//                 .eq('class_division_id', class_division_id);
-
-//             if (clearError) throw clearError;
-
-//             // Create new timetable entries from template
-//             const timetableEntries = templateEntries.map(entry => ({
-//                 class_division_id,
-//                 academic_year_id: classDivision.academic_year_id,
-//                 period_id: entry.period_id,
-//                 day_of_week: entry.day_of_week,
-//                 subject: entry.subject,
-//                 notes: entry.notes,
-//                 created_by: req.user.id
-//             }));
-
-//             const { data: newEntries, error: createError } = await adminSupabase
-//                 .from('timetable_entries')
-//                 .insert(timetableEntries)
-//                 .select(`
-//                     *,
-//                     period:period_id (
-//                         name,
-//                         start_time,
-//                         end_time
-//                     )
-//                 `);
-
-//             if (createError) throw createError;
-
-//             res.status(201).json({
-//                 status: 'success',
-//                 data: {
-//                     template: template,
-//                     applied_entries: newEntries,
-//                     total_entries: newEntries.length
-//                 },
-//                 message: `Template applied successfully. ${newEntries.length} entries created.`
-//             });
-//         } catch (error) {
-//             next(error);
-//         }
-//     }
-// );
-
-// export default router;
+import express from 'express';
+import { body, validationResult } from 'express-validator';
+import { adminSupabase } from '../config/supabase.js';
+import { authenticate, authorize } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
+
+const router = express.Router();
+
+// ==================== TIMETABLE CONFIGURATION ====================
+
+// Debug endpoint to check teacher assignments
+router.get('/debug/teacher-assignments/:teacher_id',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { teacher_id } = req.params;
+
+            logger.info('Debug: Checking teacher assignments for:', teacher_id);
+
+            // Check class_teacher_assignments table
+            const { data: ctaData, error: ctaError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('*')
+                .eq('teacher_id', teacher_id);
+
+            logger.info('CTA table data:', { ctaData, ctaError });
+
+            // Check class_divisions table
+            const { data: cdData, error: cdError } = await adminSupabase
+                .from('class_divisions')
+                .select('*')
+                .eq('teacher_id', teacher_id);
+
+            logger.info('Class divisions table data:', { cdData, cdError });
+
+            // Check if tables exist
+            const { data: tables, error: tablesError } = await adminSupabase
+                .from('information_schema.tables')
+                .select('table_name')
+                .eq('table_schema', 'public')
+                .in('table_name', ['class_teacher_assignments', 'class_divisions']);
+
+            logger.info('Available tables:', { tables, tablesError });
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher_id,
+                    class_teacher_assignments: { data: ctaData, error: ctaError },
+                    class_divisions: { data: cdData, error: cdError },
+                    available_tables: { data: tables, error: tablesError }
+                }
+            });
+        } catch (error) {
+            logger.error('Debug error:', error);
+            next(error);
+        }
+    }
+);
+
+// Create timetable configuration
+router.post('/config',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    [
+        body('name').isString().trim().notEmpty().withMessage('Configuration name is required'),
+        body('description').optional().isString().trim(),
+        body('academic_year_id').isUUID().withMessage('Valid academic year ID is required'),
+        body('total_periods').isInt({ min: 1, max: 10 }).withMessage('Total periods must be between 1 and 10'),
+        body('days_per_week').isInt({ min: 5, max: 7 }).withMessage('Days per week must be between 5 and 7')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const { name, description, academic_year_id, total_periods, days_per_week } = req.body;
+
+            // Check if config already exists for this academic year
+            const { data: existingConfig, error: checkError } = await adminSupabase
+                .from('timetable_config')
+                .select('id, name')
+                .eq('academic_year_id', academic_year_id)
+                .eq('is_active', true)
+                .single();
+
+            if (existingConfig) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Timetable configuration already exists for this academic year: ${existingConfig.name}`
+                });
+            }
+
+            // Create new configuration
+            const { data, error } = await adminSupabase
+                .from('timetable_config')
+                .insert([{
+                    name,
+                    description,
+                    academic_year_id,
+                    total_periods,
+                    days_per_week,
+                    created_by: req.user.id
+                }])
+                .select()
+                .single();
+
+            if (error) throw error;
+
+            logger.info('Timetable configuration created:', {
+                config_id: data.id,
+                name: data.name,
+                academic_year_id: data.academic_year_id,
+                created_by: req.user.id
+            });
+
+            res.status(201).json({
+                status: 'success',
+                message: 'Timetable configuration created successfully',
+                data: { config: data }
+            });
+        } catch (error) {
+            logger.error('Error creating timetable configuration:', error);
+            next(error);
+        }
+    }
+);
+
+// Get timetable configuration
+router.get('/config',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { academic_year_id, include_inactive = 'false' } = req.query;
+
+            let query = adminSupabase
+                .from('timetable_config')
+                .select(`
+                    *,
+                    academic_year:academic_years(year_name)
+                `)
+                .order('created_at', { ascending: false });
+
+            if (academic_year_id) {
+                query = query.eq('academic_year_id', academic_year_id);
+            }
+
+            if (include_inactive !== 'true') {
+                query = query.eq('is_active', true);
+            }
+
+            const { data, error } = await query;
+
+            if (error) throw error;
+
+            res.json({
+                status: 'success',
+                data: { configs: data }
+            });
+        } catch (error) {
+            logger.error('Error fetching timetable configuration:', error);
+            next(error);
+        }
+    }
+);
+
+// Update timetable configuration
+router.put('/config/:id',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    [
+        body('name').optional().isString().trim().notEmpty().withMessage('Configuration name cannot be empty'),
+        body('description').optional().isString().trim(),
+        body('total_periods').optional().isInt({ min: 1, max: 10 }).withMessage('Total periods must be between 1 and 10'),
+        body('days_per_week').optional().isInt({ min: 5, max: 7 }).withMessage('Days per week must be between 5 and 7')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const { id } = req.params;
+            const updateData = {};
+
+            // Build update data
+            ['name', 'description', 'total_periods', 'days_per_week'].forEach(field => {
+                if (req.body[field] !== undefined) {
+                    updateData[field] = req.body[field];
+                }
+            });
+
+            // Check if config exists
+            const { data: existingConfig, error: checkError } = await adminSupabase
+                .from('timetable_config')
+                .select('*')
+                .eq('id', id)
+                .single();
+
+            // For teachers, validate they can only update configs they created
+            if (req.user.role === 'teacher' && existingConfig.created_by !== req.user.id) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'You can only update timetable configurations you created'
+                });
+            }
+
+            if (checkError || !existingConfig) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Timetable configuration not found'
+                });
+            }
+
+            // Update configuration
+            const { data, error } = await adminSupabase
+                .from('timetable_config')
+                .update(updateData)
+                .eq('id', id)
+                .select()
+                .single();
+
+            if (error) throw error;
+
+            logger.info('Timetable configuration updated:', {
+                config_id: id,
+                updated_by: req.user.id,
+                changes: updateData
+            });
+
+            res.json({
+                status: 'success',
+                message: 'Timetable configuration updated successfully',
+                data: { config: data }
+            });
+        } catch (error) {
+            logger.error('Error updating timetable configuration:', error);
+            next(error);
+        }
+    }
+);
+
+// ==================== CLASS TIMETABLE ENTRIES ====================
+
+// Create class timetable entry
+router.post('/entries',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    [
+        body('config_id').isUUID().withMessage('Valid config ID is required'),
+        body('class_division_id').isUUID().withMessage('Valid class division ID is required'),
+        body('period_number').isInt({ min: 1, max: 10 }).withMessage('Period number must be between 1 and 10'),
+        body('day_of_week').isInt({ min: 1, max: 7 }).withMessage('Day of week must be between 1 and 7'),
+        body('subject').optional().isString().trim(),
+        body('teacher_id').optional().isUUID().withMessage('Valid teacher ID is required if provided'),
+        // body('room_number').optional().isString().trim(),
+        body('notes').optional().isString().trim()
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const {
+                config_id,
+                class_division_id,
+                period_number,
+                day_of_week,
+                subject,
+                teacher_id,
+                notes
+            } = req.body;
+
+            // For teachers, validate they can only manage timetables for their assigned classes
+            if (req.user.role === 'teacher') {
+                // Check multiple possible table structures for teacher assignments
+                let teacherAssignment = null;
+
+                logger.info('Teacher validation - checking assignments for:', {
+                    teacher_id: req.user.id,
+                    class_division_id: class_division_id
+                });
+
+                // Try multiple possible table structures
+                const possibleTables = [
+                    'class_teacher_assignments',
+                    'teacher_assignments',
+                    'staff_assignments',
+                    'class_assignments'
+                ];
+
+                for (const tableName of possibleTables) {
+                    try {
+                        const { data: assignments, error } = await adminSupabase
+                            .from(tableName)
+                            .select('id')
+                            .eq('teacher_id', req.user.id)
+                            .eq('class_division_id', class_division_id)
+                            .eq('is_active', true);
+
+                        logger.info(`Table ${tableName} check result:`, { assignments, error });
+
+                        if (assignments && assignments.length > 0) {
+                            teacherAssignment = assignments[0]; // Take first assignment
+                            logger.info(`Found assignment in ${tableName} table`);
+                            break;
+                        }
+                    } catch (err) {
+                        logger.info(`Table ${tableName} not accessible or doesn't exist:`, err.message);
+                    }
+                }
+
+                // If still not found, try the legacy class_divisions table
+                if (!teacherAssignment) {
+                    try {
+                        const { data: legacyAssignment, error: legacyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id')
+                            .eq('id', class_division_id)
+                            .eq('teacher_id', req.user.id)
+                            .single();
+
+                        logger.info('Legacy table check result:', { legacyAssignment, legacyError });
+
+                        if (legacyAssignment) {
+                            teacherAssignment = legacyAssignment;
+                            logger.info('Found assignment in legacy table');
+                        }
+                    } catch (err) {
+                        logger.info('Legacy table check failed:', err.message);
+                    }
+                }
+
+                // If still not found, try a broader search in any table that might have teacher assignments
+                if (!teacherAssignment) {
+                    try {
+                        // Try to find any table that might contain teacher assignments
+                        const { data: anyAssignment, error: anyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id, teacher_id, class_teacher_id, primary_teacher_id')
+                            .eq('id', class_division_id)
+                            .or(`teacher_id.eq.${req.user.id},class_teacher_id.eq.${req.user.id},primary_teacher_id.eq.${req.user.id}`)
+                            .single();
+
+                        logger.info('Broader search result:', { anyAssignment, anyError });
+
+                        if (anyAssignment) {
+                            teacherAssignment = anyAssignment;
+                            logger.info('Found assignment in broader search');
+                        }
+                    } catch (err) {
+                        logger.info('Broader search failed:', err.message);
+                    }
+                }
+
+                logger.info('Final teacher assignment result:', { teacherAssignment });
+
+                if (!teacherAssignment) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You can only manage timetables for your assigned classes'
+                    });
+                }
+            }
+
+            // Validate config exists
+            const { data: config, error: configError } = await adminSupabase
+                .from('timetable_config')
+                .select('total_periods, days_per_week')
+                .eq('id', config_id)
+                .eq('is_active', true)
+                .single();
+
+            if (configError || !config) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Invalid timetable configuration'
+                });
+            }
+
+            // Validate period number and day
+            if (period_number > config.total_periods) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Period number cannot exceed total periods (${config.total_periods})`
+                });
+            }
+
+            if (day_of_week > config.days_per_week) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Day of week cannot exceed configured days (${config.days_per_week})`
+                });
+            }
+
+            // Check for conflicts
+            const { data: conflicts, error: conflictError } = await adminSupabase
+                .from('class_timetable')
+                .select('id, subject')
+                .eq('class_division_id', class_division_id)
+                .eq('period_number', period_number)
+                .eq('day_of_week', day_of_week)
+                .eq('is_active', true);
+
+            if (conflicts && conflicts.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Conflict: ${conflicts[0].subject || 'Period'} already assigned for this class, period, and day`
+                });
+            }
+
+            // Create timetable entry
+            const { data, error } = await adminSupabase
+                .from('class_timetable')
+                .insert([{
+                    config_id,
+                    class_division_id,
+                    period_number,
+                    day_of_week,
+                    subject,
+                    teacher_id,
+                    notes,
+                    created_by: req.user.id
+                }])
+                .select()
+                .single();
+
+            if (error) throw error;
+
+            logger.info('Class timetable entry created:', {
+                entry_id: data.id,
+                class_division_id: data.class_division_id,
+                period_number: data.period_number,
+                day_of_week: data.day_of_week,
+                subject: data.subject,
+                created_by: req.user.id
+            });
+
+            res.status(201).json({
+                status: 'success',
+                message: 'Timetable entry created successfully',
+                data: { entry: data }
+            });
+        } catch (error) {
+            logger.error('Error creating timetable entry:', error);
+            next(error);
+        }
+    }
+);
+
+// Get class timetable
+router.get('/class/:class_division_id',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { class_division_id } = req.params;
+            const { config_id, academic_year_id } = req.query;
+
+            // Build query
+            let query = adminSupabase
+                .from('class_timetable')
+                .select(`
+                    *,
+                    config:timetable_config(
+                        id,
+                        name,
+                        total_periods,
+                        days_per_week
+                    ),
+                    teacher:users!class_timetable_teacher_id_fkey(
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true)
+                .order('day_of_week', { ascending: true })
+                .order('period_number', { ascending: true });
+
+            if (config_id) {
+                query = query.eq('config_id', config_id);
+            }
+
+            if (academic_year_id) {
+                query = query.eq('config.academic_year_id', academic_year_id);
+            }
+
+            const { data, error } = await query;
+
+            if (error) throw error;
+
+            // Organize by day
+            const timetableByDay = {};
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+            data.forEach(entry => {
+                const dayName = days[entry.day_of_week - 1];
+                if (!timetableByDay[dayName]) {
+                    timetableByDay[dayName] = [];
+                }
+                timetableByDay[dayName].push(entry);
+            });
+
+            // Sort periods within each day
+            Object.keys(timetableByDay).forEach(day => {
+                timetableByDay[day].sort((a, b) => a.period_number - b.period_number);
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    class_division_id,
+                    timetable: timetableByDay,
+                    total_entries: data.length
+                }
+            });
+        } catch (error) {
+            logger.error('Error fetching class timetable:', error);
+            next(error);
+        }
+    }
+);
+
+// Get teacher timetable
+router.get('/teacher/:teacher_id',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { teacher_id } = req.params;
+            const { config_id, academic_year_id } = req.query;
+
+            // Verify teacher exists
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found'
+                });
+            }
+
+            // Check permissions
+            if (req.user.role === 'teacher' && req.user.id !== teacher_id) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'You can only view your own timetable'
+                });
+            }
+
+            // Build query
+            let query = adminSupabase
+                .from('class_timetable')
+                .select(`
+                    *,
+                    config:timetable_config(
+                        id,
+                        name,
+                        total_periods,
+                        days_per_week
+                    ),
+                    class_division:class_divisions(
+                        id,
+                        division,
+                        class_level:class_levels(name)
+                    )
+                `)
+                .eq('teacher_id', teacher_id)
+                .eq('is_active', true)
+                .order('day_of_week', { ascending: true })
+                .order('period_number', { ascending: true });
+
+            if (config_id) {
+                query = query.eq('config_id', config_id);
+            }
+
+            if (academic_year_id) {
+                query = query.eq('config.academic_year_id', academic_year_id);
+            }
+
+            const { data, error } = await query;
+
+            if (error) throw error;
+
+            // Organize by day
+            const timetableByDay = {};
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+            data.forEach(entry => {
+                const dayName = days[entry.day_of_week - 1];
+                if (!timetableByDay[dayName]) {
+                    timetableByDay[dayName] = [];
+                }
+                timetableByDay[dayName].push(entry);
+            });
+
+            // Sort periods within each day
+            Object.keys(timetableByDay).forEach(day => {
+                timetableByDay[day].sort((a, b) => a.period_number - b.period_number);
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher: {
+                        id: teacher.id,
+                        full_name: teacher.full_name,
+                        role: teacher.role
+                    },
+                    timetable: timetableByDay,
+                    total_entries: data.length
+                }
+            });
+        } catch (error) {
+            logger.error('Error fetching teacher timetable:', error);
+            next(error);
+        }
+    }
+);
+
+// Update timetable entry
+router.put('/entries/:id',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    [
+        body('subject').optional().isString().trim(),
+        body('teacher_id').optional().isUUID().withMessage('Valid teacher ID is required if provided'),
+        body('notes').optional().isString().trim()
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const { id } = req.params;
+            const updateData = {};
+
+            // Build update data
+            ['subject', 'teacher_id', 'notes'].forEach(field => {
+                if (req.body[field] !== undefined) {
+                    updateData[field] = req.body[field];
+                }
+            });
+
+            // For teachers, validate they can only update timetables for their assigned classes
+            if (req.user.role === 'teacher') {
+                const { data: existingEntry, error: entryError } = await adminSupabase
+                    .from('class_timetable')
+                    .select('class_division_id')
+                    .eq('id', id)
+                    .single();
+
+                if (entryError || !existingEntry) {
+                    return res.status(404).json({
+                        status: 'error',
+                        message: 'Timetable entry not found'
+                    });
+                }
+
+                // Check multiple possible table structures for teacher assignments
+                let teacherAssignment = null;
+
+                logger.info('Teacher validation - checking assignments for:', {
+                    teacher_id: req.user.id,
+                    class_division_id: existingEntry.class_division_id
+                });
+
+                // Try multiple possible table structures
+                const possibleTables = [
+                    'class_teacher_assignments',
+                    'teacher_assignments',
+                    'staff_assignments',
+                    'class_assignments'
+                ];
+
+                for (const tableName of possibleTables) {
+                    try {
+                        const { data: assignment, error } = await adminSupabase
+                            .from(tableName)
+                            .select('id')
+                            .eq('teacher_id', req.user.id)
+                            .eq('class_division_id', existingEntry.class_division_id)
+                            .eq('is_active', true)
+                            .single();
+
+                        logger.info(`Table ${tableName} check result:`, { assignment, error });
+
+                        if (assignment) {
+                            teacherAssignment = assignment;
+                            logger.info(`Found assignment in ${tableName} table`);
+                            break;
+                        }
+                    } catch (err) {
+                        logger.info(`Table ${tableName} not accessible or doesn't exist:`, err.message);
+                    }
+                }
+
+                // If still not found, try the legacy class_divisions table
+                if (!teacherAssignment) {
+                    try {
+                        const { data: legacyAssignment, error: legacyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id')
+                            .eq('id', existingEntry.class_division_id)
+                            .eq('teacher_id', req.user.id)
+                            .single();
+
+                        logger.info('Legacy table check result:', { legacyAssignment, legacyError });
+
+                        if (legacyAssignment) {
+                            teacherAssignment = legacyAssignment;
+                            logger.info('Found assignment in legacy table');
+                        }
+                    } catch (err) {
+                        logger.info('Legacy table check failed:', err.message);
+                    }
+                }
+
+                // If still not found, try a broader search in any table that might have teacher assignments
+                if (!teacherAssignment) {
+                    try {
+                        // Try to find any table that might contain teacher assignments
+                        const { data: anyAssignment, error: anyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id, teacher_id, class_teacher_id, primary_teacher_id')
+                            .eq('id', existingEntry.class_division_id)
+                            .or(`teacher_id.eq.${req.user.id},class_teacher_id.eq.${req.user.id},primary_teacher_id.eq.${req.user.id}`)
+                            .single();
+
+                        logger.info('Broader search result:', { anyAssignment, anyError });
+
+                        if (anyAssignment) {
+                            teacherAssignment = anyAssignment;
+                            logger.info('Found assignment in broader search');
+                        }
+                    } catch (err) {
+                        logger.info('Broader search failed:', err.message);
+                    }
+                }
+
+                logger.info('Final teacher assignment result:', { teacherAssignment });
+
+                if (!teacherAssignment) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You can only update timetables for your assigned classes'
+                    });
+                }
+            }
+
+            // Check if entry exists
+            const { data: existingEntry, error: checkError } = await adminSupabase
+                .from('class_timetable')
+                .select('*')
+                .eq('id', id)
+                .single();
+
+            if (checkError || !existingEntry) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Timetable entry not found'
+                });
+            }
+
+            // Update entry
+            const { data, error } = await adminSupabase
+                .from('class_timetable')
+                .update(updateData)
+                .eq('id', id)
+                .select()
+                .single();
+
+            if (error) throw error;
+
+            logger.info('Timetable entry updated:', {
+                entry_id: id,
+                updated_by: req.user.id,
+                changes: updateData
+            });
+
+            res.json({
+                status: 'success',
+                message: 'Timetable entry updated successfully',
+                data: { entry: data }
+            });
+        } catch (error) {
+            logger.error('Error updating timetable entry:', error);
+            next(error);
+        }
+    }
+);
+
+// Delete timetable entry
+router.delete('/entries/:id',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { id } = req.params;
+
+            // Check if entry exists
+            const { data: existingEntry, error: checkError } = await adminSupabase
+                .from('class_timetable')
+                .select('id, subject, class_division_id')
+                .eq('id', id)
+                .single();
+
+            // For teachers, validate they can only delete timetables for their assigned classes
+            if (req.user.role === 'teacher') {
+                // Check multiple possible table structures for teacher assignments
+                let teacherAssignment = null;
+
+                logger.info('Teacher validation - checking assignments for:', {
+                    teacher_id: req.user.id,
+                    class_division_id: existingEntry.class_division_id
+                });
+
+                // Try multiple possible table structures
+                const possibleTables = [
+                    'class_teacher_assignments',
+                    'teacher_assignments',
+                    'staff_assignments',
+                    'class_assignments'
+                ];
+
+                for (const tableName of possibleTables) {
+                    try {
+                        const { data: assignment, error } = await adminSupabase
+                            .from(tableName)
+                            .select('id')
+                            .eq('teacher_id', req.user.id)
+                            .eq('class_division_id', existingEntry.class_division_id)
+                            .eq('is_active', true)
+                            .single();
+
+                        logger.info(`Table ${tableName} check result:`, { assignment, error });
+
+                        if (assignment) {
+                            teacherAssignment = assignment;
+                            logger.info(`Found assignment in ${tableName} table`);
+                            break;
+                        }
+                    } catch (err) {
+                        logger.info(`Table ${tableName} not accessible or doesn't exist:`, err.message);
+                    }
+                }
+
+                // If still not found, try the legacy class_divisions table
+                if (!teacherAssignment) {
+                    try {
+                        const { data: legacyAssignment, error: legacyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id')
+                            .eq('id', existingEntry.class_division_id)
+                            .eq('teacher_id', req.user.id)
+                            .single();
+
+                        logger.info('Legacy table check result:', { legacyAssignment, legacyError });
+
+                        if (legacyAssignment) {
+                            teacherAssignment = legacyAssignment;
+                            logger.info('Found assignment in legacy table');
+                        }
+                    } catch (err) {
+                        logger.info('Legacy table check failed:', err.message);
+                    }
+                }
+
+                // If still not found, try a broader search in any table that might have teacher assignments
+                if (!teacherAssignment) {
+                    try {
+                        // Try to find any table that might contain teacher assignments
+                        const { data: anyAssignment, error: anyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id, teacher_id, class_teacher_id, primary_teacher_id')
+                            .eq('id', existingEntry.class_division_id)
+                            .or(`teacher_id.eq.${req.user.id},class_teacher_id.eq.${req.user.id},primary_teacher_id.eq.${req.user.id}`)
+                            .single();
+
+                        logger.info('Broader search result:', { anyAssignment, anyError });
+
+                        if (anyAssignment) {
+                            teacherAssignment = anyAssignment;
+                            logger.info('Found assignment in broader search');
+                        }
+                    } catch (err) {
+                        logger.info('Broader search failed:', err.message);
+                    }
+                }
+
+                logger.info('Final teacher assignment result:', { teacherAssignment });
+
+                if (!teacherAssignment) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You can only delete timetables for your assigned classes'
+                    });
+                }
+            }
+
+            if (checkError || !existingEntry) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Timetable entry not found'
+                });
+            }
+
+            // Soft delete
+            const { error } = await adminSupabase
+                .from('class_timetable')
+                .update({ is_active: false })
+                .eq('id', id);
+
+            if (error) throw error;
+
+            logger.info('Timetable entry deleted:', {
+                entry_id: id,
+                deleted_by: req.user.id,
+                subject: existingEntry.subject,
+                class_division_id: existingEntry.class_division_id
+            });
+
+            res.json({
+                status: 'success',
+                message: 'Timetable entry deleted successfully'
+            });
+        } catch (error) {
+            logger.error('Error deleting timetable entry:', error);
+            next(error);
+        }
+    }
+);
+
+// Bulk create timetable entries
+router.post('/bulk-entries',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    [
+        body('config_id').isUUID().withMessage('Valid config ID is required'),
+        body('class_division_id').isUUID().withMessage('Valid class division ID is required'),
+        body('entries').isArray({ min: 1 }).withMessage('At least one entry is required'),
+        body('entries.*.period_number').isInt({ min: 1, max: 10 }).withMessage('Period number must be between 1 and 10'),
+        body('entries.*.day_of_week').isInt({ min: 1, max: 7 }).withMessage('Day of week must be between 1 and 7'),
+        body('entries.*.subject').optional().isString().trim(),
+        body('entries.*.teacher_id').optional().isUUID().withMessage('Valid teacher ID is required if provided'),
+        body('entries.*.notes').optional().isString().trim()
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const { config_id, class_division_id, entries } = req.body;
+
+            // For teachers, validate they can only manage timetables for their assigned classes
+            if (req.user.role === 'teacher') {
+                // Check multiple possible table structures for teacher assignments
+                let teacherAssignment = null;
+
+                logger.info('Teacher validation - checking assignments for:', {
+                    teacher_id: req.user.id,
+                    class_division_id: class_division_id
+                });
+
+                // Try multiple possible table structures
+                const possibleTables = [
+                    'class_teacher_assignments',
+                    'teacher_assignments',
+                    'staff_assignments',
+                    'class_assignments'
+                ];
+
+                for (const tableName of possibleTables) {
+                    try {
+                        const { data: assignments, error } = await adminSupabase
+                            .from(tableName)
+                            .select('id')
+                            .eq('teacher_id', req.user.id)
+                            .eq('class_division_id', class_division_id)
+                            .eq('is_active', true);
+
+                        logger.info(`Table ${tableName} check result:`, { assignments, error });
+
+                        if (assignments && assignments.length > 0) {
+                            teacherAssignment = assignments[0]; // Take first assignment
+                            logger.info(`Found assignment in ${tableName} table`);
+                            break;
+                        }
+                    } catch (err) {
+                        logger.info(`Table ${tableName} not accessible or doesn't exist:`, err.message);
+                    }
+                }
+
+                // If still not found, try the legacy class_divisions table
+                if (!teacherAssignment) {
+                    try {
+                        const { data: legacyAssignment, error: legacyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id')
+                            .eq('id', class_division_id)
+                            .eq('teacher_id', req.user.id)
+                            .single();
+
+                        logger.info('Legacy table check result:', { legacyAssignment, legacyError });
+
+                        if (legacyAssignment) {
+                            teacherAssignment = legacyAssignment;
+                            logger.info('Found assignment in legacy table');
+                        }
+                    } catch (err) {
+                        logger.info('Legacy table check failed:', err.message);
+                    }
+                }
+
+                // If still not found, try a broader search in any table that might have teacher assignments
+                if (!teacherAssignment) {
+                    try {
+                        // Try to find any table that might contain teacher assignments
+                        const { data: anyAssignment, error: anyError } = await adminSupabase
+                            .from('class_divisions')
+                            .select('id, teacher_id, class_teacher_id, primary_teacher_id')
+                            .eq('id', class_division_id)
+                            .or(`teacher_id.eq.${req.user.id},class_teacher_id.eq.${req.user.id},primary_teacher_id.eq.${req.user.id}`)
+                            .single();
+
+                        logger.info('Broader search result:', { anyAssignment, anyError });
+
+                        if (anyAssignment) {
+                            teacherAssignment = anyAssignment;
+                            logger.info('Found assignment in broader search');
+                        }
+                    } catch (err) {
+                        logger.info('Broader search failed:', err.message);
+                    }
+                }
+
+                logger.info('Final teacher assignment result:', { teacherAssignment });
+
+                if (!teacherAssignment) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You can only manage timetables for your assigned classes'
+                    });
+                }
+            }
+
+            // Validate config exists
+            const { data: config, error: configError } = await adminSupabase
+                .from('timetable_config')
+                .select('total_periods, days_per_week')
+                .eq('id', config_id)
+                .eq('is_active', true)
+                .single();
+
+            if (configError || !config) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Invalid timetable configuration'
+                });
+            }
+
+            // Prepare entries for insertion
+            const entriesToInsert = entries.map(entry => ({
+                config_id,
+                class_division_id,
+                period_number: entry.period_number,
+                day_of_week: entry.day_of_week,
+                subject: entry.subject || null,
+                teacher_id: entry.teacher_id || null,
+                notes: entry.notes || null,
+                created_by: req.user.id
+            }));
+
+            // Insert all entries
+            const { data, error } = await adminSupabase
+                .from('class_timetable')
+                .insert(entriesToInsert)
+                .select();
+
+            if (error) throw error;
+
+            logger.info('Bulk timetable entries created:', {
+                config_id,
+                class_division_id,
+                total_entries: data.length,
+                created_by: req.user.id
+            });
+
+            res.status(201).json({
+                status: 'success',
+                message: `${data.length} timetable entries created successfully`,
+                data: { entries: data }
+            });
+        } catch (error) {
+            logger.error('Error creating bulk timetable entries:', error);
+            next(error);
+        }
+    }
+);
+
+export default router;
