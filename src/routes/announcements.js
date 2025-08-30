@@ -412,14 +412,30 @@ router.put('/:id',
                 });
             }
 
-            // Check permissions
+            // Check permissions - allow editing pending AND approved announcements by creators
             const canEdit = ['principal', 'admin'].includes(userRole) ||
-                (existingAnnouncement.created_by === req.user.id && existingAnnouncement.status === 'draft');
+                (existingAnnouncement.created_by === req.user.id &&
+                    existingAnnouncement.status &&
+                    ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase()));
+
+            // Log permission check details for debugging
+            logger.info('Announcement edit permission check:', {
+                announcement_id: id,
+                user_id: req.user.id,
+                user_role: userRole,
+                announcement_status: existingAnnouncement.status,
+                announcement_status_type: typeof existingAnnouncement.status,
+                announcement_creator: existingAnnouncement.created_by,
+                can_edit: canEdit,
+                is_admin_principal: ['principal', 'admin'].includes(userRole),
+                is_creator: existingAnnouncement.created_by === req.user.id,
+                is_editable: existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase())
+            });
 
             if (!canEdit) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'You do not have permission to edit this announcement'
+                    message: `You can only edit announcements that are pending or approved. Current status: ${existingAnnouncement.status}`
                 });
             }
 
@@ -432,6 +448,17 @@ router.put('/:id',
                     updateData[field] = req.body[field];
                 }
             });
+
+            // Reset approval status when editing pending OR approved announcements
+            if (existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase())) {
+                updateData.status = 'pending';
+                updateData.approved_by = null;
+                updateData.approved_at = null;
+                updateData.rejected_by = null;
+                updateData.rejected_at = null;
+                updateData.rejection_reason = null;
+                updateData.is_published = false;
+            }
 
             // Update announcement
             const { data: updatedAnnouncement, error: updateError } = await adminSupabase
@@ -456,10 +483,20 @@ router.put('/:id',
                 });
             }
 
+            // Determine response message based on status change
+            let responseMessage = 'Announcement updated successfully';
+            if (existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase())) {
+                responseMessage = 'Announcement updated and moved back to pending status for re-approval';
+            }
+
             res.json({
                 status: 'success',
-                message: 'Announcement updated successfully',
-                data: { announcement: updatedAnnouncement }
+                message: responseMessage,
+                data: {
+                    announcement: updatedAnnouncement,
+                    status_changed: existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase()),
+                    requires_reapproval: existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase())
+                }
             });
 
         } catch (error) {
@@ -612,14 +649,14 @@ router.delete('/:id',
                 });
             }
 
-            // Check permissions
+            // Check permissions - only allow deleting pending announcements
             const canDelete = ['principal', 'admin'].includes(userRole) ||
-                (announcement.created_by === req.user.id && announcement.status === 'draft');
+                (announcement.created_by === req.user.id && announcement.status === 'pending');
 
             if (!canDelete) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'You do not have permission to delete this announcement'
+                    message: 'You can only delete announcements that are pending approval'
                 });
             }
 
@@ -968,6 +1005,200 @@ router.get('/pending/approvals',
 
         } catch (error) {
             logger.error('Error in get pending approvals:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
+// GET MY PENDING ANNOUNCEMENTS (For creators to edit/delete)
+// ============================================================================
+
+router.get('/my-pending',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { page = 1, limit = 20 } = req.query;
+            const offset = (page - 1) * limit;
+            const userId = req.user.id;
+
+            // Get pending announcements created by the current user
+            const { data: pendingAnnouncements, error: fetchError } = await adminSupabase
+                .from('announcements')
+                .select(`
+                    *,
+                    creator:users!announcements_created_by_fkey(
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('status', 'pending')
+                .eq('created_by', userId)
+                .order('created_at', { ascending: false })
+                .range(offset, offset + limit - 1);
+
+            if (fetchError) {
+                logger.error('Error fetching my pending announcements:', fetchError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch pending announcements'
+                });
+            }
+
+            // Get total count
+            const { count: totalCount, error: countError } = await adminSupabase
+                .from('announcements')
+                .select('*', { count: 'exact', head: true })
+                .eq('status', 'pending')
+                .eq('created_by', userId);
+
+            if (countError) {
+                logger.error('Error getting my pending count:', countError);
+            }
+
+            res.json({
+                status: 'success',
+                data: {
+                    pending_announcements: pendingAnnouncements || [],
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: totalCount || 0,
+                        total_pages: Math.ceil((totalCount || 0) / limit),
+                        has_next: offset + limit < (totalCount || 0),
+                        has_prev: page > 1
+                    },
+                    message: 'These are your pending announcements that you can edit or delete'
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get my pending announcements:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
+// BULK ACTIONS FOR PENDING ANNOUNCEMENTS
+// ============================================================================
+
+router.post('/bulk-actions',
+    authenticate,
+    [
+        body('action').isIn(['delete', 'resubmit']).withMessage('Action must be either delete or resubmit'),
+        body('announcement_ids').isArray({ min: 1 }).withMessage('Announcement IDs must be an array with at least one item'),
+        body('announcement_ids.*').isUUID().withMessage('Each announcement ID must be a valid UUID')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const { action, announcement_ids } = req.body;
+            const userId = req.user.id;
+            const userRole = req.user.role;
+
+            // Verify all announcements exist and are pending
+            const { data: announcements, error: fetchError } = await adminSupabase
+                .from('announcements')
+                .select('id, status, created_by')
+                .in('id', announcement_ids)
+                .eq('status', 'pending');
+
+            if (fetchError) {
+                logger.error('Error fetching announcements for bulk action:', fetchError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch announcements'
+                });
+            }
+
+            if (!announcements || announcements.length === 0) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'No pending announcements found'
+                });
+            }
+
+            // Check permissions for each announcement
+            const unauthorizedAnnouncements = announcements.filter(
+                announcement => !['principal', 'admin'].includes(userRole) &&
+                    announcement.created_by !== userId
+            );
+
+            if (unauthorizedAnnouncements.length > 0) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'You do not have permission to modify some of these announcements',
+                    unauthorized_ids: unauthorizedAnnouncements.map(a => a.id)
+                });
+            }
+
+            let result;
+            if (action === 'delete') {
+                // Delete announcements
+                const { error: deleteError } = await adminSupabase
+                    .from('announcements')
+                    .delete()
+                    .in('id', announcement_ids);
+
+                if (deleteError) {
+                    logger.error('Error deleting announcements:', deleteError);
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Failed to delete announcements'
+                    });
+                }
+
+                result = {
+                    message: `Successfully deleted ${announcements.length} pending announcement(s)`,
+                    deleted_count: announcements.length
+                };
+            } else if (action === 'resubmit') {
+                // Resubmit announcements (reset to pending status)
+                const { error: updateError } = await adminSupabase
+                    .from('announcements')
+                    .update({
+                        status: 'pending',
+                        approved_by: null,
+                        approved_at: null,
+                        rejected_by: null,
+                        rejected_at: null,
+                        rejection_reason: null,
+                        is_published: false,
+                        updated_at: new Date().toISOString()
+                    })
+                    .in('id', announcement_ids);
+
+                if (updateError) {
+                    logger.error('Error resubmitting announcements:', updateError);
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Failed to resubmit announcements'
+                    });
+                }
+
+                result = {
+                    message: `Successfully resubmitted ${announcements.length} announcement(s)`,
+                    resubmitted_count: announcements.length
+                };
+            }
+
+            res.json({
+                status: 'success',
+                data: result
+            });
+
+        } catch (error) {
+            logger.error('Error in bulk actions:', error);
             next(error);
         }
     }
