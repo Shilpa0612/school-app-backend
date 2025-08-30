@@ -230,6 +230,7 @@ GET /api/users/teacher-linked-parents
 **Query Parameters**:
 
 - `teacher_id`: (Optional) Teacher ID to query (required for admin/principal, auto-filled for teachers)
+- `class_division_id`: (Optional) Filter by specific class division ID
 
 **Response**:
 
@@ -289,6 +290,10 @@ GET /api/users/teacher-linked-parents
       "phone_number": "+1234567890",
       "role": "principal"
     },
+    "filters": {
+      "class_division_id": "uuid|null",
+      "class_division_name": "string|null"
+    },
     "summary": {
       "total_linked_parents": 25,
       "total_students": 30,
@@ -310,6 +315,23 @@ GET /api/users/teacher-linked-parents
 - ✅ **Summary statistics** for quick overview
 - ✅ **Deduplication** - parents with multiple children appear once
 - ✅ **Sorted alphabetically** by parent name
+- ✅ **Class division filtering** to focus on specific classes
+
+**Usage Examples**:
+
+```bash
+# Get all linked parents for authenticated teacher
+GET /api/users/teacher-linked-parents
+
+# Get linked parents for specific teacher (admin/principal)
+GET /api/users/teacher-linked-parents?teacher_id=uuid
+
+# Filter by specific class division
+GET /api/users/teacher-linked-parents?class_division_id=uuid
+
+# Filter by class division for specific teacher
+GET /api/users/teacher-linked-parents?teacher_id=uuid&class_division_id=uuid
+```
 
 ### 7. View Calendar Events
 

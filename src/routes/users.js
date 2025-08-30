@@ -1473,12 +1473,32 @@ router.get('/teacher-linked-parents',
     async (req, res, next) => {
         try {
             const teacherId = req.user.role === 'teacher' ? req.user.id : req.query.teacher_id;
+            const classDivisionId = req.query.class_division_id; // New filter parameter
+            let classDivision = null; // Declare at top level
 
             if (!teacherId) {
                 return res.status(400).json({
                     status: 'error',
                     message: 'Teacher ID is required'
                 });
+            }
+
+            // Validate class division ID if provided
+            if (classDivisionId) {
+                const { data: classDivisionData, error: classError } = await adminSupabase
+                    .from('class_divisions')
+                    .select('id, division, class_level:class_level_id(name)')
+                    .eq('id', classDivisionId)
+                    .single();
+
+                if (classError || !classDivisionData) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid class division ID provided'
+                    });
+                }
+
+                classDivision = classDivisionData; // Assign to top-level variable
             }
 
             // Verify teacher exists
@@ -1497,7 +1517,7 @@ router.get('/teacher-linked-parents',
             }
 
             // Get all class assignments for this teacher
-            const { data: teacherAssignments, error: assignmentError } = await adminSupabase
+            let teacherAssignmentsQuery = adminSupabase
                 .from('class_teacher_assignments')
                 .select(`
                     id,
@@ -1513,6 +1533,13 @@ router.get('/teacher-linked-parents',
                 `)
                 .eq('teacher_id', teacherId)
                 .eq('is_active', true);
+
+            // Apply class division filter if provided
+            if (classDivisionId) {
+                teacherAssignmentsQuery = teacherAssignmentsQuery.eq('class_division_id', classDivisionId);
+            }
+
+            const { data: teacherAssignments, error: assignmentError } = await teacherAssignmentsQuery;
 
             if (assignmentError) {
                 console.error('Error fetching teacher assignments:', assignmentError);
@@ -1805,6 +1832,10 @@ router.get('/teacher-linked-parents',
                         phone_number: principal.phone_number,
                         role: principal.role
                     } : null,
+                    filters: {
+                        class_division_id: classDivisionId || null,
+                        class_division_name: classDivision ? `${classDivision.class_level?.name || 'Unknown'} ${classDivision.division || 'Unknown'}` : null
+                    },
                     summary: {
                         total_linked_parents: parentsWithChatInfo.length,
                         total_students: totalStudents,
