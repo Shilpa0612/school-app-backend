@@ -293,6 +293,15 @@ router.get('/events',
                 use_ist = 'true'
             } = req.query;
 
+            console.log('Calendar events request:', {
+                user_role: req.user.role,
+                user_id: req.user.id,
+                status,
+                event_type,
+                event_category,
+                class_division_id
+            });
+
             // Try to use the optimized database function first
             let events = [];
             let error = null;
@@ -312,7 +321,7 @@ router.get('/events',
                 error = result.error;
             } catch (rpcError) {
                 // Fallback to optimized direct query if function doesn't exist
-                console.log('Using fallback optimized query...');
+                console.log('RPC function not available, using fallback query...');
 
                 // Determine status filter based on user role
                 let statusFilter = 'approved';
@@ -320,7 +329,8 @@ router.get('/events',
                     if (['admin', 'principal'].includes(req.user.role)) {
                         statusFilter = status;
                     } else if (req.user.role === 'teacher' && ['approved', 'pending', 'rejected'].includes(status)) {
-                        statusFilter = status;
+                        // For teachers, don't apply status filter to DB query - let post-processing handle it
+                        statusFilter = null;
                     } else if (status !== 'approved') {
                         return res.status(400).json({
                             status: 'error',
@@ -372,7 +382,7 @@ router.get('/events',
                 error = result.error;
 
                 // Apply teacher filtering if needed
-                if (req.user.role === 'teacher' && !status && !error) {
+                if (req.user.role === 'teacher' && !error) {
                     const { data: assignments } = await adminSupabase
                         .from('class_teacher_assignments')
                         .select('class_division_id')
@@ -382,6 +392,9 @@ router.get('/events',
                     const teacherClassIds = assignments?.map(a => a.class_division_id) || [];
 
                     events = events.filter(event => {
+                        // If status filter is applied, only show events matching that status
+                        if (status && event.status !== status) return false;
+
                         // Show approved events
                         if (event.status === 'approved') return true;
 
@@ -414,7 +427,10 @@ router.get('/events',
                 }
             }
 
-            if (error) throw error;
+            if (error) {
+                console.error('Calendar events query error:', error);
+                throw error;
+            }
 
             // Minimal post-processing for class info
             const processedEvents = events.map(event => {
@@ -471,6 +487,8 @@ router.get('/events',
                     rejection_reason: event.rejection_reason || null
                 };
             });
+
+            console.log(`Calendar events response: ${processedEvents.length} events found`);
 
             res.json({
                 status: 'success',
