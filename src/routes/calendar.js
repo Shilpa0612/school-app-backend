@@ -519,6 +519,7 @@ router.get('/events/parent',
                 start_date,
                 end_date,
                 event_category,
+                student_id, // New filter for specific student
                 use_ist = 'true'
             } = req.query;
 
@@ -530,15 +531,34 @@ router.get('/events/parent',
                 });
             }
 
-            // First, get all student IDs for this parent
+            // First, get all student IDs for this parent with student details
             const { data: parentMappings, error: mappingsError } = await supabase
                 .from('parent_student_mappings')
-                .select('student_id')
+                .select(`
+                    student_id,
+                    students:students_master (
+                        id,
+                        full_name,
+                        admission_number
+                    )
+                `)
                 .eq('parent_id', req.user.id);
 
             if (mappingsError) throw mappingsError;
 
-            const studentIds = parentMappings?.map(mapping => mapping.student_id) || [];
+            // Filter by specific student if provided
+            let filteredMappings = parentMappings || [];
+            if (student_id) {
+                filteredMappings = filteredMappings.filter(mapping => mapping.student_id === student_id);
+                if (filteredMappings.length === 0) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Student not found or you do not have access to this student'
+                    });
+                }
+            }
+
+            const studentIds = filteredMappings?.map(mapping => mapping.student_id) || [];
 
             // Get all class divisions where parent has children enrolled
             let childClasses = [];
@@ -548,7 +568,9 @@ router.get('/events/parent',
                 const { data: childClassesData, error: childClassesError } = await supabase
                     .from('student_academic_records')
                     .select(`
+                        student_id,
                         class_division_id,
+                        roll_number,
                         class_divisions!inner (
                             id,
                             division,
@@ -633,11 +655,80 @@ router.get('/events/parent',
                 filteredEvents = filteredEvents.filter(event => event.status === 'approved');
             }
 
+            // Group events by student and add student information
+            const eventsByStudent = [];
+
+            for (const mapping of filteredMappings) {
+                const student = mapping.students;
+                const studentRecord = childClasses.find(record => record.student_id === mapping.student_id);
+
+                // Find events relevant to this student's class
+                const studentEvents = filteredEvents.filter(event => {
+                    if (event.event_type === 'school_wide') return true;
+                    if (event.event_type === 'class_specific') {
+                        if (event.class_division_id && studentRecord?.class_division_id === event.class_division_id) return true;
+                        if (event.class_division_ids && event.class_division_ids.includes(studentRecord?.class_division_id)) return true;
+                    }
+                    return false;
+                });
+
+                // Add student information to each event
+                const eventsWithStudentInfo = studentEvents.map(event => ({
+                    ...event,
+                    student_info: {
+                        student_id: mapping.student_id,
+                        student_name: student?.full_name || 'Unknown',
+                        admission_number: student?.admission_number || 'Unknown',
+                        class_division_id: studentRecord?.class_division_id || null,
+                        class_name: studentRecord?.class_divisions ?
+                            `${studentRecord.class_divisions.class_level.name} ${studentRecord.class_divisions.division}` : 'Unknown',
+                        roll_number: studentRecord?.roll_number || null
+                    }
+                }));
+
+                eventsByStudent.push({
+                    student_id: mapping.student_id,
+                    student_name: student?.full_name || 'Unknown',
+                    admission_number: student?.admission_number || 'Unknown',
+                    class_info: studentRecord ? {
+                        class_division_id: studentRecord.class_division_id,
+                        class_name: `${studentRecord.class_divisions.class_level.name} ${studentRecord.class_divisions.division}`,
+                        division: studentRecord.class_divisions.division,
+                        academic_year: studentRecord.class_divisions.academic_year.year_name,
+                        class_level: studentRecord.class_divisions.class_level.name,
+                        roll_number: studentRecord.roll_number
+                    } : null,
+                    events: eventsWithStudentInfo,
+                    total_events: eventsWithStudentInfo.length
+                });
+            }
+
+            // Sort students by name
+            eventsByStudent.sort((a, b) => a.student_name.localeCompare(b.student_name));
+
+            // Calculate summary statistics
+            const totalEvents = eventsByStudent.reduce((sum, student) => sum + student.total_events, 0);
+            const studentsWithEvents = eventsByStudent.filter(student => student.total_events > 0).length;
+            const studentsWithoutEvents = eventsByStudent.filter(student => student.total_events === 0).length;
+
             res.json({
                 status: 'success',
                 data: {
-                    events: filteredEvents,
-                    child_classes: childClasses?.map(record => record.class_divisions) || []
+                    events_by_student: eventsByStudent,
+                    summary: {
+                        total_students: eventsByStudent.length,
+                        total_events: totalEvents,
+                        students_with_events: studentsWithEvents,
+                        students_without_events: studentsWithoutEvents,
+                        filtered_by_student: !!student_id
+                    },
+                    filters_applied: {
+                        start_date: start_date || null,
+                        end_date: end_date || null,
+                        event_category: event_category || null,
+                        student_id: student_id || null,
+                        use_ist: use_ist === 'true'
+                    }
                 }
             });
         } catch (error) {

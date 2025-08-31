@@ -1560,6 +1560,294 @@ router.get('/debug/division/:class_division_id/teacher-assignments',
 );
 
 // ============================================================================
+// GET PARENT ANNOUNCEMENTS GROUPED BY STUDENT
+// ============================================================================
+
+router.get('/parent/children',
+    authenticate,
+    authorize(['parent']),
+    async (req, res, next) => {
+        try {
+            const {
+                student_id, // Filter by specific student
+                start_date,
+                end_date,
+                status = 'approved',
+                announcement_type,
+                priority,
+                is_featured,
+                page = 1,
+                limit = 20
+            } = req.query;
+
+            const offset = (page - 1) * limit;
+            const parentId = req.user.id;
+
+            // First, get all student IDs for this parent with student details
+            const { data: parentMappings, error: mappingsError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    student_id,
+                    students:students_master (
+                        id,
+                        full_name,
+                        admission_number
+                    )
+                `)
+                .eq('parent_id', parentId);
+
+            if (mappingsError) throw mappingsError;
+
+            // Filter by specific student if provided
+            let filteredMappings = parentMappings || [];
+            if (student_id) {
+                filteredMappings = filteredMappings.filter(mapping => mapping.student_id === student_id);
+                if (filteredMappings.length === 0) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Student not found or you do not have access to this student'
+                    });
+                }
+            }
+
+            const studentIds = filteredMappings?.map(mapping => mapping.student_id) || [];
+
+            // Get all class divisions where parent has children enrolled
+            let childClasses = [];
+            let classDivisionIds = [];
+
+            if (studentIds.length > 0) {
+                const { data: childClassesData, error: childClassesError } = await adminSupabase
+                    .from('student_academic_records')
+                    .select(`
+                        student_id,
+                        class_division_id,
+                        roll_number,
+                        class_divisions!inner (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `)
+                    .in('student_id', studentIds)
+                    .eq('status', 'ongoing');
+
+                if (childClassesError) throw childClassesError;
+
+                childClasses = childClassesData || [];
+                classDivisionIds = childClasses?.map(record => record.class_division_id) || [];
+            }
+
+            // Build query for announcements relevant to parent's children
+            let query = adminSupabase
+                .from('announcements')
+                .select(`
+                    *,
+                    creator:users!announcements_created_by_fkey(
+                        id,
+                        full_name,
+                        role
+                    ),
+                    approver:users!announcements_approved_by_fkey(
+                        id,
+                        full_name,
+                        role
+                    ),
+                    attachments:announcement_attachments(
+                        id,
+                        file_name,
+                        file_size,
+                        file_type,
+                        mime_type
+                    )
+                `)
+                .eq('is_published', true);
+
+            // Apply status filter
+            if (status) {
+                query = query.eq('status', status);
+            }
+
+            // Apply additional filters
+            if (announcement_type) {
+                query = query.eq('announcement_type', announcement_type);
+            }
+            if (priority) {
+                query = query.eq('priority', priority);
+            }
+            if (is_featured !== undefined) {
+                query = query.eq('is_featured', is_featured === 'true');
+            }
+
+            // Apply date range filters
+            if (start_date) {
+                query = query.gte('publish_at', start_date);
+            }
+            if (end_date) {
+                query = query.lte('publish_at', end_date);
+            }
+
+            // Build the OR condition for announcements relevant to parent's children
+            if (classDivisionIds.length > 0) {
+                // Include school-wide announcements, class-specific announcements, and role-based announcements
+                const conditions = [
+                    'target_roles.cs.{parent}',
+                    'target_roles.eq.{}',
+                    `target_classes.ov.{${classDivisionIds.join(',')}}`
+                ];
+
+                query = query.or(conditions.join(','));
+            } else {
+                // If no children, only show school-wide and role-based announcements
+                query = query.or('target_roles.cs.{parent},target_roles.eq.{}');
+            }
+
+            // Get total count with same filters
+            let countQuery = adminSupabase
+                .from('announcements')
+                .select('*', { count: 'exact', head: true })
+                .eq('is_published', true);
+
+            if (status) countQuery = countQuery.eq('status', status);
+            if (announcement_type) countQuery = countQuery.eq('announcement_type', announcement_type);
+            if (priority) countQuery = countQuery.eq('priority', priority);
+            if (is_featured !== undefined) countQuery = countQuery.eq('is_featured', is_featured === 'true');
+            if (start_date) countQuery = countQuery.gte('publish_at', start_date);
+            if (end_date) countQuery = countQuery.lte('publish_at', end_date);
+
+            if (classDivisionIds.length > 0) {
+                const conditions = [
+                    'target_roles.cs.{parent}',
+                    'target_roles.eq.{}',
+                    `target_classes.ov.{${classDivisionIds.join(',')}}`
+                ];
+                countQuery = countQuery.or(conditions.join(','));
+            } else {
+                countQuery = countQuery.or('target_roles.cs.{parent},target_roles.eq.{}');
+            }
+
+            const { count: totalCount, error: countError } = await countQuery;
+            if (countError) {
+                logger.error('Error getting parent announcements count:', countError);
+            }
+
+            // Get announcements with pagination
+            const { data: announcements, error: fetchError } = await query
+                .order('priority', { ascending: false })
+                .order('publish_at', { ascending: false })
+                .range(offset, offset + limit - 1);
+
+            if (fetchError) {
+                logger.error('Error fetching parent announcements:', fetchError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch announcements'
+                });
+            }
+
+            // Group announcements by student and add student information
+            const announcementsByStudent = [];
+
+            for (const mapping of filteredMappings) {
+                const student = mapping.students;
+                const studentRecord = childClasses.find(record => record.student_id === mapping.student_id);
+
+                // Find announcements relevant to this student's class
+                const studentAnnouncements = (announcements || []).filter(announcement => {
+                    // School-wide announcements are relevant to all students
+                    if (announcement.target_roles?.includes('parent') || announcement.target_roles?.length === 0) {
+                        return true;
+                    }
+
+                    // Class-specific announcements
+                    if (announcement.target_classes && announcement.target_classes.length > 0) {
+                        if (studentRecord?.class_division_id && announcement.target_classes.includes(studentRecord.class_division_id)) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                });
+
+                // Add student information to each announcement
+                const announcementsWithStudentInfo = studentAnnouncements.map(announcement => ({
+                    ...announcement,
+                    student_info: {
+                        student_id: mapping.student_id,
+                        student_name: student?.full_name || 'Unknown',
+                        admission_number: student?.admission_number || 'Unknown',
+                        class_division_id: studentRecord?.class_division_id || null,
+                        class_name: studentRecord?.class_divisions ?
+                            `${studentRecord.class_divisions.class_level.name} ${studentRecord.class_divisions.division}` : 'Unknown',
+                        roll_number: studentRecord?.roll_number || null
+                    }
+                }));
+
+                announcementsByStudent.push({
+                    student_id: mapping.student_id,
+                    student_name: student?.full_name || 'Unknown',
+                    admission_number: student?.admission_number || 'Unknown',
+                    class_info: studentRecord ? {
+                        class_division_id: studentRecord.class_division_id,
+                        class_name: `${studentRecord.class_divisions.class_level.name} ${studentRecord.class_divisions.division}`,
+                        division: studentRecord.class_divisions.division,
+                        academic_year: studentRecord.class_divisions.academic_year.year_name,
+                        class_level: studentRecord.class_divisions.class_level.name,
+                        roll_number: studentRecord.roll_number
+                    } : null,
+                    announcements: announcementsWithStudentInfo,
+                    total_announcements: announcementsWithStudentInfo.length
+                });
+            }
+
+            // Sort students by name
+            announcementsByStudent.sort((a, b) => a.student_name.localeCompare(b.student_name));
+
+            // Calculate summary statistics
+            const totalAnnouncements = announcementsByStudent.reduce((sum, student) => sum + student.total_announcements, 0);
+            const studentsWithAnnouncements = announcementsByStudent.filter(student => student.total_announcements > 0).length;
+            const studentsWithoutAnnouncements = announcementsByStudent.filter(student => student.total_announcements === 0).length;
+
+            res.json({
+                status: 'success',
+                data: {
+                    announcements_by_student: announcementsByStudent,
+                    summary: {
+                        total_students: announcementsByStudent.length,
+                        total_announcements: totalAnnouncements,
+                        students_with_announcements: studentsWithAnnouncements,
+                        students_without_announcements: studentsWithoutAnnouncements,
+                        filtered_by_student: !!student_id
+                    },
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: totalCount || 0,
+                        total_pages: Math.ceil((totalCount || 0) / limit),
+                        has_next: offset + limit < (totalCount || 0),
+                        has_prev: page > 1
+                    },
+                    filters_applied: {
+                        student_id: student_id || null,
+                        start_date: start_date || null,
+                        end_date: end_date || null,
+                        status: status || null,
+                        announcement_type: announcement_type || null,
+                        priority: priority || null,
+                        is_featured: is_featured || null
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get parent announcements by student:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
 

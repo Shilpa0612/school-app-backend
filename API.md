@@ -1252,17 +1252,19 @@ GET /calendar/events/parent
 
 **Query Parameters:**
 
-- `start_date`: Filter events from this date
-- `end_date`: Filter events until this date
-- `event_category`: Filter by category
+- `start_date`: Filter events from this date (ISO 8601 format)
+- `end_date`: Filter events until this date (ISO 8601 format)
+- `event_category`: Filter by category (general, academic, sports, cultural, holiday, exam, meeting, other)
+- `student_id`: Filter events for a specific student only (UUID)
 - `use_ist`: Set to `true` to get events in IST timezone (default: `true`)
 
 **Access Control:**
 
 - Only parents can access this endpoint
 - Returns both school-wide events and class-specific events for their children's classes
+- Events are grouped by student for better organization
 
-**Response:** List of all relevant events for the parent
+**Response:** Events grouped by student with comprehensive student information
 
 **Example Response:**
 
@@ -1270,63 +1272,104 @@ GET /calendar/events/parent
 {
   "status": "success",
   "data": {
-    "events": [
+    "events_by_student": [
       {
-        "id": "uuid",
-        "title": "School Annual Day",
-        "description": "Annual day celebration",
-        "event_date": "2024-01-15T09:00:00Z",
-        "event_date_ist": "2024-01-15T14:30:00+05:30",
-        "event_type": "school_wide",
-        "event_category": "cultural",
-        "is_single_day": true,
-        "start_time": "09:00:00",
-        "end_time": "17:00:00",
-        "timezone": "Asia/Kolkata",
-        "created_by": "uuid",
-        "created_at": "2024-01-10T10:00:00Z",
-        "creator_name": "Principal Name",
-        "creator_role": "principal"
-      },
-      {
-        "id": "uuid",
-        "title": "Class 5A Parent Meeting",
-        "description": "Monthly parent-teacher meeting",
-        "event_date": "2024-01-20T14:00:00Z",
-        "event_date_ist": "2024-01-20T19:30:00+05:30",
-        "event_type": "class_specific",
-        "class_division_id": "uuid",
-        "event_category": "meeting",
-        "is_single_day": true,
-        "start_time": "14:00:00",
-        "end_time": "15:00:00",
-        "timezone": "Asia/Kolkata",
-        "created_by": "uuid",
-        "created_at": "2024-01-12T10:00:00Z",
-        "creator_name": "Teacher Name",
-        "creator_role": "teacher",
-        "class_division": "A",
-        "class_level": "Grade 5",
-        "academic_year": "2024-2025"
+        "student_id": "uuid",
+        "student_name": "John Doe",
+        "admission_number": "2024-001",
+        "class_info": {
+          "class_division_id": "uuid",
+          "class_name": "Grade 5 A",
+          "division": "A",
+          "academic_year": "2024-2025",
+          "class_level": "Grade 5",
+          "roll_number": "15"
+        },
+        "events": [
+          {
+            "id": "uuid",
+            "title": "School Annual Day",
+            "description": "Annual day celebration",
+            "event_date": "2024-01-15T09:00:00Z",
+            "event_date_ist": "2024-01-15T14:30:00+05:30",
+            "event_type": "school_wide",
+            "event_category": "cultural",
+            "is_single_day": true,
+            "start_time": "09:00:00",
+            "end_time": "17:00:00",
+            "timezone": "Asia/Kolkata",
+            "created_by": "uuid",
+            "created_at": "2024-01-10T10:00:00Z",
+            "creator_name": "Principal Name",
+            "creator_role": "principal",
+            "student_info": {
+              "student_id": "uuid",
+              "student_name": "John Doe",
+              "admission_number": "2024-001",
+              "class_division_id": "uuid",
+              "class_name": "Grade 5 A",
+              "roll_number": "15"
+            }
+          },
+          {
+            "id": "uuid",
+            "title": "Class 5A Parent Meeting",
+            "description": "Monthly parent-teacher meeting",
+            "event_date": "2024-01-20T14:00:00Z",
+            "event_date_ist": "2024-01-20T19:30:00+05:30",
+            "event_type": "class_specific",
+            "class_division_id": "uuid",
+            "event_category": "meeting",
+            "is_single_day": true,
+            "start_time": "14:00:00",
+            "end_time": "15:00:00",
+            "timezone": "Asia/Kolkata",
+            "created_by": "uuid",
+            "created_at": "2024-01-12T10:00:00Z",
+            "creator_name": "Teacher Name",
+            "creator_role": "teacher",
+            "class_division": "A",
+            "class_level": "Grade 5",
+            "academic_year": "2024-2025",
+            "student_info": {
+              "student_id": "uuid",
+              "student_name": "John Doe",
+              "admission_number": "2024-001",
+              "class_division_id": "uuid",
+              "class_name": "Grade 5 A",
+              "roll_number": "15"
+            }
+          }
+        ],
+        "total_events": 2
       }
     ],
-    "child_classes": [
-      {
-        "id": "uuid",
-        "division": "A",
-        "academic_year": {
-          "year_name": "2024-2025"
-        },
-        "class_level": {
-          "name": "Grade 5"
-        }
-      }
-    ]
+    "summary": {
+      "total_students": 1,
+      "total_events": 2,
+      "students_with_events": 1,
+      "students_without_events": 0,
+      "filtered_by_student": false
+    },
+    "filters_applied": {
+      "start_date": null,
+      "end_date": null,
+      "event_category": null,
+      "student_id": null,
+      "use_ist": true
+    }
   }
 }
 ```
 
 #### Enhanced Features
+
+**Student Grouping & Information:**
+
+- **Events grouped by student**: Each student has their own section with all relevant events
+- **Student details**: Name, admission number, class info, and roll number included
+- **Student filtering**: Use `student_id` parameter to get events for a specific student only
+- **Student info in events**: Each event includes `student_info` with student details
 
 **Single Day Events:**
 
@@ -1346,6 +1389,20 @@ GET /calendar/events/parent
 - Teachers can create events for their assigned classes
 - Parents see events for their children's classes
 - Better organization and filtering
+
+**Comprehensive Filtering:**
+
+- **Date range**: `start_date` and `end_date` for time-based filtering
+- **Event category**: Filter by event type (academic, sports, cultural, etc.)
+- **Student specific**: Filter events for one child only
+- **Combined filters**: Use multiple filters together for precise results
+
+**Enhanced Response Structure:**
+
+- **Summary statistics**: Total students, events, and filtering information
+- **Filter tracking**: Shows exactly which filters were applied
+- **Student organization**: Clear separation of events by child
+- **Event enrichment**: Each event includes student context information
 
 **Enhanced Access Control:**
 

@@ -441,6 +441,111 @@ PATCH /api/announcements/{id}/read
 }
 ```
 
+### 10. **Get Parent Announcements Grouped by Student**
+
+```http
+GET /api/announcements/parent/children
+```
+
+**Query Parameters:**
+
+- `student_id`: Filter announcements for a specific student only (UUID)
+- `start_date`: Filter announcements from this date (ISO 8601 format)
+- `end_date`: Filter announcements until this date (ISO 8601 format)
+- `status`: Filter by status (default: approved)
+- `announcement_type`: Filter by type (circular, general, urgent, academic, administrative)
+- `priority`: Filter by priority (low, normal, high, urgent)
+- `is_featured`: Filter featured announcements (true, false)
+- `page`: Page number (default: 1)
+- `limit`: Items per page (default: 20, max: 100)
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "announcements_by_student": [
+      {
+        "student_id": "uuid",
+        "student_name": "John Doe",
+        "admission_number": "2024-001",
+        "class_info": {
+          "class_division_id": "uuid",
+          "class_name": "Grade 5 A",
+          "division": "A",
+          "academic_year": "2024-2025",
+          "class_level": "Grade 5",
+          "roll_number": "15"
+        },
+        "announcements": [
+          {
+            "id": "uuid",
+            "title": "School Holiday Notice",
+            "content": "School will be closed on Monday for Republic Day.",
+            "announcement_type": "circular",
+            "status": "approved",
+            "priority": "high",
+            "is_published": true,
+            "is_featured": true,
+            "publish_at": "2024-01-25T00:00:00Z",
+            "created_at": "2024-01-24T10:00:00Z",
+            "student_info": {
+              "student_id": "uuid",
+              "student_name": "John Doe",
+              "admission_number": "2024-001",
+              "class_division_id": "uuid",
+              "class_name": "Grade 5 A",
+              "roll_number": "15"
+            },
+            "creator": {
+              "id": "uuid",
+              "full_name": "Principal Name",
+              "role": "principal"
+            },
+            "attachments": []
+          }
+        ],
+        "total_announcements": 1
+      }
+    ],
+    "summary": {
+      "total_students": 1,
+      "total_announcements": 1,
+      "students_with_announcements": 1,
+      "students_without_announcements": 0,
+      "filtered_by_student": false
+    },
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 1,
+      "total_pages": 1,
+      "has_next": false,
+      "has_prev": false
+    },
+    "filters_applied": {
+      "student_id": null,
+      "start_date": null,
+      "end_date": null,
+      "status": "approved",
+      "announcement_type": null,
+      "priority": null,
+      "is_featured": null
+    }
+  }
+}
+```
+
+**Features:**
+
+- **Student Grouping**: Announcements organized by student for easy navigation
+- **Student Information**: Each announcement includes student name, admission number, and class details
+- **Comprehensive Filtering**: Filter by student, date range, status, type, priority, and featured status
+- **Class-Based Targeting**: Shows announcements relevant to each child's class divisions
+- **Pagination**: Efficient loading of large announcement sets
+- **Summary Statistics**: Overview of announcements per student
+
 ## Approval Workflow
 
 ### **Auto-Approval**

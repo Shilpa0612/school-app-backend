@@ -396,7 +396,14 @@ router.get('/children/teachers',
             // Fetch the parent's child mappings
             const { data: mappings, error: mappingError } = await adminSupabase
                 .from('parent_student_mappings')
-                .select('student_id')
+                .select(`
+                    student_id,
+                    students:students_master (
+                        id,
+                        full_name,
+                        admission_number
+                    )
+                `)
                 .eq('parent_id', req.user.id);
 
             if (mappingError) throw mappingError;
@@ -488,12 +495,16 @@ router.get('/children/teachers',
 
             // Assemble response by child
             const teachersByChild = [];
-            for (const studentId of studentIds) {
+            for (const mapping of mappings || []) {
+                const studentId = mapping.student_id;
+                const student = mapping.students;
                 const rec = (records || []).find(r => r.student_id === studentId);
                 const classId = rec?.class_division_id || null;
                 const teachers = classId ? (classToTeachers.get(classId) || []) : [];
                 teachersByChild.push({
                     student_id: studentId,
+                    student_name: student?.full_name || 'Unknown',
+                    admission_number: student?.admission_number || 'Unknown',
                     class_division_id: classId,
                     teachers
                 });
@@ -650,7 +661,9 @@ router.get('/children/teachers',
                         total_children: teachersByChildWithChat.length,
                         total_teachers: allTeachersWithChat.length,
                         teachers_with_chat: teachersWithChat,
-                        teachers_without_chat: teachersWithoutChat
+                        teachers_without_chat: teachersWithoutChat,
+                        children_with_teachers: teachersByChildWithChat.filter(c => c.teachers.length > 0).length,
+                        children_without_teachers: teachersByChildWithChat.filter(c => c.teachers.length === 0).length
                     }
                 }
             });
