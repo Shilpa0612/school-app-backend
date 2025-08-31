@@ -2689,4 +2689,274 @@ router.get('/principal/chats',
     }
 );
 
+// ============================================================================
+// GET DIVISION PARENTS FOR TEACHER CHAT (Minimal data)
+// ============================================================================
+
+router.get('/division/:class_division_id/parents',
+    authenticate,
+    authorize(['teacher']),
+    async (req, res, next) => {
+        try {
+            const { class_division_id } = req.params;
+            const teacherId = req.user.id;
+
+            console.log('Division parents access request:', {
+                teacher_id: teacherId,
+                class_division_id,
+                user_role: req.user.role
+            });
+
+            // Validate class_division_id format
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(class_division_id)) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Invalid class_division_id format. Must be a valid UUID'
+                });
+            }
+
+            // Verify teacher has access to this division (either as class teacher or subject teacher)
+            let hasAccess = false;
+
+            console.log('Checking teacher access for division:', {
+                teacher_id: teacherId,
+                class_division_id,
+                step: 'starting access check'
+            });
+
+            // Debug: Check all assignments for this teacher
+            const { data: allTeacherAssignments, error: allAssignmentsError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('*')
+                .eq('teacher_id', teacherId)
+                .eq('is_active', true);
+
+            console.log('All teacher assignments found:', {
+                teacher_id: teacherId,
+                total_assignments: allTeacherAssignments?.length || 0,
+                assignments: allTeacherAssignments?.map(a => ({
+                    id: a.id,
+                    class_division_id: a.class_division_id,
+                    assignment_type: a.assignment_type,
+                    subject: a.subject,
+                    is_active: a.is_active
+                })) || [],
+                error: allAssignmentsError
+            });
+
+            // Check if teacher has any assignment for this division in class_teacher_assignments table
+            const { data: teacherAssignments, error: teacherAssignmentError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('id, assignment_type, subject')
+                .eq('teacher_id', teacherId)
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true);
+
+            // If no assignment found with teacher_id, try user_id field
+            let teacherAssignmentsByUserId = null;
+            if (!teacherAssignments || teacherAssignments.length === 0) {
+                const { data: assignmentsByUserId, error: userIdError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, assignment_type, subject')
+                    .eq('user_id', teacherId)
+                    .eq('class_division_id', class_division_id)
+                    .eq('is_active', true);
+
+                teacherAssignmentsByUserId = assignmentsByUserId;
+                console.log('Tried user_id field check:', {
+                    teacher_id: teacherId,
+                    class_division_id,
+                    data: assignmentsByUserId,
+                    error: userIdError,
+                    found_assignment: assignmentsByUserId && assignmentsByUserId.length > 0
+                });
+            }
+
+            console.log('class_teacher_assignments check result:', {
+                teacher_id: teacherId,
+                class_division_id,
+                data: teacherAssignments,
+                error: teacherAssignmentError,
+                found_assignment: teacherAssignments && teacherAssignments.length > 0,
+                data_by_user_id: teacherAssignmentsByUserId
+            });
+
+            if ((teacherAssignments && teacherAssignments.length > 0) || (teacherAssignmentsByUserId && teacherAssignmentsByUserId.length > 0)) {
+                const assignments = teacherAssignments || teacherAssignmentsByUserId;
+                hasAccess = true;
+                console.log('Teacher access granted via class_teacher_assignments:', {
+                    teacher_id: teacherId,
+                    class_division_id,
+                    total_assignments: assignments.length,
+                    assignments: assignments.map(a => ({
+                        assignment_type: a.assignment_type,
+                        subject: a.subject
+                    })),
+                    used_field: teacherAssignments ? 'teacher_id' : 'user_id'
+                });
+            } else {
+                console.log('No assignment found in class_teacher_assignments, checking legacy table...');
+
+                // Fallback: Check legacy class_divisions table if class_teacher_assignments doesn't have the data
+                const { data: classTeacherCheck, error: classTeacherError } = await adminSupabase
+                    .from('class_divisions')
+                    .select('id')
+                    .eq('id', class_division_id)
+                    .eq('teacher_id', teacherId)
+                    .single();
+
+                console.log('class_divisions check result:', {
+                    teacher_id: teacherId,
+                    class_division_id,
+                    data: classTeacherCheck,
+                    error: classTeacherError,
+                    found_class_teacher: !!classTeacherCheck
+                });
+
+                if (classTeacherCheck) {
+                    hasAccess = true;
+                    console.log('Teacher access granted via legacy class_divisions table');
+                }
+            }
+
+            console.log('Final access decision:', {
+                teacher_id: teacherId,
+                class_division_id,
+                has_access: hasAccess,
+                reason: hasAccess ? 'Access granted' : 'No assignments found in any table'
+            });
+
+            if (!hasAccess) {
+                console.log('Teacher access denied:', {
+                    teacher_id: teacherId,
+                    class_division_id,
+                    reason: 'No assignments found in any table'
+                });
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'You do not have access to this class division'
+                });
+            }
+
+            // Get all students in this division with minimal data
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    student_academic_records!inner (
+                        roll_number,
+                        class_division_id
+                    )
+                `)
+                .eq('status', 'active')
+                .eq('student_academic_records.class_division_id', class_division_id)
+                .eq('student_academic_records.status', 'ongoing');
+
+            if (studentsError) {
+                console.log('Error fetching students:', studentsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch students'
+                });
+            }
+
+            // Sort students by roll number on the client side
+            const sortedStudents = (students || []).sort((a, b) => {
+                const rollA = parseInt(a.student_academic_records[0]?.roll_number) || 0;
+                const rollB = parseInt(b.student_academic_records[0]?.roll_number) || 0;
+                return rollA - rollB;
+            });
+
+            if (!sortedStudents || sortedStudents.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        class_division_id,
+                        students: [],
+                        total_students: 0,
+                        total_parents: 0
+                    }
+                });
+            }
+
+            // Get parent information for all students
+            const studentIds = sortedStudents.map(s => s.id);
+            const { data: parentMappings, error: parentError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    student_id,
+                    parent_id,
+                    relationship,
+                    is_primary_guardian,
+                    parent:users!parent_student_mappings_parent_id_fkey (
+                        id,
+                        full_name,
+                        email,
+                        phone_number
+                    )
+                `)
+                .in('student_id', studentIds);
+
+            if (parentError) {
+                console.log('Error fetching parent mappings:', parentError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch parent information'
+                });
+            }
+
+            // Organize data by student with parent information
+            const studentsWithParents = sortedStudents.map(student => {
+                const studentRecord = student.student_academic_records[0];
+                const studentParents = parentMappings?.filter(pm => pm.student_id === student.id) || [];
+
+                return {
+                    student: {
+                        id: student.id,
+                        name: student.full_name,
+                        roll_number: studentRecord?.roll_number || 'N/A'
+                    },
+                    parents: studentParents.map(pm => ({
+                        id: pm.parent.id,
+                        name: pm.parent.full_name,
+                        email: pm.parent.email,
+                        phone_number: pm.parent.phone_number,
+                        relationship: pm.relationship,
+                        is_primary_guardian: pm.is_primary_guardian
+                    }))
+                };
+            });
+
+            // Get unique parent count
+            const uniqueParentIds = new Set();
+            studentsWithParents.forEach(swp => {
+                swp.parents.forEach(parent => {
+                    uniqueParentIds.add(parent.id);
+                });
+            });
+
+            res.json({
+                status: 'success',
+                data: {
+                    class_division_id,
+                    students: studentsWithParents,
+                    total_students: sortedStudents.length,
+                    total_parents: uniqueParentIds.size,
+                    summary: {
+                        students_with_parents: studentsWithParents.filter(swp => swp.parents.length > 0).length,
+                        students_without_parents: studentsWithParents.filter(swp => swp.parents.length === 0).length
+                    }
+                }
+            });
+
+        } catch (error) {
+            console.log('Error fetching division parents:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
+
 export default router; 

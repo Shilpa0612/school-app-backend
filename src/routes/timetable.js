@@ -540,6 +540,395 @@ router.get('/class/:class_division_id',
     }
 );
 
+// Get all children's timetables for a parent
+router.get('/parent/children',
+    authenticate,
+    authorize(['parent']),
+    async (req, res, next) => {
+        try {
+            const { config_id, academic_year_id } = req.query;
+
+            // Get all children for the parent using the same table structure as /api/users/children
+            const { data: mappings, error: mappingsError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    student_id,
+                    relationship,
+                    is_primary_guardian
+                `)
+                .eq('parent_id', req.user.id);
+
+            if (mappingsError) throw mappingsError;
+
+            if (!mappings || mappings.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        children: [],
+                        message: 'No children found'
+                    }
+                });
+            }
+
+            // Get student details with academic records
+            const { data: students, error: studentsError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    id,
+                    full_name,
+                    admission_number,
+                    student_academic_records (
+                        id,
+                        roll_number,
+                        status,
+                        class_division:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    )
+                `)
+                .in('id', mappings.map(m => m.student_id));
+
+            if (studentsError) throw studentsError;
+
+
+
+            // Get timetables for each child
+            const childrenWithTimetables = await Promise.all(
+                students.map(async (student) => {
+                    // Find the mapping for this student to get relationship info
+                    const mapping = mappings.find(m => m.student_id === student.id);
+
+                    // Find current academic record
+                    const currentAcademicRecord = student.student_academic_records?.find(r => r.status === 'ongoing');
+                    const class_division_id = currentAcademicRecord?.class_division?.id;
+
+                    if (!class_division_id) {
+                        return {
+                            id: student.id,
+                            name: student.full_name,
+                            admission_number: student.admission_number,
+                            relationship: mapping?.relationship,
+                            is_primary_guardian: mapping?.is_primary_guardian,
+                            timetable: null,
+                            message: 'Student not assigned to any class'
+                        };
+                    }
+
+                    // Get timetable for this child's class
+                    let query = adminSupabase
+                        .from('class_timetable')
+                        .select(`
+                            *,
+                            config:timetable_config(
+                                id,
+                                name,
+                                total_periods,
+                                days_per_week
+                            ),
+                            teacher:users!class_timetable_teacher_id_fkey(
+                                id,
+                                full_name,
+                                role
+                            )
+                        `)
+                        .eq('class_division_id', class_division_id)
+                        .eq('is_active', true)
+                        .order('day_of_week', { ascending: true })
+                        .order('period_number', { ascending: true });
+
+                    if (config_id) {
+                        query = query.eq('config_id', config_id);
+                    }
+
+                    if (academic_year_id) {
+                        query = query.eq('config.academic_year_id', academic_year_id);
+                    }
+
+                    const { data: timetableData, error: timetableError } = await query;
+
+                    if (timetableError) {
+                        return {
+                            ...child,
+                            timetable: null,
+                            error: 'Failed to fetch timetable'
+                        };
+                    }
+
+                    // Organize by day
+                    const timetableByDay = {};
+                    const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+                    timetableData.forEach(entry => {
+                        const dayName = days[entry.day_of_week - 1];
+                        if (!timetableByDay[dayName]) {
+                            timetableByDay[dayName] = [];
+                        }
+                        timetableByDay[dayName].push(entry);
+                    });
+
+                    // Sort periods within each day
+                    Object.keys(timetableByDay).forEach(day => {
+                        timetableByDay[day].sort((a, b) => a.period_number - b.period_number);
+                    });
+
+                    return {
+                        id: student.id,
+                        name: student.full_name,
+                        admission_number: student.admission_number,
+                        relationship: mapping?.relationship,
+                        is_primary_guardian: mapping?.is_primary_guardian,
+                        class_info: {
+                            class_division_id: class_division_id,
+                            class_name: `${currentAcademicRecord?.class_division?.level?.name || 'Unknown'} ${currentAcademicRecord?.class_division?.division || ''}`,
+                            division: currentAcademicRecord?.class_division?.division,
+                            academic_year: null, // Not available in current structure
+                            roll_number: currentAcademicRecord?.roll_number
+                        },
+                        timetable: timetableByDay,
+                        total_entries: timetableData.length
+                    };
+                })
+            );
+
+            res.json({
+                status: 'success',
+                data: {
+                    parent_id: req.user.id,
+                    children: childrenWithTimetables
+                }
+            });
+        } catch (error) {
+            logger.error('Error fetching parent children timetables:', error);
+            next(error);
+        }
+    }
+);
+
+// Get student timetable (for parents)
+router.get('/student/:student_id',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher', 'parent']),
+    async (req, res, next) => {
+        try {
+            const { student_id } = req.params;
+            const { config_id, academic_year_id } = req.query;
+
+            logger.info('=== STUDENT TIMETABLE ENDPOINT START ===');
+            logger.info('Request details:', {
+                student_id,
+                config_id,
+                academic_year_id,
+                user_id: req.user.id,
+                user_role: req.user.role
+            });
+
+            // For parents, verify they can only access their own children's timetables
+            if (req.user.role === 'parent') {
+                logger.info('=== PARENT VALIDATION START ===');
+                logger.info('Checking parent-child relationship for:', {
+                    parent_id: req.user.id,
+                    student_id: student_id
+                });
+
+                // Check parent-child relationship using the same table structure as /api/users/children
+                const { data: mapping, error: mappingError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select('id')
+                    .eq('parent_id', req.user.id)
+                    .eq('student_id', student_id)
+                    .single();
+
+                logger.info('Parent-child mapping result:', { mapping, mappingError });
+
+                if (mappingError || !mapping) {
+                    logger.error('Parent validation failed:', { mappingError, mapping });
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You can only access timetables for your own children'
+                    });
+                }
+
+                logger.info('✅ Parent validation successful');
+            }
+
+            // Get student's class division using the same table structure as /api/users/children
+            logger.info('=== STUDENT LOOKUP START ===');
+            logger.info('Fetching student from students_master table:', { student_id });
+
+            const { data: student, error: studentError } = await adminSupabase
+                .from('students_master')
+                .select(`
+                    student_academic_records (
+                        id,
+                        status,
+                        class_division_id
+                    )
+                `)
+                .eq('id', student_id)
+                .single();
+
+            logger.info('Student lookup result:', { student, studentError });
+
+            if (studentError || !student) {
+                logger.error('Student lookup failed:', { studentError, student });
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Student not found'
+                });
+            }
+
+            logger.info('✅ Student found successfully');
+            logger.info('Student data structure:', JSON.stringify(student, null, 2));
+            logger.info('Student academic records (detailed):', {
+                count: student.student_academic_records?.length || 0,
+                records: student.student_academic_records?.map(r => ({
+                    id: r.id,
+                    status: r.status,
+                    class_division_id: r.class_division_id
+                }))
+            });
+
+            // Extract class_division_id from the nested academic records structure
+            logger.info('=== CLASS DIVISION EXTRACTION START ===');
+            logger.info('Student academic records:', student.student_academic_records);
+
+            logger.info('Looking for academic record with status === "ongoing"');
+            logger.info('Looking for academic record with status === "ongoing"');
+            let currentAcademicRecord = student.student_academic_records?.find(r => r.status === 'ongoing');
+
+            // Fallback: if no "ongoing" status found, take the first record
+            if (!currentAcademicRecord && student.student_academic_records?.length > 0) {
+                currentAcademicRecord = student.student_academic_records[0];
+                logger.info('No "ongoing" status found, using first academic record as fallback');
+            }
+
+            logger.info('Current academic record:', currentAcademicRecord);
+            logger.info('All academic records with their statuses:',
+                student.student_academic_records?.map(r => ({ id: r.id, status: r.status, class_division_id: r.class_division_id }))
+            );
+
+            const class_division_id = currentAcademicRecord?.class_division_id;
+            logger.info('Extracted class_division_id:', class_division_id);
+
+            if (!class_division_id) {
+                logger.error('No class division found:', {
+                    hasAcademicRecords: !!student.student_academic_records,
+                    academicRecordsLength: student.student_academic_records?.length,
+                    currentAcademicRecord,
+                    extractedClassDivisionId: class_division_id
+                });
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Student is not assigned to any class or no ongoing academic record found'
+                });
+            }
+
+            logger.info('✅ Class division ID extracted successfully:', class_division_id);
+
+            // Build query for class timetable
+            logger.info('=== TIMETABLE QUERY START ===');
+            logger.info('Building timetable query for class_division_id:', class_division_id);
+
+            let query = adminSupabase
+                .from('class_timetable')
+                .select(`
+                    *,
+                    config:timetable_config(
+                        id,
+                        name,
+                        total_periods,
+                        days_per_week
+                    ),
+                    teacher:users!class_timetable_teacher_id_fkey(
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true)
+                .order('day_of_week', { ascending: true })
+                .order('period_number', { ascending: true });
+
+            logger.info('Query built successfully');
+
+            if (config_id) {
+                query = query.eq('config_id', config_id);
+            }
+
+            if (academic_year_id) {
+                query = query.eq('config.academic_year_id', academic_year_id);
+            }
+
+            logger.info('Executing timetable query...');
+            const { data, error } = await query;
+
+            logger.info('Timetable query result:', {
+                dataCount: data?.length || 0,
+                error: error?.message || null
+            });
+
+            if (error) {
+                logger.error('Timetable query failed:', error);
+                throw error;
+            }
+
+            logger.info('=== RESPONSE PREPARATION ===');
+            logger.info('Organizing timetable data by day...');
+
+            // Organize by day
+            const timetableByDay = {};
+            const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+            data.forEach(entry => {
+                const dayName = days[entry.day_of_week - 1];
+                if (!timetableByDay[dayName]) {
+                    timetableByDay[dayName] = [];
+                }
+                timetableByDay[dayName].push(entry);
+            });
+
+            // Sort periods within each day
+            Object.keys(timetableByDay).forEach(day => {
+                timetableByDay[day].sort((a, b) => a.period_number - b.period_number);
+            });
+
+            logger.info('✅ Timetable organized successfully');
+            logger.info('Final response data:', {
+                student_id,
+                class_division_id,
+                total_entries: data.length,
+                days_with_entries: Object.keys(timetableByDay)
+            });
+
+            logger.info('=== STUDENT TIMETABLE ENDPOINT SUCCESS ===');
+            logger.info('Sending successful response to client');
+
+            res.json({
+                status: 'success',
+                data: {
+                    student_id,
+                    class_division_id: class_division_id,
+                    timetable: timetableByDay,
+                    total_entries: data.length
+                }
+            });
+        } catch (error) {
+            logger.error('=== STUDENT TIMETABLE ENDPOINT ERROR ===');
+            logger.error('Error details:', {
+                message: error.message,
+                stack: error.stack,
+                student_id,
+                user_id: req.user.id
+            });
+            next(error);
+        }
+    }
+);
+
 // Get teacher timetable
 router.get('/teacher/:teacher_id',
     authenticate,

@@ -19,6 +19,8 @@ router.post('/',
         body('priority').optional().isIn(['low', 'normal', 'high', 'urgent']).withMessage('Invalid priority level'),
         body('target_roles').optional().isArray().withMessage('Target roles must be an array'),
         body('target_classes').optional().isArray().withMessage('Target classes must be an array'),
+        body('target_subjects').optional().isArray().withMessage('Target subjects must be an array'),
+        body('target_departments').optional().isArray().withMessage('Target departments must be an array'),
         body('publish_at').optional().isISO8601().toDate().withMessage('Invalid publish date'),
         body('expires_at').optional().isISO8601().toDate().withMessage('Invalid expiry date'),
         body('is_featured').optional().isBoolean().withMessage('is_featured must be a boolean')
@@ -42,6 +44,7 @@ router.post('/',
                 target_roles = [],
                 target_classes = [],
                 target_departments = [],
+                target_subjects = [],
                 publish_at,
                 expires_at,
                 is_featured = false
@@ -380,6 +383,8 @@ router.put('/:id',
         body('priority').optional().isIn(['low', 'normal', 'high', 'urgent']).withMessage('Invalid priority level'),
         body('target_roles').optional().isArray().withMessage('Target roles must be an array'),
         body('target_classes').optional().isArray().withMessage('Target classes must be an array'),
+        body('target_subjects').optional().isArray().withMessage('Target subjects must be an array'),
+        body('target_departments').optional().isArray().withMessage('Target departments must be an array'),
         body('publish_at').optional().isISO8601().toDate().withMessage('Invalid publish date'),
         body('expires_at').optional().isISO8601().toDate().withMessage('Invalid expiry date'),
         body('is_featured').optional().isBoolean().withMessage('is_featured must be a boolean')
@@ -441,7 +446,7 @@ router.put('/:id',
 
             // Prepare update data
             const updateData = {};
-            const allowedFields = ['title', 'content', 'announcement_type', 'priority', 'target_roles', 'target_classes', 'target_departments', 'publish_at', 'expires_at', 'is_featured'];
+            const allowedFields = ['title', 'content', 'announcement_type', 'priority', 'target_roles', 'target_classes', 'target_subjects', 'target_departments', 'publish_at', 'expires_at', 'is_featured'];
 
             allowedFields.forEach(field => {
                 if (req.body[field] !== undefined) {
@@ -1199,6 +1204,356 @@ router.post('/bulk-actions',
 
         } catch (error) {
             logger.error('Error in bulk actions:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
+// GET TEACHER ANNOUNCEMENTS (Subject and Class specific)
+// ============================================================================
+
+router.get('/teacher/announcements',
+    authenticate,
+    authorize(['teacher']),
+    async (req, res, next) => {
+        try {
+            const teacherId = req.user.id;
+            const {
+                page = 1,
+                limit = 20,
+                unread_only = false,
+                subject_filter = true, // Whether to filter by teacher's subjects
+                announcement_type,
+                priority,
+                publish_at_from,
+                publish_at_to,
+                class_division_id,
+                subject_name
+            } = req.query;
+
+            // Validate and parse parameters
+            const pageNum = parseInt(page) || 1;
+            const limitNum = parseInt(limit) || 20;
+            const offset = (pageNum - 1) * limitNum;
+
+            // Validate date formats if provided
+            if (publish_at_from && isNaN(Date.parse(publish_at_from))) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Invalid publish_at_from date format. Use ISO 8601 format (YYYY-MM-DDTHH:mm:ss.sssZ)'
+                });
+            }
+
+            if (publish_at_to && isNaN(Date.parse(publish_at_to))) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Invalid publish_at_to date format. Use ISO 8601 format (YYYY-MM-DDTHH:mm:ss.sssZ)'
+                });
+            }
+
+            // Validate UUID format for class_division_id if provided
+            if (class_division_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(class_division_id)) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Invalid class_division_id format. Must be a valid UUID'
+                });
+            }
+
+            const { data: teacherAssignments } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    class_division_id,
+                    subject,
+                    is_active
+                `)
+                .eq('teacher_id', teacherId)
+                .eq('is_active', true);
+
+            // Get class teacher assignments
+            const { data: classTeacherDivisions } = await adminSupabase
+                .from('class_divisions')
+                .select('id')
+                .eq('teacher_id', teacherId);
+
+            // Extract subjects and class divisions
+            const teacherSubjects = teacherAssignments?.map(ta => ta.subject).filter(Boolean) || [];
+            const teacherClassDivisions = [
+                ...(teacherAssignments?.map(ta => ta.class_division_id) || []),
+                ...(classTeacherDivisions?.map(ctd => ctd.id) || [])
+            ];
+
+            // Build query for announcements
+            let query = adminSupabase
+                .from('announcements')
+                .select(`
+                    *,
+                    creator:users!announcements_created_by_fkey(
+                        id,
+                        full_name,
+                        role
+                    ),
+                    attachments:announcement_attachments(
+                        id,
+                        file_name,
+                        file_size,
+                        file_type
+                    )
+                `)
+                .eq('status', 'approved')
+                .eq('is_published', true)
+                .or(`target_roles.cs.{teacher},target_roles.eq.{}`);
+
+            // Apply subject filtering if requested
+            if (subject_filter === 'true' && teacherSubjects.length > 0) {
+                query = query.or(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
+            }
+
+            // Apply class division filtering
+            if (teacherClassDivisions.length > 0) {
+                query = query.or(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
+            }
+
+            // Apply additional filters
+            if (announcement_type) {
+                query = query.eq('announcement_type', announcement_type);
+            }
+            if (priority) {
+                query = query.eq('priority', priority);
+            }
+            if (publish_at_from) {
+                query = query.gte('publish_at', publish_at_from);
+            }
+            if (publish_at_to) {
+                query = query.lte('publish_at', publish_at_to);
+            }
+            if (class_division_id) {
+                query = query.contains('target_classes', [class_division_id]);
+            }
+            if (subject_name) {
+                query = query.contains('target_subjects', [subject_name]);
+            }
+
+            // Get total count for pagination
+            let countQuery = adminSupabase
+                .from('announcements')
+                .select('*', { count: 'exact', head: true })
+                .eq('status', 'approved')
+                .eq('is_published', true)
+                .or(`target_roles.cs.{teacher},target_roles.eq.{}`);
+
+            // Apply subject filtering if requested
+            if (subject_filter === 'true' && teacherSubjects.length > 0) {
+                countQuery = countQuery.or(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
+            }
+
+            // Apply class division filtering
+            if (teacherClassDivisions.length > 0) {
+                countQuery = countQuery.or(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
+            }
+
+            // Apply additional filters
+            if (announcement_type) {
+                countQuery = countQuery.eq('announcement_type', announcement_type);
+            }
+            if (priority) {
+                countQuery = countQuery.eq('priority', priority);
+            }
+
+            const { count: totalCount, error: countError } = await countQuery;
+
+            if (countError) {
+                logger.error('Error getting teacher announcement count:', countError);
+            }
+
+            // Get announcements with pagination
+            const { data: announcements, error } = await query
+                .order('priority', { ascending: false })
+                .order('created_at', { ascending: false })
+                .range(offset, offset + limit - 1);
+
+            if (error) throw error;
+
+            // Process announcements (add read status, etc.)
+            const processedAnnouncements = await Promise.all(
+                announcements.map(async (announcement) => {
+                    // Check if teacher is a recipient
+                    const { data: recipient } = await adminSupabase
+                        .from('announcement_recipients')
+                        .select('delivery_status, read_at')
+                        .eq('announcement_id', announcement.id)
+                        .eq('user_id', teacherId)
+                        .single();
+
+                    // Determine relevance
+                    const isSubjectMatch = teacherSubjects.some(subject =>
+                        announcement.target_subjects?.includes(subject)
+                    );
+                    const isClassTeacher = classTeacherDivisions?.some(ctd =>
+                        announcement.target_classes?.includes(ctd.id)
+                    );
+                    const isSubjectTeacher = teacherAssignments?.some(ta =>
+                        announcement.target_subjects?.includes(ta.subject)
+                    );
+
+                    return {
+                        ...announcement,
+                        is_read: !!recipient?.read_at,
+                        read_at: recipient?.read_at,
+                        delivery_status: recipient?.delivery_status || 'pending',
+                        relevance: {
+                            is_subject_match: isSubjectMatch,
+                            is_class_teacher: isClassTeacher,
+                            is_subject_teacher: isSubjectTeacher,
+                            relevance_score: (isSubjectMatch ? 2 : 0) + (isClassTeacher ? 1 : 0) + (isSubjectTeacher ? 1 : 0)
+                        }
+                    };
+                })
+            );
+
+            // Sort by relevance score (highest first)
+            processedAnnouncements.sort((a, b) => b.relevance.relevance_score - a.relevance.relevance_score);
+
+            // Filter unread announcements if requested
+            const filteredAnnouncements = unread_only === 'true'
+                ? processedAnnouncements.filter(a => !a.is_read)
+                : processedAnnouncements;
+
+            res.json({
+                status: 'success',
+                data: {
+                    announcements: filteredAnnouncements,
+                    teacher_info: {
+                        id: teacherId,
+                        subjects: teacherSubjects,
+                        class_divisions: teacherClassDivisions,
+                        total_subjects: teacherSubjects.length,
+                        total_class_divisions: teacherClassDivisions.length
+                    },
+                    pagination: {
+                        page: pageNum,
+                        limit: limitNum,
+                        total: totalCount || 0,
+                        total_pages: Math.ceil((totalCount || 0) / limitNum),
+                        has_next: offset + limitNum < (totalCount || 0),
+                        has_prev: pageNum > 1
+                    },
+                    filters: {
+                        subject_filter,
+                        announcement_type,
+                        priority,
+                        unread_only,
+                        publish_at_from,
+                        publish_at_to,
+                        class_division_id,
+                        subject_name
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error fetching teacher announcements:', error);
+            next(error);
+        }
+    }
+);
+
+// ============================================================================
+// DEBUG: CHECK TEACHER ASSIGNMENTS FOR DIVISION
+// ============================================================================
+
+router.get('/debug/division/:class_division_id/teacher-assignments',
+    authenticate,
+    authorize(['teacher']),
+    async (req, res, next) => {
+        try {
+            const { class_division_id } = req.params;
+            const teacherId = req.user.id;
+
+            logger.info('Debug: Checking teacher assignments for division:', {
+                teacher_id: teacherId,
+                class_division_id: class_division_id
+            });
+
+            // Check class_teacher_assignments table (primary table)
+            const { data: teacherAssignments, error: teacherError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    class_division_id,
+                    assignment_type,
+                    subject,
+                    is_active,
+                    assigned_date
+                `)
+                .eq('class_division_id', class_division_id)
+                .eq('teacher_id', teacherId)
+                .eq('is_active', true);
+
+            // Check legacy class_divisions table
+            const { data: classTeacherData, error: classTeacherError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    level:class_level_id (
+                        name
+                    ),
+                    teacher_id,
+                    teacher:users!class_divisions_teacher_id_fkey (
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('id', class_division_id)
+                .single();
+
+            // Check legacy class_teacher_assignments table
+            const { data: subjectTeacherData, error: subjectTeacherError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    subject,
+                    class_division_id,
+                    is_active,
+                    teacher:users!class_teacher_assignments_teacher_id_fkey (
+                        id,
+                        full_name,
+                        role
+                    )
+                `)
+                .eq('class_division_id', class_division_id)
+                .eq('teacher_id', teacherId)
+                .eq('is_active', true);
+
+            res.json({
+                status: 'success',
+                data: {
+                    division_info: {
+                        id: class_division_id,
+                        class_teacher_data: { data: classTeacherData, error: classTeacherError },
+                        subject_teachers: { data: subjectTeacherData, error: subjectTeacherError }
+                    },
+                    current_teacher: {
+                        id: teacherId,
+                        teacher_assignments: { data: teacherAssignments, error: teacherError }
+                    },
+                    access_check: {
+                        has_teacher_assignment: teacherAssignments && teacherAssignments.length > 0,
+                        is_class_teacher: classTeacherData?.teacher_id === teacherId,
+                        is_subject_teacher: subjectTeacherData && subjectTeacherData.length > 0,
+                        has_access: (teacherAssignments && teacherAssignments.length > 0) ||
+                            (classTeacherData?.teacher_id === teacherId) ||
+                            (subjectTeacherData && subjectTeacherData.length > 0)
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in debug teacher assignments:', error);
             next(error);
         }
     }

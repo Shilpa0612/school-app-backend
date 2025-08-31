@@ -333,6 +333,106 @@ POST /api/timetable/bulk-entries
 - Teachers can only create entries for their assigned classes
 - Teachers must be assigned to the class via `class_teacher_assignments` table
 
+#### Get Student Timetable (for Parents)
+
+```http
+GET /api/timetable/student/:student_id
+```
+
+**Access**: Admin, Principal, Teachers, Parents (for their own children)
+**Description**: Get timetable for a specific student
+
+**Query Parameters:**
+
+- `config_id` (optional): Specific timetable configuration ID
+- `academic_year_id` (optional): Academic year filter
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "student_id": "uuid",
+    "class_division_id": "uuid",
+    "timetable": {
+      "Monday": [
+        {
+          "id": "uuid",
+          "period_number": 1,
+          "day_of_week": 1,
+          "subject": "English",
+          "teacher": {
+            "id": "uuid",
+            "full_name": "Teacher Name",
+            "role": "teacher"
+          },
+          "notes": "Bring textbooks"
+        }
+      ]
+    },
+    "total_entries": 8
+  }
+}
+```
+
+**Notes:**
+
+- Parents can only access timetables for their own children
+- System automatically finds the student's class division
+- Returns organized timetable by day and period
+
+#### Get All Children's Timetables (for Parents)
+
+```http
+GET /api/timetable/parent/children
+```
+
+**Access**: Parents only
+**Description**: Get timetables for all children of the authenticated parent
+
+**Query Parameters:**
+
+- `config_id` (optional): Specific timetable configuration ID
+- `academic_year_id` (optional): Academic year filter
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "parent_id": "uuid",
+    "children": [
+      {
+        "student_id": "uuid",
+        "student": {
+          "id": "uuid",
+          "full_name": "Student Name",
+          "class_division_id": "uuid",
+          "class_division": {
+            "id": "uuid",
+            "class_name": "Grade 1 A",
+            "division": "A"
+          }
+        },
+        "timetable": {
+          "Monday": [...],
+          "Tuesday": [...]
+        },
+        "total_entries": 8
+      }
+    ]
+  }
+}
+```
+
+**Notes:**
+
+- Parents can see all their children's timetables in one call
+- Useful for parents with multiple children
+- Each child's timetable is organized by day
+
 #### Get Class Timetable
 
 ```http
