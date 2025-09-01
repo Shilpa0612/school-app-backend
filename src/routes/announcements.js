@@ -456,13 +456,37 @@ router.put('/:id',
 
             // Reset approval status when editing pending OR approved announcements
             if (existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase())) {
-                updateData.status = 'pending';
-                updateData.approved_by = null;
-                updateData.approved_at = null;
-                updateData.rejected_by = null;
-                updateData.rejected_at = null;
-                updateData.rejection_reason = null;
-                updateData.is_published = false;
+                // Determine new status based on who is editing and who created it
+                const editorRole = req.user.role;
+                const isOwnAnnouncement = existingAnnouncement.created_by === req.user.id;
+
+                if (['principal', 'admin'].includes(editorRole)) {
+                    // Principal/Admin is editing - automatically approve since they have authority
+                    updateData.status = 'approved';
+                    updateData.is_published = true;
+                    updateData.approved_by = req.user.id;
+                    updateData.approved_at = new Date().toISOString();
+                    updateData.rejected_by = null;
+                    updateData.rejected_at = null;
+                    updateData.rejection_reason = null;
+                } else {
+                    // Teacher/Staff is editing
+                    if (existingAnnouncement.status === 'pending') {
+                        // Teacher editing their own pending announcement - keep it pending
+                        updateData.status = 'pending';
+                        updateData.is_published = false;
+                        // Keep existing pending status
+                    } else {
+                        // Teacher editing an approved announcement - set to pending for re-approval
+                        updateData.status = 'pending';
+                        updateData.approved_by = null;
+                        updateData.approved_at = null;
+                        updateData.rejected_by = null;
+                        updateData.rejected_at = null;
+                        updateData.rejection_reason = null;
+                        updateData.is_published = false;
+                    }
+                }
             }
 
             // Update announcement
@@ -490,8 +514,31 @@ router.put('/:id',
 
             // Determine response message based on status change
             let responseMessage = 'Announcement updated successfully';
+            let statusChanged = false;
+            let requiresReapproval = false;
+
             if (existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase())) {
-                responseMessage = 'Announcement updated and moved back to pending status for re-approval';
+                const editorRole = req.user.role;
+                const isOwnAnnouncement = existingAnnouncement.created_by === req.user.id;
+
+                if (['principal', 'admin'].includes(editorRole)) {
+                    // Principal/Admin editing - automatically approved
+                    responseMessage = 'Announcement updated and automatically approved';
+                    statusChanged = true;
+                    requiresReapproval = false;
+                } else {
+                    if (existingAnnouncement.status === 'pending') {
+                        // Teacher editing their own pending announcement
+                        responseMessage = 'Announcement updated successfully (remains pending)';
+                        statusChanged = false;
+                        requiresReapproval = false;
+                    } else {
+                        // Teacher editing an approved announcement
+                        responseMessage = 'Announcement updated and moved back to pending status for re-approval';
+                        statusChanged = true;
+                        requiresReapproval = true;
+                    }
+                }
             }
 
             res.json({
@@ -499,8 +546,8 @@ router.put('/:id',
                 message: responseMessage,
                 data: {
                     announcement: updatedAnnouncement,
-                    status_changed: existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase()),
-                    requires_reapproval: existingAnnouncement.status && ['pending', 'approved'].includes(existingAnnouncement.status.toLowerCase())
+                    status_changed: statusChanged,
+                    requires_reapproval: requiresReapproval
                 }
             });
 

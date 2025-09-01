@@ -64,8 +64,12 @@ router.get('/debug/tables', authenticate, async (req, res) => {
 // List chat threads
 router.get('/threads', authenticate, async (req, res) => {
     try {
-        const { page = 1, limit = 20, status = 'active' } = req.query;
+        const { page = 1, limit = 20, status } = req.query; // Made status optional
         const offset = (page - 1) * limit;
+
+        logger.info(`Fetching threads for user ${req.user.id} (${req.user.role}) with filters:`, {
+            page, limit, status, user_id: req.user.id, user_role: req.user.role
+        });
 
         // Get threads where user is a participant
         const { data: userParticipations, error: participationError } = await adminSupabase
@@ -81,7 +85,10 @@ router.get('/threads', authenticate, async (req, res) => {
             });
         }
 
+        logger.info(`Found ${userParticipations?.length || 0} participations for user`);
+
         if (!userParticipations || userParticipations.length === 0) {
+            logger.info('No participations found, returning empty result');
             return res.json({
                 status: 'success',
                 data: {
@@ -91,15 +98,22 @@ router.get('/threads', authenticate, async (req, res) => {
                         limit: parseInt(limit),
                         total: 0,
                         total_pages: 0
+                    },
+                    debug_info: {
+                        user_id: req.user.id,
+                        user_role: req.user.role,
+                        participations_found: 0,
+                        message: 'No chat participations found for this user'
                     }
                 }
             });
         }
 
         const threadIds = userParticipations.map(p => p.thread_id);
+        logger.info(`Thread IDs where user is participant:`, threadIds);
 
-        // Get threads where user is a participant
-        const { data: threads, error } = await adminSupabase
+        // Build query for threads
+        let query = adminSupabase
             .from('chat_threads')
             .select(`
                 *,
@@ -116,20 +130,42 @@ router.get('/threads', authenticate, async (req, res) => {
                 )
             `)
             .in('id', threadIds)
-            .eq('status', status)
-            .order('updated_at', { ascending: false })
-            .range(offset, offset + limit - 1);
+            .order('updated_at', { ascending: false });
+
+        // Apply status filter only if provided
+        if (status) {
+            query = query.eq('status', status);
+            logger.info(`Applied status filter: ${status}`);
+        }
+
+        // Get threads with pagination
+        const { data: threads, error } = await query.range(offset, offset + limit - 1);
+
+        if (error) {
+            logger.error('Error fetching threads:', error);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch threads'
+            });
+        }
 
         // Get total count
-        const { count, error: countError } = await adminSupabase
+        let countQuery = adminSupabase
             .from('chat_threads')
             .select('*', { count: 'exact', head: true })
-            .in('id', threadIds)
-            .eq('status', status);
+            .in('id', threadIds);
+
+        if (status) {
+            countQuery = countQuery.eq('status', status);
+        }
+
+        const { count, error: countError } = await countQuery;
 
         if (countError) {
             logger.error('Error getting thread count:', countError);
         }
+
+        logger.info(`Returning ${threads?.length || 0} threads out of ${count || 0} total`);
 
         res.json({
             status: 'success',
@@ -140,6 +176,15 @@ router.get('/threads', authenticate, async (req, res) => {
                     limit: parseInt(limit),
                     total: count || 0,
                     total_pages: Math.ceil((count || 0) / limit)
+                },
+                debug_info: {
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    participations_found: userParticipations.length,
+                    thread_ids_filtered: threadIds,
+                    status_filter: status || 'none',
+                    threads_returned: threads?.length || 0,
+                    total_threads: count || 0
                 }
             }
         });
@@ -1094,6 +1139,127 @@ router.post('/mark-read/:thread_id', authenticate, async (req, res) => {
         res.status(500).json({
             status: 'error',
             message: 'Failed to mark messages as read'
+        });
+    }
+});
+
+// Get my threads (alias for /threads - makes it clearer)
+router.get('/my-threads', authenticate, async (req, res) => {
+    try {
+        const { page = 1, limit = 20, status } = req.query;
+        const offset = (page - 1) * limit;
+
+        logger.info(`Fetching MY threads for user ${req.user.id} (${req.user.role})`);
+
+        // Get threads where user is a participant
+        const { data: userParticipations, error: participationError } = await adminSupabase
+            .from('chat_participants')
+            .select('thread_id')
+            .eq('user_id', req.user.id);
+
+        if (participationError) {
+            logger.error('Error fetching user participations:', participationError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch your chat participations'
+            });
+        }
+
+        if (!userParticipations || userParticipations.length === 0) {
+            return res.json({
+                status: 'success',
+                message: 'You have no chat threads yet',
+                data: {
+                    threads: [],
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: 0,
+                        total_pages: 0
+                    }
+                }
+            });
+        }
+
+        const threadIds = userParticipations.map(p => p.thread_id);
+
+        // Build query for threads
+        let query = adminSupabase
+            .from('chat_threads')
+            .select(`
+                *,
+                participants:chat_participants(
+                    user_id,
+                    role,
+                    last_read_at,
+                    user:users(full_name, role)
+                ),
+                last_message:chat_messages(
+                    content,
+                    created_at,
+                    sender:users!chat_messages_sender_id_fkey(full_name)
+                )
+            `)
+            .in('id', threadIds)
+            .order('updated_at', { ascending: false });
+
+        // Apply status filter only if provided
+        if (status) {
+            query = query.eq('status', status);
+        }
+
+        // Get threads with pagination
+        const { data: threads, error } = await query.range(offset, offset + limit - 1);
+
+        if (error) {
+            logger.error('Error fetching threads:', error);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch your threads'
+            });
+        }
+
+        // Get total count
+        let countQuery = adminSupabase
+            .from('chat_threads')
+            .select('*', { count: 'exact', head: true })
+            .in('id', threadIds);
+
+        if (status) {
+            countQuery = countQuery.eq('status', status);
+        }
+
+        const { count, error: countError } = await countQuery;
+
+        if (countError) {
+            logger.error('Error getting thread count:', countError);
+        }
+
+        res.json({
+            status: 'success',
+            message: `Found ${threads?.length || 0} of your chat threads`,
+            data: {
+                threads: threads || [],
+                pagination: {
+                    page: parseInt(page),
+                    limit: parseInt(limit),
+                    total: count || 0,
+                    total_pages: Math.ceil((count || 0) / limit)
+                },
+                summary: {
+                    total_my_threads: count || 0,
+                    threads_shown: threads?.length || 0,
+                    user_id: req.user.id,
+                    user_role: req.user.role
+                }
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in get my threads:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
         });
     }
 });
