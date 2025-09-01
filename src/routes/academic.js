@@ -626,7 +626,9 @@ router.get('/teachers',
             // Get teacher assignments to check subjects if filtering by subject
             let teacherAssignments = [];
             if (subject) {
-                // Get subjects from staff table instead of class_teacher_assignments
+                logger.info(`Searching for teachers with subject: ${subject}`);
+
+                // First, try to get subjects from staff table
                 const { data: staffWithSubjects, error: staffSubjectsError } = await adminSupabase
                     .from('staff')
                     .select(`
@@ -637,6 +639,7 @@ router.get('/teachers',
                     .not('subject', 'is', null);
 
                 if (!staffSubjectsError && staffWithSubjects) {
+                    logger.info(`Found ${staffWithSubjects.length} staff records with subjects`);
                     // Flatten the subjects array for each teacher
                     staffWithSubjects.forEach(staff => {
                         if (staff.subject && Array.isArray(staff.subject)) {
@@ -648,24 +651,73 @@ router.get('/teachers',
                             });
                         }
                     });
+                } else {
+                    logger.info(`Staff subjects error: ${staffSubjectsError}`);
                 }
+
+                // Also check class_teacher_assignments table for existing subject assignments
+                const { data: classAssignments, error: classAssignmentsError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select(`
+                        teacher_id,
+                        subject
+                    `)
+                    .eq('is_active', true)
+                    .not('subject', 'is', null);
+
+                if (!classAssignmentsError && classAssignments) {
+                    logger.info(`Found ${classAssignments.length} class assignments with subjects`);
+                    // Add class assignments to the list
+                    classAssignments.forEach(assignment => {
+                        if (assignment.subject) {
+                            teacherAssignments.push({
+                                teacher_id: assignment.teacher_id,
+                                subject: assignment.subject
+                            });
+                        }
+                    });
+                } else {
+                    logger.info(`Class assignments error: ${classAssignmentsError}`);
+                }
+
+                // Check if there are any subjects in the subjects table
+                const { data: allSubjects, error: subjectsError } = await adminSupabase
+                    .from('subjects')
+                    .select('name')
+                    .eq('is_active', true);
+
+                if (!subjectsError && allSubjects) {
+                    logger.info(`Available subjects in system: ${allSubjects.map(s => s.name).join(', ')}`);
+                }
+
+                logger.info(`Total subject assignments found: ${teacherAssignments.length}`);
+                logger.info(`Subject assignments:`, teacherAssignments);
             }
 
             // Combine the data
             let teachers = usersData.map(user => {
                 const staffInfo = staffData?.find(staff => staff.user_id === user.id);
 
-                // Get subjects taught by this teacher from staff table
+                // Get subjects taught by this teacher from multiple sources
                 let teacherSubjects = [];
+
+                // First, check staff.subject field (array)
                 if (staffInfo && staffInfo.subject && Array.isArray(staffInfo.subject)) {
-                    teacherSubjects = staffInfo.subject;
-                } else if (subject) {
-                    // Fallback to class assignments if staff subjects not available
-                    teacherSubjects = teacherAssignments
+                    teacherSubjects = [...teacherSubjects, ...staffInfo.subject];
+                }
+
+                // Then, check class_teacher_assignments for additional subjects
+                if (subject) {
+                    const classSubjects = teacherAssignments
                         .filter(assignment => assignment.teacher_id === user.id)
                         .map(assignment => assignment.subject)
-                        .filter((subject, index, arr) => arr.indexOf(subject) === index); // Remove duplicates
+                        .filter(Boolean); // Remove null/undefined
+
+                    teacherSubjects = [...teacherSubjects, ...classSubjects];
                 }
+
+                // Remove duplicates and filter out empty values
+                teacherSubjects = [...new Set(teacherSubjects)].filter(subject => subject && subject.trim().length > 0);
 
                 return {
                     teacher_id: user.id, // Use this for class assignments
@@ -751,7 +803,18 @@ router.get('/teachers',
                     filters_applied: {
                         subject: subject || null,
                         search: search || null
-                    }
+                    },
+                    debug_info: subject ? {
+                        total_teachers_found: usersData.length,
+                        total_subject_assignments: teacherAssignments.length,
+                        subject_filter_applied: subject,
+                        teachers_with_subjects: teachers.filter(t => t.subjects_taught.length > 0).length,
+                        sample_teacher_subjects: teachers.slice(0, 3).map(t => ({
+                            teacher_id: t.teacher_id,
+                            name: t.full_name,
+                            subjects: t.subjects_taught
+                        }))
+                    } : null
                 }
             });
 
@@ -3494,6 +3557,78 @@ router.get('/subjects/:subject_name/teachers',
 
         } catch (error) {
             logger.error('Error in get teachers by subject endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Debug endpoint to check subject data
+router.get('/debug/subjects',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            // Check subjects table
+            const { data: subjects, error: subjectsError } = await adminSupabase
+                .from('subjects')
+                .select('*')
+                .eq('is_active', true);
+
+            // Check staff table for subjects
+            const { data: staffWithSubjects, error: staffError } = await adminSupabase
+                .from('staff')
+                .select(`
+                    id,
+                    user_id,
+                    full_name,
+                    subject,
+                    role
+                `)
+                .eq('role', 'teacher')
+                .eq('is_active', true)
+                .not('subject', 'is', null);
+
+            // Check class_teacher_assignments for subjects
+            const { data: classAssignments, error: classError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    subject,
+                    assignment_type,
+                    is_active
+                `)
+                .eq('is_active', true)
+                .not('subject', 'is', null);
+
+            res.json({
+                status: 'success',
+                data: {
+                    subjects_table: {
+                        count: subjects?.length || 0,
+                        subjects: subjects || [],
+                        error: subjectsError
+                    },
+                    staff_table: {
+                        count: staffWithSubjects?.length || 0,
+                        staff_with_subjects: staffWithSubjects || [],
+                        error: staffError
+                    },
+                    class_assignments: {
+                        count: classAssignments?.length || 0,
+                        assignments: classAssignments || [],
+                        error: classError
+                    },
+                    summary: {
+                        total_subjects_in_system: subjects?.length || 0,
+                        teachers_with_subjects_in_staff: staffWithSubjects?.length || 0,
+                        teachers_with_subjects_in_assignments: classAssignments?.length || 0
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in debug subjects endpoint:', error);
             next(error);
         }
     }
