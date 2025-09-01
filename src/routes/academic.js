@@ -1106,6 +1106,7 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
     authenticate,
     authorize(['admin', 'principal']),
     [
+        body('teacher_id').optional().isUUID().withMessage('Valid teacher ID is required'),
         body('assignment_type').optional().isIn(['class_teacher', 'subject_teacher', 'assistant_teacher', 'substitute_teacher']),
         body('is_primary').optional().isBoolean(),
         body('subject').optional().isString().trim().isLength({ min: 1 }).withMessage('subject must be a non-empty string')
@@ -1118,7 +1119,7 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
             }
 
             const { id: class_division_id, assignment_id } = req.params;
-            const { assignment_type, is_primary } = req.body;
+            const { teacher_id, assignment_type, is_primary } = req.body;
             const subject = (req.body.subject ?? undefined);
 
             // Verify assignment exists
@@ -1137,8 +1138,97 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
                 });
             }
 
-            // If updating to primary, check if another primary exists
-            if (is_primary === true && !existingAssignment.is_primary) {
+            // If changing teacher, validate the new teacher exists
+            if (teacher_id && teacher_id !== existingAssignment.teacher_id) {
+                const { data: newTeacher, error: teacherError } = await adminSupabase
+                    .from('users')
+                    .select('id, full_name, role')
+                    .eq('id', teacher_id)
+                    .eq('role', 'teacher')
+                    .eq('is_active', true)
+                    .single();
+
+                if (teacherError || !newTeacher) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Invalid teacher ID or teacher not found'
+                    });
+                }
+
+                // Check if new teacher already has an assignment to this class
+                const { data: existingTeacherAssignment } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, assignment_type')
+                    .eq('teacher_id', teacher_id)
+                    .eq('class_division_id', class_division_id)
+                    .eq('is_active', true)
+                    .neq('id', assignment_id)
+                    .single();
+
+                if (existingTeacherAssignment) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: `Teacher is already assigned to this class as ${existingTeacherAssignment.assignment_type}`,
+                        existing_assignment_type: existingTeacherAssignment.assignment_type
+                    });
+                }
+            }
+
+            // Special handling for class teacher replacement
+            const resultingType = assignment_type !== undefined ? assignment_type : existingAssignment.assignment_type;
+            const isChangingToClassTeacher = teacher_id && teacher_id !== existingAssignment.teacher_id && resultingType === 'class_teacher';
+
+            if (isChangingToClassTeacher) {
+                // When assigning a new teacher as class teacher, replace existing class teacher
+                // First, find existing class teacher for this class
+                const { data: existingClassTeacher } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id, teacher_id, is_primary')
+                    .eq('class_division_id', class_division_id)
+                    .eq('assignment_type', 'class_teacher')
+                    .eq('is_active', true)
+                    .neq('id', assignment_id)
+                    .single();
+
+                if (existingClassTeacher) {
+                    // Deactivate the existing class teacher assignment
+                    await adminSupabase
+                        .from('class_teacher_assignments')
+                        .update({
+                            is_active: false,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('id', existingClassTeacher.id);
+
+                    logger.info('Replaced existing class teacher:', {
+                        class_division_id,
+                        old_teacher_id: existingClassTeacher.teacher_id,
+                        new_teacher_id: teacher_id,
+                        replaced_assignment_id: existingClassTeacher.id
+                    });
+                }
+
+                // Automatically set new class teacher as primary if there's no other primary
+                const { data: otherPrimary } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id')
+                    .eq('class_division_id', class_division_id)
+                    .eq('is_primary', true)
+                    .eq('is_active', true)
+                    .neq('id', assignment_id)
+                    .single();
+
+                if (!otherPrimary && is_primary !== false) {
+                    // Auto-set as primary if no other primary exists and not explicitly set to false
+                    if (is_primary === undefined) {
+                        // Auto-assign primary status for class teacher
+                        req.body.is_primary = true;
+                    }
+                }
+            }
+
+            // If updating to primary, check if another primary exists (not for class teacher replacement)
+            if (is_primary === true && !existingAssignment.is_primary && !isChangingToClassTeacher) {
                 const { data: existingPrimary } = await adminSupabase
                     .from('class_teacher_assignments')
                     .select('id, teacher_id')
@@ -1159,14 +1249,17 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
 
             // Build update object
             const updateData = {};
+            if (teacher_id !== undefined) updateData.teacher_id = teacher_id;
             if (assignment_type !== undefined) updateData.assignment_type = assignment_type;
-            if (is_primary !== undefined) updateData.is_primary = is_primary;
+            if (is_primary !== undefined || req.body.is_primary !== undefined) {
+                updateData.is_primary = req.body.is_primary !== undefined ? req.body.is_primary : is_primary;
+            }
             if (subject !== undefined) updateData.subject = subject;
 
             // If resulting type is subject_teacher, ensure subject is present
-            const resultingType = assignment_type !== undefined ? assignment_type : existingAssignment.assignment_type;
+            const finalAssignmentType = assignment_type !== undefined ? assignment_type : existingAssignment.assignment_type;
             const resultingSubject = subject !== undefined ? subject : existingAssignment.subject;
-            if (resultingType === 'subject_teacher' && (!resultingSubject || String(resultingSubject).trim().length === 0)) {
+            if (finalAssignmentType === 'subject_teacher' && (!resultingSubject || String(resultingSubject).trim().length === 0)) {
                 return res.status(400).json({
                     status: 'error',
                     message: 'Subject is required when assignment_type is subject_teacher'
@@ -1207,10 +1300,29 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
                 });
             }
 
+            // Create appropriate success message
+            let successMessage = 'Teacher assignment updated successfully';
+            if (teacher_id && teacher_id !== existingAssignment.teacher_id) {
+                if (resultingType === 'class_teacher') {
+                    successMessage = 'Class teacher replaced successfully';
+                } else {
+                    successMessage = 'Teacher assignment changed successfully';
+                }
+            }
+
             res.json({
                 status: 'success',
-                data: { assignment: updatedAssignment },
-                message: 'Teacher assignment updated successfully'
+                data: {
+                    assignment: updatedAssignment,
+                    // Include information about what changed
+                    changes: {
+                        teacher_changed: teacher_id && teacher_id !== existingAssignment.teacher_id,
+                        assignment_type_changed: assignment_type && assignment_type !== existingAssignment.assignment_type,
+                        primary_status_changed: updateData.is_primary !== undefined && updateData.is_primary !== existingAssignment.is_primary,
+                        subject_changed: subject !== undefined && subject !== existingAssignment.subject
+                    }
+                },
+                message: successMessage
             });
 
         } catch (error) {

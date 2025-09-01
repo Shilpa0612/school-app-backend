@@ -208,4 +208,69 @@ Status: 400 Bad Request
 }
 ```
 
+## ✅ **Teacher Conflict Handling**
+
+### **Teacher Double-Booking Prevention**
+
+The system now prevents and properly handles teacher conflicts when the same teacher is assigned to multiple classes at the same time period.
+
+#### **Proactive Conflict Detection**
+
+Before inserting a new timetable entry, the API checks:
+
+1. **Class Conflicts**: Same class, period, and day
+2. **Teacher Conflicts**: Same teacher, period, and day (different classes)
+
+#### **Teacher Conflict Response**
+
+When a teacher is already assigned to another class at the same time:
+
+```json
+{
+  "status": "error",
+  "message": "Teacher schedule conflict",
+  "details": "This teacher is already assigned to teach Mathematics for Grade-1A at the same time",
+  "error_code": "TEACHER_CONFLICT",
+  "suggestion": "Please choose a different teacher, period, or day for this assignment",
+  "conflict_data": {
+    "existing_subject": "Mathematics",
+    "existing_class": "Grade-1A",
+    "teacher_id": "teacher-uuid",
+    "period_number": 2,
+    "day_of_week": 1,
+    "day_name": "Monday"
+  }
+}
+```
+
+#### **Database Constraint Fallback**
+
+If conflicts slip through validation, the database constraint catches them:
+
+```json
+{
+  "status": "error",
+  "message": "Teacher schedule conflict",
+  "details": "This teacher is already assigned to another class during the same period and day",
+  "error_code": "TEACHER_CONFLICT_DB",
+  "suggestion": "Please choose a different teacher, period, or day for this assignment",
+  "constraint_violated": "unique_teacher_period_day"
+}
+```
+
+## **Testing Teacher Conflicts**
+
+Use the provided test script `test_teacher_conflict_scenarios.js` to verify teacher conflict handling:
+
+```bash
+node test_teacher_conflict_scenarios.js
+```
+
+**Test Scenarios:**
+
+1. Create first timetable entry for Teacher A
+2. Attempt to assign same teacher to different class (same period/day)
+3. Verify conflict is detected and proper error is returned
+4. Test valid assignment (different period)
+
 This enhancement ensures that API consumers receive specific, actionable error information instead of generic 500 errors, making debugging and user experience significantly better.

@@ -411,8 +411,8 @@ router.post('/entries',
                 });
             }
 
-            // Check for conflicts
-            const { data: conflicts, error: conflictError } = await adminSupabase
+            // Check for class conflicts (same class, period, day)
+            const { data: classConflicts, error: classConflictError } = await adminSupabase
                 .from('class_timetable')
                 .select('id, subject')
                 .eq('class_division_id', class_division_id)
@@ -420,11 +420,59 @@ router.post('/entries',
                 .eq('day_of_week', day_of_week)
                 .eq('is_active', true);
 
-            if (conflicts && conflicts.length > 0) {
+            if (classConflicts && classConflicts.length > 0) {
                 return res.status(400).json({
                     status: 'error',
-                    message: `Conflict: ${conflicts[0].subject || 'Period'} already assigned for this class, period, and day`
+                    message: 'Class schedule conflict',
+                    details: `${classConflicts[0].subject || 'A period'} is already assigned for this class, period, and day`,
+                    error_code: 'CLASS_CONFLICT',
+                    suggestion: 'Please choose a different period or day, or update the existing entry',
+                    conflict_data: {
+                        existing_subject: classConflicts[0].subject,
+                        class_division_id,
+                        period_number,
+                        day_of_week
+                    }
                 });
+            }
+
+            // Check for teacher conflicts (same teacher, period, day) - only if teacher_id is provided
+            if (teacher_id) {
+                const { data: teacherConflicts, error: teacherConflictError } = await adminSupabase
+                    .from('class_timetable')
+                    .select(`
+                        id, 
+                        subject, 
+                        class_division_id,
+                        class_divisions(class_name, division)
+                    `)
+                    .eq('teacher_id', teacher_id)
+                    .eq('period_number', period_number)
+                    .eq('day_of_week', day_of_week)
+                    .eq('is_active', true);
+
+                if (teacherConflicts && teacherConflicts.length > 0) {
+                    const conflict = teacherConflicts[0];
+                    const conflictClass = conflict.class_divisions
+                        ? `${conflict.class_divisions.class_name}-${conflict.class_divisions.division}`
+                        : 'Unknown Class';
+
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Teacher schedule conflict',
+                        details: `This teacher is already assigned to teach ${conflict.subject || 'a period'} for ${conflictClass} at the same time`,
+                        error_code: 'TEACHER_CONFLICT',
+                        suggestion: 'Please choose a different teacher, period, or day for this assignment',
+                        conflict_data: {
+                            existing_subject: conflict.subject,
+                            existing_class: conflictClass,
+                            teacher_id,
+                            period_number,
+                            day_of_week,
+                            day_name: ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][day_of_week]
+                        }
+                    });
+                }
             }
 
             // Create timetable entry
@@ -474,13 +522,36 @@ router.post('/entries',
             if (error.code) {
                 switch (error.code) {
                     case '23505': // Unique constraint violation
-                        return res.status(400).json({
-                            status: 'error',
-                            message: 'Duplicate entry conflict',
-                            details: 'A timetable entry already exists for this class, period, and day combination',
-                            error_code: error.code,
-                            suggestion: 'Please check existing timetable entries or modify the period/day selection'
-                        });
+                        // Check if it's a teacher conflict or class conflict
+                        const errorDetail = error.detail || error.message || '';
+                        if (errorDetail.includes('unique_teacher_period_day')) {
+                            return res.status(400).json({
+                                status: 'error',
+                                message: 'Teacher schedule conflict',
+                                details: 'This teacher is already assigned to another class during the same period and day',
+                                error_code: 'TEACHER_CONFLICT_DB',
+                                suggestion: 'Please choose a different teacher, period, or day for this assignment',
+                                constraint_violated: 'unique_teacher_period_day'
+                            });
+                        } else if (errorDetail.includes('unique_class_period_day')) {
+                            return res.status(400).json({
+                                status: 'error',
+                                message: 'Class schedule conflict',
+                                details: 'A timetable entry already exists for this class, period, and day combination',
+                                error_code: 'CLASS_CONFLICT_DB',
+                                suggestion: 'Please check existing timetable entries or modify the period/day selection',
+                                constraint_violated: 'unique_class_period_day'
+                            });
+                        } else {
+                            return res.status(400).json({
+                                status: 'error',
+                                message: 'Duplicate entry conflict',
+                                details: 'A duplicate entry was detected in the timetable',
+                                error_code: error.code,
+                                suggestion: 'Please check existing timetable entries or modify your selection'
+                            });
+                        }
+                        break;
                     case '23503': // Foreign key constraint violation
                         return res.status(400).json({
                             status: 'error',
