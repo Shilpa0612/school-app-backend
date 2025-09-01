@@ -460,8 +460,97 @@ router.post('/entries',
                 data: { entry: data }
             });
         } catch (error) {
-            logger.error('Error creating timetable entry:', error);
-            next(error);
+            logger.error('Error creating timetable entry:', {
+                error: error.message,
+                stack: error.stack,
+                code: error.code,
+                details: error.details,
+                hint: error.hint,
+                body: req.body,
+                user: req.user?.id
+            });
+
+            // Enhanced error handling for specific cases
+            if (error.code) {
+                switch (error.code) {
+                    case '23505': // Unique constraint violation
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Duplicate entry conflict',
+                            details: 'A timetable entry already exists for this class, period, and day combination',
+                            error_code: error.code,
+                            suggestion: 'Please check existing timetable entries or modify the period/day selection'
+                        });
+                    case '23503': // Foreign key constraint violation
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Invalid reference data',
+                            details: 'One or more referenced IDs (config_id, class_division_id, teacher_id) are invalid or do not exist',
+                            error_code: error.code,
+                            suggestion: 'Please verify that all IDs exist and are valid'
+                        });
+                    case '23514': // Check constraint violation
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Data validation constraint failed',
+                            details: error.message,
+                            error_code: error.code,
+                            suggestion: 'Please check the data values meet the required constraints'
+                        });
+                    case '22P02': // Invalid UUID format
+                        return res.status(400).json({
+                            status: 'error',
+                            message: 'Invalid ID format',
+                            details: 'One or more IDs are not in valid UUID format',
+                            error_code: error.code,
+                            suggestion: 'Please ensure all IDs are valid UUIDs'
+                        });
+                    case 'PGRST116': // Supabase: No rows returned
+                        return res.status(404).json({
+                            status: 'error',
+                            message: 'Resource not found',
+                            details: 'The specified timetable configuration or class division was not found',
+                            error_code: error.code,
+                            suggestion: 'Please verify the config_id and class_division_id exist and are active'
+                        });
+                }
+            }
+
+            // Handle authentication/authorization errors
+            if (error.message && error.message.includes('auth')) {
+                return res.status(401).json({
+                    status: 'error',
+                    message: 'Authentication error',
+                    details: error.message,
+                    suggestion: 'Please check your authentication credentials'
+                });
+            }
+
+            // Handle validation errors
+            if (error.name === 'ValidationError') {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    details: error.message,
+                    errors: error.errors || [],
+                    suggestion: 'Please correct the validation errors and try again'
+                });
+            }
+
+            // Generic server error with detailed information for debugging
+            return res.status(500).json({
+                status: 'error',
+                message: 'Internal server error while creating timetable entry',
+                details: process.env.NODE_ENV === 'production'
+                    ? 'An unexpected error occurred. Please contact support if this persists.'
+                    : error.message,
+                error_code: error.code || 'UNKNOWN_ERROR',
+                error_type: error.name || 'UnknownError',
+                suggestion: 'Please try again. If the error persists, contact technical support with the error details.',
+                timestamp: new Date().toISOString(),
+                // Include stack trace only in development
+                ...(process.env.NODE_ENV !== 'production' && { stack: error.stack })
+            });
         }
     }
 );
