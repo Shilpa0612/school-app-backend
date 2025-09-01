@@ -127,12 +127,17 @@ PUT /api/academic/class-divisions/91d1cd06-a896-4409-81a5-8fcd2b64e4b0/teacher-a
 
 ### **Error Responses**
 
+All errors now return **500 status code** with detailed information:
+
 #### **Teacher Not Found**
 
 ```json
 {
   "status": "error",
-  "message": "Invalid teacher ID or teacher not found"
+  "message": "Invalid teacher ID or teacher not found",
+  "details": "The specified teacher does not exist or is not active in the system",
+  "error_code": "TEACHER_NOT_FOUND",
+  "suggestion": "Please verify the teacher ID is correct and the teacher is active"
 }
 ```
 
@@ -142,6 +147,9 @@ PUT /api/academic/class-divisions/91d1cd06-a896-4409-81a5-8fcd2b64e4b0/teacher-a
 {
   "status": "error",
   "message": "Teacher is already assigned to this class as subject_teacher",
+  "details": "This teacher already has an active assignment to this class division",
+  "error_code": "TEACHER_ALREADY_ASSIGNED",
+  "suggestion": "Please choose a different teacher or remove the existing assignment first",
   "existing_assignment_type": "subject_teacher"
 }
 ```
@@ -151,7 +159,10 @@ PUT /api/academic/class-divisions/91d1cd06-a896-4409-81a5-8fcd2b64e4b0/teacher-a
 ```json
 {
   "status": "error",
-  "message": "Teacher assignment not found"
+  "message": "Teacher assignment not found",
+  "details": "The specified teacher assignment could not be found in the system",
+  "error_code": "ASSIGNMENT_NOT_FOUND",
+  "suggestion": "Please verify the assignment ID and class division ID are correct"
 }
 ```
 
@@ -161,7 +172,53 @@ PUT /api/academic/class-divisions/91d1cd06-a896-4409-81a5-8fcd2b64e4b0/teacher-a
 {
   "status": "error",
   "message": "Class already has a primary teacher",
+  "details": "This class division already has an active primary teacher assignment",
+  "error_code": "PRIMARY_TEACHER_EXISTS",
+  "suggestion": "Please remove the existing primary teacher first or assign this teacher as non-primary",
   "existing_primary_teacher_id": "existing-teacher-uuid"
+}
+```
+
+#### **Subject Required**
+
+```json
+{
+  "status": "error",
+  "message": "Subject is required when assignment_type is subject_teacher",
+  "details": "Subject teachers must have a specific subject assigned to them",
+  "error_code": "SUBJECT_REQUIRED",
+  "suggestion": "Please provide a subject name or change the assignment type"
+}
+```
+
+#### **No Valid Fields**
+
+```json
+{
+  "status": "error",
+  "message": "No valid fields to update",
+  "details": "The request body does not contain any valid fields that can be updated",
+  "error_code": "NO_VALID_FIELDS",
+  "suggestion": "Please provide at least one valid field to update (teacher_id, assignment_type, is_primary, or subject)"
+}
+```
+
+#### **Validation Error**
+
+```json
+{
+  "status": "error",
+  "message": "Validation failed",
+  "details": "Some fields failed validation",
+  "errors": [
+    {
+      "msg": "Valid teacher ID is required",
+      "param": "teacher_id",
+      "location": "body"
+    }
+  ],
+  "error_code": "VALIDATION_ERROR",
+  "suggestion": "Please correct the validation errors and try again"
 }
 ```
 

@@ -974,9 +974,12 @@ router.post('/class-divisions/:id/assign-teacher',
                     .single();
 
                 if (existingPrimary) {
-                    return res.status(400).json({
+                    return res.status(500).json({
                         status: 'error',
                         message: 'Class already has a primary teacher',
+                        details: 'This class division already has an active primary teacher assignment',
+                        error_code: 'PRIMARY_TEACHER_EXISTS',
+                        suggestion: 'Please remove the existing primary teacher first or assign this teacher as non-primary',
                         existing_primary_teacher_id: existingPrimary.teacher_id
                     });
                 }
@@ -1115,7 +1118,14 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
         try {
             const errors = validationResult(req);
             if (!errors.isEmpty()) {
-                return res.status(400).json({ errors: errors.array() });
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    details: 'Some fields failed validation',
+                    errors: errors.array(),
+                    error_code: 'VALIDATION_ERROR',
+                    suggestion: 'Please correct the validation errors and try again'
+                });
             }
 
             const { id: class_division_id, assignment_id } = req.params;
@@ -1132,9 +1142,12 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
                 .single();
 
             if (fetchError || !existingAssignment) {
-                return res.status(404).json({
+                return res.status(500).json({
                     status: 'error',
-                    message: 'Teacher assignment not found'
+                    message: 'Teacher assignment not found',
+                    details: 'The specified teacher assignment could not be found in the system',
+                    error_code: 'ASSIGNMENT_NOT_FOUND',
+                    suggestion: 'Please verify the assignment ID and class division ID are correct'
                 });
             }
 
@@ -1149,9 +1162,12 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
                     .single();
 
                 if (teacherError || !newTeacher) {
-                    return res.status(400).json({
+                    return res.status(500).json({
                         status: 'error',
-                        message: 'Invalid teacher ID or teacher not found'
+                        message: 'Invalid teacher ID or teacher not found',
+                        details: 'The specified teacher does not exist or is not active in the system',
+                        error_code: 'TEACHER_NOT_FOUND',
+                        suggestion: 'Please verify the teacher ID is correct and the teacher is active'
                     });
                 }
 
@@ -1166,9 +1182,12 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
                     .single();
 
                 if (existingTeacherAssignment) {
-                    return res.status(400).json({
+                    return res.status(500).json({
                         status: 'error',
                         message: `Teacher is already assigned to this class as ${existingTeacherAssignment.assignment_type}`,
+                        details: `This teacher already has an active assignment to this class division`,
+                        error_code: 'TEACHER_ALREADY_ASSIGNED',
+                        suggestion: 'Please choose a different teacher or remove the existing assignment first',
                         existing_assignment_type: existingTeacherAssignment.assignment_type
                     });
                 }
@@ -1239,9 +1258,12 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
                     .single();
 
                 if (existingPrimary) {
-                    return res.status(400).json({
+                    return res.status(500).json({
                         status: 'error',
                         message: 'Class already has a primary teacher',
+                        details: 'This class division already has an active primary teacher assignment',
+                        error_code: 'PRIMARY_TEACHER_EXISTS',
+                        suggestion: 'Please remove the existing primary teacher first or assign this teacher as non-primary',
                         existing_primary_teacher_id: existingPrimary.teacher_id
                     });
                 }
@@ -1260,9 +1282,12 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
             const finalAssignmentType = assignment_type !== undefined ? assignment_type : existingAssignment.assignment_type;
             const resultingSubject = subject !== undefined ? subject : existingAssignment.subject;
             if (finalAssignmentType === 'subject_teacher' && (!resultingSubject || String(resultingSubject).trim().length === 0)) {
-                return res.status(400).json({
+                return res.status(500).json({
                     status: 'error',
-                    message: 'Subject is required when assignment_type is subject_teacher'
+                    message: 'Subject is required when assignment_type is subject_teacher',
+                    details: 'Subject teachers must have a specific subject assigned to them',
+                    error_code: 'SUBJECT_REQUIRED',
+                    suggestion: 'Please provide a subject name or change the assignment type'
                 });
             }
 
@@ -1270,9 +1295,12 @@ router.put('/class-divisions/:id/teacher-assignment/:assignment_id',
             // This enables class teachers to also teach specific subjects
 
             if (Object.keys(updateData).length === 0) {
-                return res.status(400).json({
+                return res.status(500).json({
                     status: 'error',
-                    message: 'No valid fields to update'
+                    message: 'No valid fields to update',
+                    details: 'The request body does not contain any valid fields that can be updated',
+                    error_code: 'NO_VALID_FIELDS',
+                    suggestion: 'Please provide at least one valid field to update (teacher_id, assignment_type, is_primary, or subject)'
                 });
             }
 
