@@ -431,7 +431,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
                         student_id: student.student_id,
                         status: 'absent',
                         remarks: 'Not marked by teacher - default status',
-                        marked_by: teacherId
+                        marked_by: null
                     }));
 
                     const { error: recordsError } = await adminSupabase
@@ -2128,10 +2128,24 @@ router.get('/status/:class_division_id', authenticate, async (req, res) => {
         // Create or get daily attendance record
         const dailyAttendance = await createOrGetDailyAttendance(class_division_id, date, req.user.id);
 
-        // Get student records
+        // If marked_by is set, fetch marker details
+        let markedByUser = null;
+        if (dailyAttendance && dailyAttendance.marked_by) {
+            const { data: marker } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', dailyAttendance.marked_by)
+                .single();
+            markedByUser = marker || null;
+        }
+
+        // Get student records (with marker details)
         const { data: studentRecords, error: studentError } = await adminSupabase
             .from('student_attendance_records')
-            .select('*')
+            .select(`
+                *,
+                marked_by_user:users!student_attendance_records_marked_by_fkey(full_name, role)
+            `)
             .eq('daily_attendance_id', dailyAttendance.id);
 
         if (studentError) throw studentError;
@@ -2150,19 +2164,24 @@ router.get('/status/:class_division_id', authenticate, async (req, res) => {
             }
         }
 
-        // Combine student records with student details
+        // Combine student records with student and marker details
         const studentRecordsWithDetails = studentRecords.map(record => {
             const studentDetail = studentDetails.find(student => student.id === record.student_id);
             return {
                 ...record,
-                student: studentDetail || null
+                student: studentDetail || null,
+                marked_by_name: record.marked_by_user ? record.marked_by_user.full_name : null
             };
         });
 
         res.json({
             status: 'success',
             data: {
-                daily_attendance: dailyAttendance,
+                daily_attendance: {
+                    ...dailyAttendance,
+                    marked_by_name: markedByUser ? markedByUser.full_name : null,
+                    marked_by_role: markedByUser ? markedByUser.role : null
+                },
                 student_records: studentRecordsWithDetails || [],
                 is_holiday: dailyAttendance.is_holiday,
                 holiday_reason: dailyAttendance.holiday_reason
