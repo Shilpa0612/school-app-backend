@@ -442,7 +442,7 @@ router.get('/events',
                 throw error;
             }
 
-            // Minimal post-processing for class info
+            // Enhanced post-processing for class info with class division name
             const processedEvents = events.map(event => {
                 let classDivisions = [];
                 if (event.class_divisions) {
@@ -488,9 +488,16 @@ router.get('/events',
                     };
                 }
 
+                // Format class division name for single class events
+                let classDivisionName = null;
+                if (event.class_division && event.class_division.class_level && event.class_division.division) {
+                    classDivisionName = `${event.class_division.class_level.name} ${event.class_division.division}`;
+                }
+
                 return {
                     ...event,
                     class_info: classInfo,
+                    class_division_name: classDivisionName,
                     status: event.status || 'approved',
                     approved_by: event.approved_by || null,
                     approved_at: event.approved_at || null,
@@ -673,18 +680,27 @@ router.get('/events/parent',
                 });
 
                 // Add student information to each event
-                const eventsWithStudentInfo = studentEvents.map(event => ({
-                    ...event,
-                    student_info: {
-                        student_id: mapping.student_id,
-                        student_name: student?.full_name || 'Unknown',
-                        admission_number: student?.admission_number || 'Unknown',
-                        class_division_id: studentRecord?.class_division_id || null,
-                        class_name: studentRecord?.class_divisions ?
-                            `${studentRecord.class_divisions.class_level.name} ${studentRecord.class_divisions.division}` : 'Unknown',
-                        roll_number: studentRecord?.roll_number || null
+                const eventsWithStudentInfo = studentEvents.map(event => {
+                    // Format class division name for single class events
+                    let classDivisionName = null;
+                    if (event.class && event.class.class_level && event.class.division) {
+                        classDivisionName = `${event.class.class_level.name} ${event.class.division}`;
                     }
-                }));
+
+                    return {
+                        ...event,
+                        class_division_name: classDivisionName,
+                        student_info: {
+                            student_id: mapping.student_id,
+                            student_name: student?.full_name || 'Unknown',
+                            admission_number: student?.admission_number || 'Unknown',
+                            class_division_id: studentRecord?.class_division_id || null,
+                            class_name: studentRecord?.class_divisions ?
+                                `${studentRecord.class_divisions.class_level.name} ${studentRecord.class_divisions.division}` : 'Unknown',
+                            roll_number: studentRecord?.roll_number || null
+                        }
+                    };
+                });
 
                 eventsByStudent.push({
                     student_id: mapping.student_id,
@@ -913,10 +929,24 @@ router.get('/events/teacher',
                 filteredEvents = filteredEvents.filter(event => event.status === 'approved');
             }
 
+            // Add class division name to events
+            const processedEvents = filteredEvents.map(event => {
+                // Format class division name for single class events
+                let classDivisionName = null;
+                if (event.class && event.class.class_level && event.class.division) {
+                    classDivisionName = `${event.class.class_level.name} ${event.class.division}`;
+                }
+
+                return {
+                    ...event,
+                    class_division_name: classDivisionName
+                };
+            });
+
             res.json({
                 status: 'success',
                 data: {
-                    events: filteredEvents,
+                    events: processedEvents,
                     assigned_classes: assignedClasses.map(assignment => ({
                         class_division_id: assignment.class_division_id,
                         assignment_type: assignment.assignment_type,
@@ -985,6 +1015,9 @@ router.get('/events/:id',
             const isSingleClass = classDivisions.length === 1;
             const isSchoolWide = classDivisions.length === 0 && eventData.event_type === 'school_wide';
 
+            // Format class division name for single class events
+            let classDivisionName = null;
+
             if (isMultiClass) {
                 // Multi-class event
                 processedEvent.class_info = {
@@ -1012,6 +1045,11 @@ router.get('/events/:id',
                         class_count: 1,
                         message: 'Class information not available'
                     };
+
+                    // Set class division name for single class events
+                    if (classData && classData.class_level && classData.division) {
+                        classDivisionName = `${classData.class_level.name} ${classData.division}`;
+                    }
                 } else {
                     processedEvent.class_info = {
                         type: 'single_class',
@@ -1052,6 +1090,11 @@ router.get('/events/:id',
                         class_count: 1,
                         message: 'Class information not available'
                     };
+
+                    // Set class division name for single class events
+                    if (classData && classData.class_level && classData.division) {
+                        classDivisionName = `${classData.class_level.name} ${classData.division}`;
+                    }
                 } else {
                     // Fallback for other cases
                     processedEvent.class_info = {
@@ -1061,6 +1104,9 @@ router.get('/events/:id',
                     };
                 }
             }
+
+            // Add class division name to the response
+            processedEvent.class_division_name = classDivisionName;
 
             res.json({
                 status: 'success',
@@ -1347,9 +1393,23 @@ router.get('/events/class/:class_division_id',
 
             if (error) throw error;
 
+            // Add class division name to events
+            const processedEvents = data.map(event => {
+                // Format class division name for single class events
+                let classDivisionName = null;
+                if (event.class && event.class.class_level && event.class.division) {
+                    classDivisionName = `${event.class.class_level.name} ${event.class.division}`;
+                }
+
+                return {
+                    ...event,
+                    class_division_name: classDivisionName
+                };
+            });
+
             res.json({
                 status: 'success',
-                data: { events: data }
+                data: { events: processedEvents }
             });
         } catch (error) {
             next(error);
@@ -1541,9 +1601,23 @@ router.get('/events/pending',
 
             if (error) throw error;
 
+            // Add class division name to events
+            const processedEvents = (pendingEvents || []).map(event => {
+                // Format class division name for single class events
+                let classDivisionName = null;
+                if (event.class && event.class.class_level && event.class.division) {
+                    classDivisionName = `${event.class.class_level.name} ${event.class.division}`;
+                }
+
+                return {
+                    ...event,
+                    class_division_name: classDivisionName
+                };
+            });
+
             res.json({
                 status: 'success',
-                data: { events: pendingEvents || [] }
+                data: { events: processedEvents }
             });
         } catch (error) {
             next(error);
