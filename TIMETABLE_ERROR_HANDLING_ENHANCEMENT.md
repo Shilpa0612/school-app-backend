@@ -208,6 +208,27 @@ Status: 400 Bad Request
 }
 ```
 
+## ✅ **Enhanced Error Responses for Timetable Entries**
+
+### **All Errors Now Return 500 Status Code**
+
+The timetable entries endpoint (`POST /api/timetable/entries`) now returns **500 status code** for all errors with detailed, actionable information.
+
+### **Enhanced Error Response Format**
+
+All errors now follow this consistent format:
+
+```json
+{
+  "status": "error",
+  "message": "Specific error message",
+  "details": "Detailed explanation of what went wrong",
+  "error_code": "UNIQUE_ERROR_CODE",
+  "suggestion": "Actionable suggestion to fix the issue",
+  "additional_data": {} // Optional: context-specific information
+}
+```
+
 ## ✅ **Teacher Conflict Handling**
 
 ### **Teacher Double-Booking Prevention**
@@ -258,6 +279,112 @@ If conflicts slip through validation, the database constraint catches them:
 }
 ```
 
+## **Enhanced Timetable Entries Error Examples**
+
+### **1. Validation Errors**
+
+```json
+{
+  "status": "error",
+  "message": "Validation failed",
+  "details": "Some fields failed validation",
+  "errors": [
+    {
+      "msg": "Valid config ID is required",
+      "param": "config_id",
+      "location": "body"
+    }
+  ],
+  "error_code": "VALIDATION_ERROR",
+  "suggestion": "Please correct the validation errors and try again"
+}
+```
+
+### **2. Teacher Authorization Errors**
+
+```json
+{
+  "status": "error",
+  "message": "You can only manage timetables for your assigned classes",
+  "details": "This teacher is not assigned to the specified class division",
+  "error_code": "TEACHER_NOT_AUTHORIZED",
+  "suggestion": "Please contact administration to get assigned to this class or choose a different class",
+  "class_division_id": "class-uuid",
+  "teacher_id": "teacher-uuid"
+}
+```
+
+### **3. Configuration Errors**
+
+```json
+{
+  "status": "error",
+  "message": "Invalid timetable configuration",
+  "details": "The specified timetable configuration does not exist or is not active",
+  "error_code": "INVALID_CONFIG",
+  "suggestion": "Please verify the config_id is correct and the configuration is active",
+  "config_id": "config-uuid"
+}
+```
+
+### **4. Period/Day Validation Errors**
+
+```json
+{
+  "status": "error",
+  "message": "Period number cannot exceed total periods (8)",
+  "details": "The requested period 10 exceeds the maximum 8 periods configured for this timetable",
+  "error_code": "PERIOD_EXCEEDS_LIMIT",
+  "suggestion": "Please choose a period number between 1 and 8",
+  "requested_period": 10,
+  "max_periods": 8
+}
+```
+
+### **5. Class Schedule Conflicts**
+
+```json
+{
+  "status": "error",
+  "message": "Class schedule conflict",
+  "details": "Mathematics is already assigned for this class, period, and day",
+  "error_code": "CLASS_CONFLICT",
+  "suggestion": "Please choose a different period or day, or update the existing entry",
+  "conflict_data": {
+    "existing_subject": "Mathematics",
+    "class_division_id": "class-uuid",
+    "period_number": 2,
+    "day_of_week": 1
+  }
+}
+```
+
+### **6. Teacher Schedule Conflicts**
+
+```json
+{
+  "status": "error",
+  "message": "Teacher schedule conflict",
+  "details": "This teacher is already assigned to teach Science for Grade-2B at the same time",
+  "error_code": "TEACHER_CONFLICT",
+  "suggestion": "Please choose a different teacher, period, or day for this assignment",
+  "conflict_data": "Conflict data object with existing assignment details"
+}
+```
+
+### **7. Database Constraint Violations**
+
+```json
+{
+  "status": "error",
+  "message": "Teacher schedule conflict",
+  "details": "This teacher is already assigned to another class during the same period and day",
+  "error_code": "TEACHER_CONFLICT_DB",
+  "suggestion": "Please choose a different teacher, period, or day for this assignment",
+  "constraint_violated": "unique_teacher_period_day"
+}
+```
+
 ## **Testing Teacher Conflicts**
 
 Use the provided test script `test_teacher_conflict_scenarios.js` to verify teacher conflict handling:
@@ -272,5 +399,14 @@ node test_teacher_conflict_scenarios.js
 2. Attempt to assign same teacher to different class (same period/day)
 3. Verify conflict is detected and proper error is returned
 4. Test valid assignment (different period)
+
+## **Benefits of Enhanced Error Handling**
+
+✅ **Consistent Status Codes**: All errors return 500 instead of mixed 400/401/403/404  
+✅ **Detailed Information**: Each error includes specific details about what went wrong  
+✅ **Error Codes**: Unique error codes for programmatic handling  
+✅ **Actionable Suggestions**: Clear guidance on how to fix the issue  
+✅ **Context Data**: Additional information for debugging and UI integration  
+✅ **Better User Experience**: Clear, understandable error messages
 
 This enhancement ensures that API consumers receive specific, actionable error information instead of generic 500 errors, making debugging and user experience significantly better.

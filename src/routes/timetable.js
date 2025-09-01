@@ -272,10 +272,13 @@ router.post('/entries',
         try {
             const errors = validationResult(req);
             if (!errors.isEmpty()) {
-                return res.status(400).json({
+                return res.status(500).json({
                     status: 'error',
                     message: 'Validation failed',
-                    errors: errors.array()
+                    details: 'Some fields failed validation',
+                    errors: errors.array(),
+                    error_code: 'VALIDATION_ERROR',
+                    suggestion: 'Please correct the validation errors and try again'
                 });
             }
 
@@ -398,16 +401,26 @@ router.post('/entries',
 
             // Validate period number and day
             if (period_number > config.total_periods) {
-                return res.status(400).json({
+                return res.status(500).json({
                     status: 'error',
-                    message: `Period number cannot exceed total periods (${config.total_periods})`
+                    message: `Period number cannot exceed total periods (${config.total_periods})`,
+                    details: `The requested period ${period_number} exceeds the maximum ${config.total_periods} periods configured for this timetable`,
+                    error_code: 'PERIOD_EXCEEDS_LIMIT',
+                    suggestion: `Please choose a period number between 1 and ${config.total_periods}`,
+                    requested_period: period_number,
+                    max_periods: config.total_periods
                 });
             }
 
             if (day_of_week > config.days_per_week) {
-                return res.status(400).json({
+                return res.status(500).json({
                     status: 'error',
-                    message: `Day of week cannot exceed configured days (${config.days_per_week})`
+                    message: `Day of week cannot exceed configured days (${config.days_per_week})`,
+                    details: `The requested day ${day_of_week} exceeds the maximum ${config.days_per_week} days configured for this timetable`,
+                    error_code: 'DAY_EXCEEDS_LIMIT',
+                    suggestion: `Please choose a day between 1 and ${config.days_per_week}`,
+                    requested_day: day_of_week,
+                    max_days: config.days_per_week
                 });
             }
 
@@ -421,7 +434,7 @@ router.post('/entries',
                 .eq('is_active', true);
 
             if (classConflicts && classConflicts.length > 0) {
-                return res.status(400).json({
+                return res.status(500).json({
                     status: 'error',
                     message: 'Class schedule conflict',
                     details: `${classConflicts[0].subject || 'A period'} is already assigned for this class, period, and day`,
@@ -457,7 +470,7 @@ router.post('/entries',
                         ? `${conflict.class_divisions.class_name}-${conflict.class_divisions.division}`
                         : 'Unknown Class';
 
-                    return res.status(400).json({
+                    return res.status(500).json({
                         status: 'error',
                         message: 'Teacher schedule conflict',
                         details: `This teacher is already assigned to teach ${conflict.subject || 'a period'} for ${conflictClass} at the same time`,
@@ -525,7 +538,7 @@ router.post('/entries',
                         // Check if it's a teacher conflict or class conflict
                         const errorDetail = error.detail || error.message || '';
                         if (errorDetail.includes('unique_teacher_period_day')) {
-                            return res.status(400).json({
+                            return res.status(500).json({
                                 status: 'error',
                                 message: 'Teacher schedule conflict',
                                 details: 'This teacher is already assigned to another class during the same period and day',
@@ -534,7 +547,7 @@ router.post('/entries',
                                 constraint_violated: 'unique_teacher_period_day'
                             });
                         } else if (errorDetail.includes('unique_class_period_day')) {
-                            return res.status(400).json({
+                            return res.status(500).json({
                                 status: 'error',
                                 message: 'Class schedule conflict',
                                 details: 'A timetable entry already exists for this class, period, and day combination',
@@ -543,7 +556,7 @@ router.post('/entries',
                                 constraint_violated: 'unique_class_period_day'
                             });
                         } else {
-                            return res.status(400).json({
+                            return res.status(500).json({
                                 status: 'error',
                                 message: 'Duplicate entry conflict',
                                 details: 'A duplicate entry was detected in the timetable',
@@ -553,7 +566,7 @@ router.post('/entries',
                         }
                         break;
                     case '23503': // Foreign key constraint violation
-                        return res.status(400).json({
+                        return res.status(500).json({
                             status: 'error',
                             message: 'Invalid reference data',
                             details: 'One or more referenced IDs (config_id, class_division_id, teacher_id) are invalid or do not exist',
@@ -561,7 +574,7 @@ router.post('/entries',
                             suggestion: 'Please verify that all IDs exist and are valid'
                         });
                     case '23514': // Check constraint violation
-                        return res.status(400).json({
+                        return res.status(500).json({
                             status: 'error',
                             message: 'Data validation constraint failed',
                             details: error.message,
@@ -569,7 +582,7 @@ router.post('/entries',
                             suggestion: 'Please check the data values meet the required constraints'
                         });
                     case '22P02': // Invalid UUID format
-                        return res.status(400).json({
+                        return res.status(500).json({
                             status: 'error',
                             message: 'Invalid ID format',
                             details: 'One or more IDs are not in valid UUID format',
@@ -577,7 +590,7 @@ router.post('/entries',
                             suggestion: 'Please ensure all IDs are valid UUIDs'
                         });
                     case 'PGRST116': // Supabase: No rows returned
-                        return res.status(404).json({
+                        return res.status(500).json({
                             status: 'error',
                             message: 'Resource not found',
                             details: 'The specified timetable configuration or class division was not found',
@@ -589,21 +602,23 @@ router.post('/entries',
 
             // Handle authentication/authorization errors
             if (error.message && error.message.includes('auth')) {
-                return res.status(401).json({
+                return res.status(500).json({
                     status: 'error',
                     message: 'Authentication error',
                     details: error.message,
+                    error_code: 'AUTH_ERROR',
                     suggestion: 'Please check your authentication credentials'
                 });
             }
 
             // Handle validation errors
             if (error.name === 'ValidationError') {
-                return res.status(400).json({
+                return res.status(500).json({
                     status: 'error',
                     message: 'Validation failed',
                     details: error.message,
                     errors: error.errors || [],
+                    error_code: 'VALIDATION_ERROR',
                     suggestion: 'Please correct the validation errors and try again'
                 });
             }
