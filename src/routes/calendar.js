@@ -1130,18 +1130,39 @@ router.get('/events/:id',
             const isSingleClass = classDivisions.length === 1;
             const isSchoolWide = classDivisions.length === 0 && eventData.event_type === 'school_wide';
 
-            // Format class division name for single class events
+            // Format class division name and names for events
             let classDivisionName = null;
+            let classDivisionNames = null;
 
             if (isMultiClass) {
-                // Multi-class event
+                // Multi-class event - fetch all class names
+                const { data: classesData } = await adminSupabase
+                    .from('class_divisions')
+                    .select(`
+                        id,
+                        division,
+                        class_level:class_level_id (name)
+                    `)
+                    .in('id', classDivisions);
+
+                const classNames = [];
+                if (classesData && Array.isArray(classesData)) {
+                    for (const classData of classesData) {
+                        if (classData && classData.class_level && classData.division) {
+                            classNames.push(`${classData.class_level.name} ${classData.division}`);
+                        }
+                    }
+                }
+
                 processedEvent.class_info = {
                     type: 'multi_class',
                     class_count: classDivisions.length,
                     class_ids: classDivisions,
                     message: `Applies to ${classDivisions.length} classes`
                 };
-                classDivisionName = `Multiple Classes (${classDivisions.length})`;
+
+                classDivisionNames = classNames;
+                classDivisionName = classNames.length ? classNames.join(', ') : `Multiple Classes (${classDivisions.length})`;
             } else if (isSingleClass) {
                 // Single class event - fetch class info separately
                 if (classDivisions[0]) {
@@ -1165,6 +1186,7 @@ router.get('/events/:id',
                     // Set class division name for single class events
                     if (classData && classData.class_level && classData.division) {
                         classDivisionName = `${classData.class_level.name} ${classData.division}`;
+                        classDivisionNames = [classDivisionName];
                     }
                 } else {
                     processedEvent.class_info = {
@@ -1181,6 +1203,7 @@ router.get('/events/:id',
                     message: 'Applies to all classes'
                 };
                 classDivisionName = 'All Classes';
+                classDivisionNames = [];
             } else {
                 // Handle events with no class information or empty class_divisions
                 if (eventData.event_type === 'school_wide') {
@@ -1190,6 +1213,7 @@ router.get('/events/:id',
                         message: 'Applies to all classes'
                     };
                     classDivisionName = 'All Classes';
+                    classDivisionNames = [];
                 } else if (eventData.class_division_id) {
                     // Single class event with class_division_id but no class_divisions
                     const { data: classData } = await adminSupabase
@@ -1212,6 +1236,7 @@ router.get('/events/:id',
                     // Set class division name for single class events
                     if (classData && classData.class_level && classData.division) {
                         classDivisionName = `${classData.class_level.name} ${classData.division}`;
+                        classDivisionNames = [classDivisionName];
                     }
                 } else {
                     // Fallback for other cases
@@ -1223,8 +1248,9 @@ router.get('/events/:id',
                 }
             }
 
-            // Add class division name to the response
+            // Add class division name and names to the response
             processedEvent.class_division_name = classDivisionName;
+            processedEvent.class_division_names = classDivisionNames;
 
             res.json({
                 status: 'success',
