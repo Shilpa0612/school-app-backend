@@ -442,6 +442,37 @@ router.get('/events',
                 throw error;
             }
 
+            // Build lookup of class names for multi-class events
+            let classIdToName = {};
+            try {
+                let allClassIds = new Set();
+                for (const ev of events) {
+                    if (ev && ev.class_divisions) {
+                        let ids = [];
+                        if (typeof ev.class_divisions === 'string') {
+                            try { ids = JSON.parse(ev.class_divisions); } catch (_) { ids = []; }
+                        } else if (Array.isArray(ev.class_divisions)) {
+                            ids = ev.class_divisions;
+                        }
+                        ids.forEach(id => allClassIds.add(id));
+                    }
+                }
+                const idList = Array.from(allClassIds);
+                if (idList.length > 0) {
+                    const { data: classesLookup } = await adminSupabase
+                        .from('class_divisions')
+                        .select('id, division, class_level:class_level_id (name)')
+                        .in('id', idList);
+                    if (Array.isArray(classesLookup)) {
+                        classesLookup.forEach(cd => {
+                            if (cd && cd.id && cd.class_level && cd.class_level.name && cd.division) {
+                                classIdToName[cd.id] = `${cd.class_level.name} ${cd.division}`;
+                            }
+                        });
+                    }
+                }
+            } catch (_) { }
+
             // Enhanced post-processing for class info with class division name
             const processedEvents = events.map(event => {
                 let classDivisions = [];
@@ -490,18 +521,24 @@ router.get('/events',
 
                 // Compute a human-readable class division name
                 let classDivisionName = null;
+                let classDivisionNames = null;
                 if (event.event_type === 'school_wide') {
                     classDivisionName = 'All Classes';
+                    classDivisionNames = [];
                 } else if (classDivisions.length > 1) {
-                    classDivisionName = `Multiple Classes (${classDivisions.length})`;
+                    const names = classDivisions.map(id => classIdToName[id]).filter(Boolean);
+                    classDivisionNames = names;
+                    classDivisionName = names.length ? names.join(', ') : `Multiple Classes (${classDivisions.length})`;
                 } else if (event.class_division && event.class_division.class_level && event.class_division.division) {
                     classDivisionName = `${event.class_division.class_level.name} ${event.class_division.division}`;
+                    classDivisionNames = [classDivisionName];
                 }
 
                 return {
                     ...event,
                     class_info: classInfo,
                     class_division_name: classDivisionName,
+                    class_division_names: classDivisionNames,
                     status: event.status || 'approved',
                     approved_by: event.approved_by || null,
                     approved_at: event.approved_at || null,
@@ -956,10 +993,42 @@ router.get('/events/teacher',
                 filteredEvents = filteredEvents.filter(event => event.status === 'approved');
             }
 
-            // Add class division name to events
+            // Add class division name(s) to events
+            let classIdToName = {};
+            try {
+                let allClassIds = new Set();
+                for (const ev of filteredEvents) {
+                    if (ev && ev.class_divisions) {
+                        let ids = [];
+                        if (typeof ev.class_divisions === 'string') {
+                            try { ids = JSON.parse(ev.class_divisions); } catch (_) { ids = []; }
+                        } else if (Array.isArray(ev.class_divisions)) {
+                            ids = ev.class_divisions;
+                        }
+                        ids.forEach(id => allClassIds.add(id));
+                    } else if (Array.isArray(ev.class_division_ids)) {
+                        ev.class_division_ids.forEach(id => allClassIds.add(id));
+                    }
+                }
+                const idList = Array.from(allClassIds);
+                if (idList.length > 0) {
+                    const { data: classesLookup } = await adminSupabase
+                        .from('class_divisions')
+                        .select('id, division, class_level:class_level_id (name)')
+                        .in('id', idList);
+                    if (Array.isArray(classesLookup)) {
+                        classesLookup.forEach(cd => {
+                            if (cd && cd.id && cd.class_level && cd.class_level.name && cd.division) {
+                                classIdToName[cd.id] = `${cd.class_level.name} ${cd.division}`;
+                            }
+                        });
+                    }
+                }
+            } catch (_) { }
+
             const processedEvents = filteredEvents.map(event => {
-                // Compute a human-readable class division name
                 let classDivisionName = null;
+                let classDivisionNames = null;
                 let eventClassDivisions = [];
                 if (event.class_divisions) {
                     if (typeof event.class_divisions === 'string') {
@@ -972,15 +1041,20 @@ router.get('/events/teacher',
                 }
                 if (event.event_type === 'school_wide') {
                     classDivisionName = 'All Classes';
+                    classDivisionNames = [];
                 } else if (eventClassDivisions.length > 1) {
-                    classDivisionName = `Multiple Classes (${eventClassDivisions.length})`;
+                    const names = eventClassDivisions.map(id => classIdToName[id]).filter(Boolean);
+                    classDivisionNames = names;
+                    classDivisionName = names.length ? names.join(', ') : `Multiple Classes (${eventClassDivisions.length})`;
                 } else if (event.class && event.class.class_level && event.class.division) {
                     classDivisionName = `${event.class.class_level.name} ${event.class.division}`;
+                    classDivisionNames = [classDivisionName];
                 }
 
                 return {
                     ...event,
-                    class_division_name: classDivisionName
+                    class_division_name: classDivisionName,
+                    class_division_names: classDivisionNames
                 };
             });
 
@@ -1437,10 +1511,42 @@ router.get('/events/class/:class_division_id',
 
             if (error) throw error;
 
-            // Add class division name to events
+            // Add class division name(s) to events
+            let classIdToName = {};
+            try {
+                let allClassIds = new Set();
+                for (const ev of data || []) {
+                    if (ev && ev.class_divisions) {
+                        let ids = [];
+                        if (typeof ev.class_divisions === 'string') {
+                            try { ids = JSON.parse(ev.class_divisions); } catch (_) { ids = []; }
+                        } else if (Array.isArray(ev.class_divisions)) {
+                            ids = ev.class_divisions;
+                        }
+                        ids.forEach(id => allClassIds.add(id));
+                    } else if (Array.isArray(ev.class_division_ids)) {
+                        ev.class_division_ids.forEach(id => allClassIds.add(id));
+                    }
+                }
+                const idList = Array.from(allClassIds);
+                if (idList.length > 0) {
+                    const { data: classesLookup } = await adminSupabase
+                        .from('class_divisions')
+                        .select('id, division, class_level:class_level_id (name)')
+                        .in('id', idList);
+                    if (Array.isArray(classesLookup)) {
+                        classesLookup.forEach(cd => {
+                            if (cd && cd.id && cd.class_level && cd.class_level.name && cd.division) {
+                                classIdToName[cd.id] = `${cd.class_level.name} ${cd.division}`;
+                            }
+                        });
+                    }
+                }
+            } catch (_) { }
+
             const processedEvents = data.map(event => {
-                // Compute a human-readable class division name
                 let classDivisionName = null;
+                let classDivisionNames = null;
                 let eventClassDivisions = [];
                 if (event.class_divisions) {
                     if (typeof event.class_divisions === 'string') {
@@ -1453,15 +1559,20 @@ router.get('/events/class/:class_division_id',
                 }
                 if (event.event_type === 'school_wide') {
                     classDivisionName = 'All Classes';
+                    classDivisionNames = [];
                 } else if (eventClassDivisions.length > 1) {
-                    classDivisionName = `Multiple Classes (${eventClassDivisions.length})`;
+                    const names = eventClassDivisions.map(id => classIdToName[id]).filter(Boolean);
+                    classDivisionNames = names;
+                    classDivisionName = names.length ? names.join(', ') : `Multiple Classes (${eventClassDivisions.length})`;
                 } else if (event.class && event.class.class_level && event.class.division) {
                     classDivisionName = `${event.class.class_level.name} ${event.class.division}`;
+                    classDivisionNames = [classDivisionName];
                 }
 
                 return {
                     ...event,
-                    class_division_name: classDivisionName
+                    class_division_name: classDivisionName,
+                    class_division_names: classDivisionNames
                 };
             });
 
@@ -1659,22 +1770,68 @@ router.get('/events/pending',
 
             if (error) throw error;
 
-            // Add class division name to events
+            // Add class division name(s) to events
+            let classIdToName = {};
+            try {
+                let allClassIds = new Set();
+                for (const ev of pendingEvents || []) {
+                    if (ev && ev.class_divisions) {
+                        let ids = [];
+                        if (typeof ev.class_divisions === 'string') {
+                            try { ids = JSON.parse(ev.class_divisions); } catch (_) { ids = []; }
+                        } else if (Array.isArray(ev.class_divisions)) {
+                            ids = ev.class_divisions;
+                        }
+                        ids.forEach(id => allClassIds.add(id));
+                    } else if (Array.isArray(ev.class_division_ids)) {
+                        ev.class_division_ids.forEach(id => allClassIds.add(id));
+                    }
+                }
+                const idList = Array.from(allClassIds);
+                if (idList.length > 0) {
+                    const { data: classesLookup } = await adminSupabase
+                        .from('class_divisions')
+                        .select('id, division, class_level:class_level_id (name)')
+                        .in('id', idList);
+                    if (Array.isArray(classesLookup)) {
+                        classesLookup.forEach(cd => {
+                            if (cd && cd.id && cd.class_level && cd.class_level.name && cd.division) {
+                                classIdToName[cd.id] = `${cd.class_level.name} ${cd.division}`;
+                            }
+                        });
+                    }
+                }
+            } catch (_) { }
+
             const processedEvents = (pendingEvents || []).map(event => {
-                // Compute a human-readable class division name
                 let classDivisionName = null;
-                const eventClassDivisions = Array.isArray(event.class_division_ids) ? event.class_division_ids : [];
+                let classDivisionNames = null;
+                let eventClassDivisions = [];
+                if (event.class_divisions) {
+                    if (typeof event.class_divisions === 'string') {
+                        try { eventClassDivisions = JSON.parse(event.class_divisions); } catch (_) { eventClassDivisions = []; }
+                    } else if (Array.isArray(event.class_divisions)) {
+                        eventClassDivisions = event.class_divisions;
+                    }
+                } else if (Array.isArray(event.class_division_ids)) {
+                    eventClassDivisions = event.class_division_ids;
+                }
                 if (event.event_type === 'school_wide') {
                     classDivisionName = 'All Classes';
+                    classDivisionNames = [];
                 } else if (eventClassDivisions.length > 1) {
-                    classDivisionName = `Multiple Classes (${eventClassDivisions.length})`;
+                    const names = eventClassDivisions.map(id => classIdToName[id]).filter(Boolean);
+                    classDivisionNames = names;
+                    classDivisionName = names.length ? names.join(', ') : `Multiple Classes (${eventClassDivisions.length})`;
                 } else if (event.class && event.class.class_level && event.class.division) {
                     classDivisionName = `${event.class.class_level.name} ${event.class.division}`;
+                    classDivisionNames = [classDivisionName];
                 }
 
                 return {
                     ...event,
-                    class_division_name: classDivisionName
+                    class_division_name: classDivisionName,
+                    class_division_names: classDivisionNames
                 };
             });
 
