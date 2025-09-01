@@ -583,6 +583,8 @@ router.get('/teachers',
     authorize(['admin', 'principal', 'teacher']),
     async (req, res, next) => {
         try {
+            const { subject, search } = req.query;
+
             // First get all teachers from users table
             const { data: usersData, error: usersError } = await adminSupabase
                 .from('users')
@@ -621,9 +623,50 @@ router.get('/teachers',
                 // Continue without staff data if error
             }
 
+            // Get teacher assignments to check subjects if filtering by subject
+            let teacherAssignments = [];
+            if (subject) {
+                // Get subjects from staff table instead of class_teacher_assignments
+                const { data: staffWithSubjects, error: staffSubjectsError } = await adminSupabase
+                    .from('staff')
+                    .select(`
+                        user_id,
+                        subject
+                    `)
+                    .eq('is_active', true)
+                    .not('subject', 'is', null);
+
+                if (!staffSubjectsError && staffWithSubjects) {
+                    // Flatten the subjects array for each teacher
+                    staffWithSubjects.forEach(staff => {
+                        if (staff.subject && Array.isArray(staff.subject)) {
+                            staff.subject.forEach(subjectName => {
+                                teacherAssignments.push({
+                                    teacher_id: staff.user_id,
+                                    subject: subjectName
+                                });
+                            });
+                        }
+                    });
+                }
+            }
+
             // Combine the data
-            const teachers = usersData.map(user => {
+            let teachers = usersData.map(user => {
                 const staffInfo = staffData?.find(staff => staff.user_id === user.id);
+
+                // Get subjects taught by this teacher from staff table
+                let teacherSubjects = [];
+                if (staffInfo && staffInfo.subject && Array.isArray(staffInfo.subject)) {
+                    teacherSubjects = staffInfo.subject;
+                } else if (subject) {
+                    // Fallback to class assignments if staff subjects not available
+                    teacherSubjects = teacherAssignments
+                        .filter(assignment => assignment.teacher_id === user.id)
+                        .map(assignment => assignment.subject)
+                        .filter((subject, index, arr) => arr.indexOf(subject) === index); // Remove duplicates
+                }
+
                 return {
                     teacher_id: user.id, // Use this for class assignments
                     user_id: user.id,
@@ -633,16 +676,82 @@ router.get('/teachers',
                     email: user.email,
                     department: staffInfo?.department || null,
                     designation: staffInfo?.designation || null,
-                    is_active: staffInfo?.is_active || true
+                    is_active: staffInfo?.is_active || true,
+                    subjects_taught: teacherSubjects
                 };
             });
+
+            // Apply subject filtering if specified
+            if (subject && subject.trim()) {
+                const subjectFilter = subject.trim().toLowerCase();
+                teachers = teachers.filter(teacher => {
+                    // Check if teacher teaches any subject that matches the filter
+                    return teacher.subjects_taught.some(teacherSubject => {
+                        if (!teacherSubject) return false;
+                        const teacherSubjectLower = teacherSubject.toLowerCase();
+
+                        // Exact match
+                        if (teacherSubjectLower === subjectFilter) return true;
+
+                        // Partial match (e.g., "math" matches "Mathematics")
+                        if (teacherSubjectLower.includes(subjectFilter)) return true;
+
+                        // Reverse partial match (e.g., "Mathematics" contains "math")
+                        if (subjectFilter.includes(teacherSubjectLower)) return true;
+
+                        // Check for common abbreviations
+                        const commonAbbreviations = {
+                            'math': ['mathematics', 'maths'],
+                            'sci': ['science'],
+                            'eng': ['english'],
+                            'hindi': ['hindi'],
+                            'kan': ['kannada'],
+                            'soc': ['social', 'social studies'],
+                            'hist': ['history'],
+                            'geo': ['geography'],
+                            'phy': ['physics'],
+                            'chem': ['chemistry'],
+                            'bio': ['biology']
+                        };
+
+                        if (commonAbbreviations[subjectFilter]) {
+                            return commonAbbreviations[subjectFilter].some(abbr =>
+                                teacherSubjectLower.includes(abbr)
+                            );
+                        }
+
+                        return false;
+                    });
+                });
+            }
+
+            // Apply general search if specified
+            if (search && search.trim()) {
+                const searchTerm = search.trim().toLowerCase();
+                teachers = teachers.filter(teacher => {
+                    return (
+                        teacher.full_name.toLowerCase().includes(searchTerm) ||
+                        teacher.email.toLowerCase().includes(searchTerm) ||
+                        (teacher.phone_number && teacher.phone_number.includes(searchTerm)) ||
+                        (teacher.department && teacher.department.toLowerCase().includes(searchTerm)) ||
+                        (teacher.designation && teacher.designation.toLowerCase().includes(searchTerm)) ||
+                        teacher.subjects_taught.some(subject =>
+                            subject && subject.toLowerCase().includes(searchTerm)
+                        )
+                    );
+                });
+            }
 
             res.json({
                 status: 'success',
                 data: {
                     teachers,
                     total: teachers.length,
-                    message: 'Use teacher_id for class division assignments'
+                    message: 'Use teacher_id for class division assignments',
+                    filters_applied: {
+                        subject: subject || null,
+                        search: search || null
+                    }
                 }
             });
 
@@ -3020,6 +3129,371 @@ router.delete('/class-divisions/:id',
 
         } catch (error) {
             logger.error('Error in delete class division endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Teacher Subject Management Endpoints
+
+// Assign subjects to a teacher
+router.post('/teachers/:teacher_id/subjects',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('subjects').isArray({ min: 1 }).withMessage('At least one subject is required'),
+        body('mode').optional().isIn(['replace', 'append']).withMessage('Mode must be either "replace" or "append"')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Validation failed',
+                    errors: errors.array()
+                });
+            }
+
+            const { teacher_id } = req.params;
+            const { subjects, mode = 'replace' } = req.body;
+
+            // Verify teacher exists and has teacher role
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found or invalid role'
+                });
+            }
+
+            // Get the staff record for this teacher
+            const { data: staffRecord, error: staffError } = await adminSupabase
+                .from('staff')
+                .select('id, user_id, subject')
+                .eq('user_id', teacher_id)
+                .single();
+
+            if (staffError || !staffRecord) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Staff record not found for teacher'
+                });
+            }
+
+            // Validate that all subjects exist in the subjects table
+            const { data: existingSubjects, error: subjectsError } = await adminSupabase
+                .from('subjects')
+                .select('name')
+                .in('name', subjects)
+                .eq('is_active', true);
+
+            if (subjectsError) {
+                logger.error('Error fetching subjects:', subjectsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to validate subjects'
+                });
+            }
+
+            const existingSubjectNames = existingSubjects?.map(s => s.name) || [];
+            const invalidSubjects = subjects.filter(subject => !existingSubjectNames.includes(subject));
+
+            if (invalidSubjects.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Some subjects do not exist in the system',
+                    data: {
+                        invalid_subjects: invalidSubjects,
+                        valid_subjects: existingSubjectNames
+                    }
+                });
+            }
+
+            // Prepare subjects to assign
+            let currentSubjects = [];
+            if (staffRecord.subject && Array.isArray(staffRecord.subject)) {
+                currentSubjects = staffRecord.subject;
+            }
+
+            let subjectsToAssign;
+            if (mode === 'replace') {
+                subjectsToAssign = subjects;
+            } else {
+                // Append mode - combine current and new subjects, remove duplicates
+                subjectsToAssign = [...new Set([...currentSubjects, ...subjects])];
+            }
+
+            // Update the staff record with new subjects
+            const { data: updatedStaff, error: updateError } = await adminSupabase
+                .from('staff')
+                .update({
+                    subject: subjectsToAssign,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', staffRecord.id)
+                .select('*');
+
+            if (updateError) {
+                logger.error('Error updating staff subjects:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to assign subjects to teacher'
+                });
+            }
+
+            res.status(201).json({
+                status: 'success',
+                data: {
+                    teacher_id,
+                    teacher_name: teacher.full_name,
+                    assigned_subjects: subjectsToAssign,
+                    total_subjects: subjectsToAssign.length,
+                    mode,
+                    previous_subjects: currentSubjects,
+                    message: 'Subjects assigned successfully'
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in assign subjects to teacher endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Get teacher's subject assignments
+router.get('/teachers/:teacher_id/subjects',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { teacher_id } = req.params;
+
+            // Teachers can only view their own subjects
+            if (req.user.role === 'teacher' && req.user.id !== teacher_id) {
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'You can only view your own subject assignments'
+                });
+            }
+
+            // Verify teacher exists
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found'
+                });
+            }
+
+            // Get teacher's subject assignments from staff table
+            const { data: staffRecord, error: staffError } = await adminSupabase
+                .from('staff')
+                .select(`
+                    id,
+                    user_id,
+                    subject,
+                    updated_at
+                `)
+                .eq('user_id', teacher_id)
+                .single();
+
+            if (staffError || !staffRecord) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Staff record not found for teacher'
+                });
+            }
+
+            const subjects = staffRecord.subject && Array.isArray(staffRecord.subject)
+                ? staffRecord.subject.map((subjectName, index) => ({
+                    subject_name: subjectName,
+                    index: index,
+                    assigned_date: staffRecord.updated_at,
+                    is_active: true
+                }))
+                : [];
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher_id,
+                    teacher_name: teacher.full_name,
+                    subjects,
+                    total_subjects: subjects.length
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get teacher subjects endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Remove subject from teacher
+router.delete('/teachers/:teacher_id/subjects/:subject_name',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { teacher_id, subject_name } = req.params;
+
+            // Verify teacher exists
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found'
+                });
+            }
+
+            // Get the staff record for this teacher
+            const { data: staffRecord, error: staffError } = await adminSupabase
+                .from('staff')
+                .select('id, user_id, subject')
+                .eq('user_id', teacher_id)
+                .single();
+
+            if (staffError || !staffRecord) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Staff record not found for teacher'
+                });
+            }
+
+            // Check if subject exists in current assignments
+            const currentSubjects = staffRecord.subject && Array.isArray(staffRecord.subject)
+                ? staffRecord.subject
+                : [];
+
+            if (!currentSubjects.includes(subject_name)) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Subject not assigned to this teacher'
+                });
+            }
+
+            // Remove the subject from the array
+            const remainingSubjects = currentSubjects.filter(subject => subject !== subject_name);
+
+            // Update the staff record
+            const { data: updatedStaff, error: updateError } = await adminSupabase
+                .from('staff')
+                .update({
+                    subject: remainingSubjects,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', staffRecord.id)
+                .select('*');
+
+            if (updateError) {
+                logger.error('Error updating staff subjects:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to remove subject from teacher'
+                });
+            }
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher_id,
+                    teacher_name: teacher.full_name,
+                    removed_subject: subject_name,
+                    remaining_subjects: remainingSubjects,
+                    message: 'Subject removed successfully'
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in remove subject from teacher endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Get teachers by subject
+router.get('/subjects/:subject_name/teachers',
+    authenticate,
+    authorize(['admin', 'principal', 'teacher']),
+    async (req, res, next) => {
+        try {
+            const { subject_name } = req.params;
+
+            // Get teachers assigned to this subject from staff table
+            const { data: staffRecords, error: staffError } = await adminSupabase
+                .from('staff')
+                .select(`
+                    id,
+                    user_id,
+                    subject,
+                    department,
+                    designation,
+                    updated_at,
+                    users!inner (
+                        id,
+                        full_name,
+                        email,
+                        role
+                    )
+                `)
+                .eq('users.role', 'teacher')
+                .eq('is_active', true);
+
+            if (staffError) {
+                logger.error('Error fetching staff records:', staffError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch teachers for subject'
+                });
+            }
+
+            // Filter teachers who have this subject assigned
+            const teachersWithSubject = staffRecords?.filter(staff => {
+                if (!staff.subject || !Array.isArray(staff.subject)) return false;
+                return staff.subject.includes(subject_name);
+            }) || [];
+
+            const teachers = teachersWithSubject.map(staff => ({
+                teacher_id: staff.user_id,
+                full_name: staff.users?.full_name,
+                email: staff.users?.email,
+                department: staff.department,
+                designation: staff.designation,
+                assigned_date: staff.updated_at
+            }));
+
+            res.json({
+                status: 'success',
+                data: {
+                    subject_name,
+                    teachers,
+                    total_teachers: teachers.length
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get teachers by subject endpoint:', error);
             next(error);
         }
     }
