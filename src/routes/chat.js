@@ -5,67 +5,207 @@ import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
-// Helper function to check for existing threads between participants
-async function findExistingThread(participantIds, threadType) {
+// Helper function to resolve existing duplicate threads
+async function resolveDuplicateThreads(participantIds, threadType) {
     try {
-        // For direct chats, find exact match of 2 participants
-        if (threadType === 'direct') {
-            const { data: existingThreads, error } = await adminSupabase
-                .from('chat_threads')
-                .select(`
-                    id,
-                    title,
-                    thread_type,
-                    created_at,
-                    updated_at,
-                    participants:chat_participants(user_id)
-                `)
-                .eq('thread_type', 'direct');
+        logger.info('Resolving duplicate threads for participants:', {
+            participantIds,
+            threadType
+        });
 
-            if (error) {
-                logger.error('Error checking for existing threads:', error);
-                return null;
-            }
+        // Find ALL threads with these participants (including duplicates)
+        const { data: allThreads, error } = await adminSupabase
+            .from('chat_threads')
+            .select(`
+                id,
+                title,
+                thread_type,
+                created_at,
+                updated_at,
+                created_by,
+                status,
+                participants:chat_participants(user_id)
+            `)
+            .eq('thread_type', threadType);
 
-            // Find thread with exact participant match
-            for (const thread of existingThreads || []) {
-                const threadParticipantIds = thread.participants.map(p => p.user_id).sort();
-                const requestedParticipantIds = [...participantIds].sort();
+        if (error) {
+            logger.error('Error finding threads for duplicate resolution:', error);
+            return null;
+        }
 
-                if (JSON.stringify(threadParticipantIds) === JSON.stringify(requestedParticipantIds)) {
-                    return thread;
-                }
-            }
-        } else {
-            // For group chats, check if exact same participant set exists
-            const { data: existingThreads, error } = await adminSupabase
-                .from('chat_threads')
-                .select(`
-                    id,
-                    title,
-                    thread_type,
-                    created_at,
-                    updated_at,
-                    participants:chat_participants(user_id)
-                `)
-                .eq('thread_type', 'group');
+        // Find threads with exact participant match
+        const matchingThreads = [];
+        for (const thread of allThreads || []) {
+            const threadParticipantIds = thread.participants.map(p => p.user_id).sort();
+            const requestedParticipantIds = [...participantIds].sort();
 
-            if (error) {
-                logger.error('Error checking for existing group threads:', error);
-                return null;
-            }
-
-            // Find thread with exact participant match
-            for (const thread of existingThreads || []) {
-                const threadParticipantIds = thread.participants.map(p => p.user_id).sort();
-                const requestedParticipantIds = [...participantIds].sort();
-
-                if (JSON.stringify(threadParticipantIds) === JSON.stringify(requestedParticipantIds)) {
-                    return thread;
-                }
+            if (JSON.stringify(threadParticipantIds) === JSON.stringify(requestedParticipantIds)) {
+                matchingThreads.push(thread);
             }
         }
 
+        if (matchingThreads.length === 0) {
+            return null; // No threads found
+        }
+
+        if (matchingThreads.length === 1) {
+            return matchingThreads[0]; // Single thread, no duplicates
+        }
+
+        // Multiple threads found - need to resolve duplicates
+        logger.warn(`Found ${matchingThreads.length} duplicate threads for participants:`, {
+            participantIds,
+            threadIds: matchingThreads.map(t => t.id)
+        });
+
+        // Sort threads by activity (most recent first)
+        const sortedThreads = matchingThreads.sort((a, b) =>
+            new Date(b.updated_at) - new Date(a.updated_at)
+        );
+
+        const primaryThread = sortedThreads[0]; // Most active thread
+        const duplicateThreads = sortedThreads.slice(1);
+
+        logger.info('Resolving duplicates:', {
+            primaryThreadId: primaryThread.id,
+            duplicateThreadIds: duplicateThreads.map(t => t.id)
+        });
+
+        // Merge duplicate threads into primary thread
+        await mergeDuplicateThreads(primaryThread, duplicateThreads);
+
+        return primaryThread;
+    } catch (error) {
+        logger.error('Error resolving duplicate threads:', error);
+        return null;
+    }
+}
+
+// Helper function to merge duplicate threads
+async function mergeDuplicateThreads(primaryThread, duplicateThreads) {
+    try {
+        logger.info('Starting thread merge process:', {
+            primaryThreadId: primaryThread.id,
+            duplicateCount: duplicateThreads.length
+        });
+
+        for (const duplicateThread of duplicateThreads) {
+            try {
+                // 1. Move all messages from duplicate to primary thread
+                const { data: messages, error: messagesError } = await adminSupabase
+                    .from('chat_messages')
+                    .select('*')
+                    .eq('thread_id', duplicateThread.id);
+
+                if (messagesError) {
+                    logger.error('Error fetching messages from duplicate thread:', messagesError);
+                    continue;
+                }
+
+                if (messages && messages.length > 0) {
+                    // Update message thread_id to primary thread
+                    const { error: updateError } = await adminSupabase
+                        .from('chat_messages')
+                        .update({ thread_id: primaryThread.id })
+                        .eq('thread_id', duplicateThread.id);
+
+                    if (updateError) {
+                        logger.error('Error moving messages:', updateError);
+                        continue;
+                    }
+
+                    logger.info(`Moved ${messages.length} messages from thread ${duplicateThread.id} to ${primaryThread.id}`);
+                }
+
+                // 2. Move participants from duplicate to primary thread
+                const { data: participants, error: participantsError } = await adminSupabase
+                    .from('chat_participants')
+                    .select('*')
+                    .eq('thread_id', duplicateThread.id);
+
+                if (participantsError) {
+                    logger.error('Error fetching participants from duplicate thread:', participantsError);
+                    continue;
+                }
+
+                if (participants && participants.length > 0) {
+                    // Insert participants into primary thread (ignore conflicts)
+                    const participantData = participants.map(p => ({
+                        thread_id: primaryThread.id,
+                        user_id: p.user_id,
+                        role: p.role,
+                        joined_at: p.joined_at,
+                        last_read_at: p.last_read_at
+                    }));
+
+                    const { error: insertError } = await adminSupabase
+                        .from('chat_participants')
+                        .upsert(participantData, {
+                            onConflict: 'thread_id,user_id',
+                            ignoreDuplicates: true
+                        });
+
+                    if (insertError) {
+                        logger.error('Error moving participants:', insertError);
+                        continue;
+                    }
+
+                    logger.info(`Moved ${participants.length} participants from thread ${duplicateThread.id} to ${primaryThread.id}`);
+                }
+
+                // 3. Update primary thread's updated_at to most recent
+                const mostRecentUpdate = Math.max(
+                    new Date(primaryThread.updated_at),
+                    new Date(duplicateThread.updated_at)
+                );
+
+                await adminSupabase
+                    .from('chat_threads')
+                    .update({
+                        updated_at: mostRecentUpdate.toISOString(),
+                        title: primaryThread.title || duplicateThread.title || primaryThread.title
+                    })
+                    .eq('id', primaryThread.id);
+
+                // 4. Mark duplicate thread as inactive (don't delete immediately)
+                await adminSupabase
+                    .from('chat_threads')
+                    .update({
+                        status: 'merged',
+                        title: `MERGED_${duplicateThread.title || 'Thread'}_${new Date().toISOString()}`
+                    })
+                    .eq('id', duplicateThread.id);
+
+                logger.info(`Successfully merged thread ${duplicateThread.id} into ${primaryThread.id}`);
+
+            } catch (mergeError) {
+                logger.error(`Error merging thread ${duplicateThread.id}:`, mergeError);
+                // Continue with other threads even if one fails
+            }
+        }
+
+        logger.info('Thread merge process completed successfully');
+    } catch (error) {
+        logger.error('Error in thread merge process:', error);
+        throw error;
+    }
+}
+
+// Enhanced function to check for existing threads (now handles duplicates)
+async function findExistingThread(participantIds, threadType) {
+    try {
+        // First try to resolve any existing duplicates
+        const resolvedThread = await resolveDuplicateThreads(participantIds, threadType);
+
+        if (resolvedThread) {
+            logger.info('Found resolved thread:', {
+                threadId: resolvedThread.id,
+                participantCount: resolvedThread.participants?.length || 0
+            });
+            return resolvedThread;
+        }
+
+        // If no threads found, return null (allow creation of new thread)
         return null;
     } catch (error) {
         logger.error('Error in findExistingThread:', error);
@@ -190,11 +330,6 @@ router.get('/threads', authenticate, async (req, res) => {
                     role,
                     last_read_at,
                     user:users(full_name, role)
-                ),
-                last_message:chat_messages(
-                    content,
-                    created_at,
-                    sender:users!chat_messages_sender_id_fkey(full_name)
                 )
             `)
             .in('id', threadIds)
@@ -217,6 +352,85 @@ router.get('/threads', authenticate, async (req, res) => {
             });
         }
 
+        // Process threads to get only the most recent message for each
+        const processedThreads = await Promise.all((threads || []).map(async (thread) => {
+            try {
+                // Get only the most recent message for this thread
+                const { data: lastMessage, error: messageError } = await adminSupabase
+                    .from('chat_messages')
+                    .select(`
+                        content,
+                        created_at,
+                        sender:users!chat_messages_sender_id_fkey(full_name)
+                    `)
+                    .eq('thread_id', thread.id)
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .single();
+
+                if (messageError && messageError.code !== 'PGRST116') {
+                    logger.warn('Error fetching last message for thread:', {
+                        thread_id: thread.id,
+                        error: messageError.message
+                    });
+                }
+
+                // Get unread count for current user
+                const { data: participant, error: participantError } = await adminSupabase
+                    .from('chat_participants')
+                    .select('last_read_at')
+                    .eq('thread_id', thread.id)
+                    .eq('user_id', req.user.id)
+                    .single();
+
+                if (participantError) {
+                    logger.warn('Error fetching participant info:', participantError.message);
+                }
+
+                let unreadCount = 0;
+                if (lastMessage && participant?.last_read_at) {
+                    // Count messages created after last read
+                    const { count: unreadMessages, error: countError } = await adminSupabase
+                        .from('chat_messages')
+                        .select('*', { count: 'exact', head: true })
+                        .eq('thread_id', thread.id)
+                        .gt('created_at', participant.last_read_at);
+
+                    if (!countError) {
+                        unreadCount = unreadMessages || 0;
+                    }
+                } else if (lastMessage && !participant?.last_read_at) {
+                    // If never read, count all messages
+                    const { count: totalMessages, error: countError } = await adminSupabase
+                        .from('chat_messages')
+                        .select('*', { count: 'exact', head: true })
+                        .eq('thread_id', thread.id);
+
+                    if (!countError) {
+                        unreadCount = totalMessages || 0;
+                    }
+                }
+
+                return {
+                    ...thread,
+                    last_message: lastMessage ? [lastMessage] : [], // Keep as array for consistency
+                    unread_count: unreadCount,
+                    participants: thread.participants || []
+                };
+            } catch (threadError) {
+                logger.error('Error processing thread:', {
+                    thread_id: thread.id,
+                    error: threadError.message
+                });
+                return {
+                    ...thread,
+                    last_message: [],
+                    unread_count: 0,
+                    participants: thread.participants || []
+                };
+            }
+        }));
+
         // Get total count
         let countQuery = adminSupabase
             .from('chat_threads')
@@ -233,12 +447,12 @@ router.get('/threads', authenticate, async (req, res) => {
             logger.error('Error getting thread count:', countError);
         }
 
-        logger.info(`Returning ${threads?.length || 0} threads out of ${count || 0} total`);
+        logger.info(`Returning ${processedThreads?.length || 0} threads out of ${count || 0} total`);
 
         res.json({
             status: 'success',
             data: {
-                threads: threads || [],
+                threads: processedThreads || [],
                 pagination: {
                     page: parseInt(page),
                     limit: parseInt(limit),
@@ -251,7 +465,7 @@ router.get('/threads', authenticate, async (req, res) => {
                     participations_found: userParticipations.length,
                     thread_ids_filtered: threadIds,
                     status_filter: status || 'none',
-                    threads_returned: threads?.length || 0,
+                    threads_returned: processedThreads?.length || 0,
                     total_threads: count || 0
                 }
             }
@@ -1692,6 +1906,360 @@ router.post('/check-existing-thread', authenticate, async (req, res) => {
             status: 'error',
             message: 'Internal server error'
         });
+    }
+});
+
+// Get messages from a specific thread with pagination
+router.get('/threads/:thread_id/messages', authenticate, async (req, res) => {
+    try {
+        const { thread_id } = req.params;
+        const { page = 1, limit = 50, before_date, after_date } = req.query;
+        const offset = (page - 1) * limit;
+
+        logger.info('Fetching messages for thread:', {
+            thread_id,
+            page,
+            limit,
+            before_date,
+            after_date,
+            user_id: req.user.id,
+            user_role: req.user.role
+        });
+
+        // Verify user is participant in thread
+        const { data: participant, error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .select('*')
+            .eq('thread_id', thread_id)
+            .eq('user_id', req.user.id)
+            .single();
+
+        if (participantError || !participant) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied to this thread',
+                error_details: {
+                    message: 'User is not a participant in this thread',
+                    code: 'ACCESS_DENIED'
+                },
+                debug_info: {
+                    thread_id,
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
+
+        // Build query for messages
+        let query = adminSupabase
+            .from('chat_messages')
+            .select(`
+                *,
+                sender:users!chat_messages_sender_id_fkey(
+                    id,
+                    full_name,
+                    role
+                ),
+                attachments:chat_message_attachments(*)
+            `)
+            .eq('thread_id', thread_id)
+            .order('created_at', { ascending: false }); // Most recent first
+
+        // Apply date filters if provided
+        if (before_date) {
+            query = query.lt('created_at', before_date);
+        }
+        if (after_date) {
+            query = query.gt('created_at', after_date);
+        }
+
+        // Get total count for pagination
+        const { count, error: countError } = await query.count();
+
+        if (countError) {
+            logger.error('Error getting message count:', countError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to get message count',
+                error_details: {
+                    message: countError.message,
+                    code: countError.code || 'UNKNOWN_ERROR'
+                }
+            });
+        }
+
+        // Get paginated messages
+        const { data: messages, error: messagesError } = await query
+            .range(offset, offset + limit - 1);
+
+        if (messagesError) {
+            logger.error('Error fetching messages:', messagesError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch messages',
+                error_details: {
+                    message: messagesError.message,
+                    code: messagesError.code || 'UNKNOWN_ERROR'
+                },
+                debug_info: {
+                    thread_id,
+                    user_id: req.user.id,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
+
+        // Update last read timestamp for current user
+        try {
+            await adminSupabase
+                .from('chat_participants')
+                .update({ last_read_at: new Date().toISOString() })
+                .eq('thread_id', thread_id)
+                .eq('user_id', req.user.id);
+        } catch (updateError) {
+            logger.warn('Failed to update last read timestamp:', updateError.message);
+            // Don't fail the request for this
+        }
+
+        // Get thread details for context
+        const { data: thread, error: threadError } = await adminSupabase
+            .from('chat_threads')
+            .select(`
+                id,
+                title,
+                thread_type,
+                created_at,
+                updated_at,
+                created_by
+            `)
+            .eq('id', thread_id)
+            .single();
+
+        if (threadError) {
+            logger.warn('Error fetching thread details:', threadError.message);
+        }
+
+        res.json({
+            status: 'success',
+            data: {
+                thread: thread || null,
+                messages: messages || [],
+                pagination: {
+                    page: parseInt(page),
+                    limit: parseInt(limit),
+                    total: count || 0,
+                    total_pages: Math.ceil((count || 0) / limit),
+                    has_next: (offset + limit) < (count || 0),
+                    has_prev: page > 1
+                },
+                summary: {
+                    total_messages: count || 0,
+                    current_page_messages: messages?.length || 0,
+                    thread_type: thread?.thread_type || 'unknown'
+                }
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error fetching thread messages:', error);
+
+        const errorResponse = {
+            status: 'error',
+            message: 'Internal server error occurred while fetching thread messages',
+            error_details: {
+                message: error.message,
+                name: error.name,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            },
+            debug_info: {
+                thread_id: req.params.thread_id,
+                user_id: req.user?.id || 'unknown',
+                user_role: req.user?.role || 'unknown',
+                timestamp: new Date().toISOString(),
+                endpoint: '/api/chat/threads/:thread_id/messages'
+            }
+        };
+
+        res.status(500).json(errorResponse);
+    }
+});
+
+// Admin endpoint to resolve existing duplicate threads
+router.post('/admin/resolve-duplicates', authenticate, async (req, res) => {
+    try {
+        // Only admins and principals can access this
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Only admins and principals can resolve duplicate threads',
+                user_role: req.user.role,
+                required_roles: ['admin', 'principal']
+            });
+        }
+
+        const { thread_type = 'direct', force_resolve = false } = req.body;
+
+        logger.info('Starting duplicate thread resolution:', {
+            thread_type,
+            force_resolve,
+            admin_user: req.user.id
+        });
+
+        // Find all threads of the specified type
+        const { data: allThreads, error: threadsError } = await adminSupabase
+            .from('chat_threads')
+            .select(`
+                id,
+                title,
+                thread_type,
+                created_at,
+                updated_at,
+                status,
+                participants:chat_participants(user_id)
+            `)
+            .eq('thread_type', thread_type)
+            .neq('status', 'merged'); // Exclude already merged threads
+
+        if (threadsError) {
+            logger.error('Error fetching threads for duplicate resolution:', threadsError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch threads for duplicate resolution'
+            });
+        }
+
+        // Group threads by participant sets
+        const participantGroups = new Map();
+
+        for (const thread of allThreads || []) {
+            if (!thread.participants || thread.participants.length === 0) {
+                continue; // Skip threads without participants
+            }
+
+            const participantKey = thread.participants
+                .map(p => p.user_id)
+                .sort()
+                .join(',');
+
+            if (!participantGroups.has(participantKey)) {
+                participantGroups.set(participantKey, []);
+            }
+            participantGroups.get(participantKey).push(thread);
+        }
+
+        // Find groups with multiple threads (duplicates)
+        const duplicateGroups = [];
+        for (const [participantKey, threads] of participantGroups) {
+            if (threads.length > 1) {
+                duplicateGroups.push({
+                    participantKey,
+                    threads,
+                    participantIds: participantKey.split(',')
+                });
+            }
+        }
+
+        logger.info('Found duplicate thread groups:', {
+            total_groups: participantGroups.size,
+            duplicate_groups: duplicateGroups.length,
+            total_threads: allThreads?.length || 0
+        });
+
+        if (duplicateGroups.length === 0) {
+            return res.json({
+                status: 'success',
+                message: 'No duplicate threads found',
+                data: {
+                    total_threads: allThreads?.length || 0,
+                    duplicate_groups: 0,
+                    resolved_groups: 0
+                }
+            });
+        }
+
+        // Resolve duplicates
+        let resolvedGroups = 0;
+        const resolutionResults = [];
+
+        for (const group of duplicateGroups) {
+            try {
+                // Sort threads by activity (most recent first)
+                const sortedThreads = group.threads.sort((a, b) =>
+                    new Date(b.updated_at) - new Date(a.updated_at)
+                );
+
+                const primaryThread = sortedThreads[0];
+                const duplicateThreads = sortedThreads.slice(1);
+
+                logger.info(`Resolving duplicate group with ${group.threads.length} threads:`, {
+                    participantIds: group.participantIds,
+                    primaryThreadId: primaryThread.id,
+                    duplicateThreadIds: duplicateThreads.map(t => t.id)
+                });
+
+                // Merge duplicate threads
+                await mergeDuplicateThreads(primaryThread, duplicateThreads);
+
+                resolvedGroups++;
+                resolutionResults.push({
+                    participantIds: group.participantIds,
+                    primaryThreadId: primaryThread.id,
+                    duplicateThreadIds: duplicateThreads.map(t => t.id),
+                    status: 'resolved'
+                });
+
+            } catch (groupError) {
+                logger.error(`Error resolving duplicate group:`, groupError);
+                resolutionResults.push({
+                    participantIds: group.participantIds,
+                    status: 'failed',
+                    error: groupError.message
+                });
+            }
+        }
+
+        // Get updated thread count
+        const { data: updatedThreads, error: countError } = await adminSupabase
+            .from('chat_threads')
+            .select('id', { count: 'exact', head: true })
+            .eq('thread_type', thread_type)
+            .neq('status', 'merged');
+
+        if (countError) {
+            logger.warn('Could not get updated thread count:', countError);
+        }
+
+        res.json({
+            status: 'success',
+            message: `Successfully resolved ${resolvedGroups} duplicate thread groups`,
+            data: {
+                total_threads_before: allThreads?.length || 0,
+                total_threads_after: updatedThreads?.length || 0,
+                duplicate_groups_found: duplicateGroups.length,
+                resolved_groups: resolvedGroups,
+                resolution_results: resolutionResults
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in duplicate thread resolution:', error);
+
+        const errorResponse = {
+            status: 'error',
+            message: 'Internal server error occurred during duplicate resolution',
+            error_details: {
+                message: error.message,
+                name: error.name
+            },
+            debug_info: {
+                admin_user: req.user?.id || 'unknown',
+                timestamp: new Date().toISOString(),
+                endpoint: '/api/chat/admin/resolve-duplicates'
+            }
+        };
+
+        res.status(500).json(errorResponse);
     }
 });
 
