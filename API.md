@@ -2138,26 +2138,32 @@ GET /api/birthdays/my-classes
         "full_name": "Student Name",
         "date_of_birth": "2018-01-15",
         "admission_number": "2024001",
-        "student_academic_records": [
-          {
-            "class_division": {
-              "id": "uuid",
-              "division": "A",
-              "level": {
-                "name": "Grade 1",
-                "sequence_number": 1
-              }
-            },
-            "class_division_id": "uuid",
-            "roll_number": "01"
-          }
-        ]
+        "roll_number": "01",
+        "class_division": {
+          "id": "class-division-uuid",
+          "name": "Grade 10 A",
+          "division": "A",
+          "level": "Grade 10",
+          "sequence_number": 10
+        }
       }
     ],
     "count": 10,
     "total_count": 10,
-    "date": "2024-01-15",
+    "filter": {
+      "type": "today",
+      "date": "2024-01-15"
+    },
     "class_division_ids": ["uuid1", "uuid2"],
+    "class_divisions": [
+      {
+        "id": "class-division-uuid",
+        "name": "Grade 10 A",
+        "division": "A",
+        "level": "Grade 10",
+        "sequence_number": 10
+      }
+    ],
     "pagination": {
       "page": 1,
       "limit": 20,
@@ -2169,6 +2175,15 @@ GET /api/birthdays/my-classes
   }
 }
 ```
+
+**New Features:**
+
+- ✅ **Class Division ID**: Unique identifier for each class division
+- ✅ **Class Division Name**: Human-readable name (e.g., "Grade 10 A")
+- ✅ **Division**: Specific division letter/number (e.g., "A", "1")
+- ✅ **Level**: Class level name (e.g., "Grade 10")
+- ✅ **Sequence Number**: Numeric sequence for sorting
+- ✅ **Class Divisions Summary**: Array of unique class divisions
 
 **Response:**
 

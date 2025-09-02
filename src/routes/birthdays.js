@@ -1,6 +1,7 @@
 import express from 'express';
 import { adminSupabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -662,6 +663,7 @@ router.get('/my-classes',
                         total_count: 0,
                         filter: filterInfo,
                         class_division_ids: [],
+                        class_divisions: [],
                         pagination: {
                             page,
                             limit,
@@ -673,6 +675,32 @@ router.get('/my-classes',
                     }
                 });
             }
+
+            // Get class division details for all assigned classes (even if no birthdays)
+            const { data: classDivisions, error: classDivisionsError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    level:class_level_id (
+                        name,
+                        sequence_number
+                    )
+                `)
+                .in('id', assignedIds);
+
+            if (classDivisionsError) {
+                logger.error('Error fetching class divisions:', classDivisionsError);
+            }
+
+            // Format class divisions for response
+            const formattedClassDivisions = (classDivisions || []).map(division => ({
+                id: division.id,
+                name: division.level ? `${division.level.name} ${division.division}`.trim() : `Class ${division.division}`,
+                division: division.division,
+                level: division.level?.name || null,
+                sequence_number: division.level?.sequence_number || null
+            }));
 
             // Fetch students for all assigned divisions
             const { data: students, error } = await adminSupabase
@@ -784,14 +812,36 @@ router.get('/my-classes',
             const totalCount = birthdayStudents.length;
             const paginatedStudents = birthdayStudents.slice(offset, offset + limit);
 
+            // Enhance the response to include class division details
+            const enhancedBirthdays = paginatedStudents.map(student => {
+                const academicRecord = student.student_academic_records?.[0];
+                const classDivision = academicRecord?.class_division;
+
+                return {
+                    id: student.id,
+                    full_name: student.full_name,
+                    date_of_birth: student.date_of_birth,
+                    admission_number: student.admission_number,
+                    roll_number: academicRecord?.roll_number,
+                    class_division: {
+                        id: classDivision?.id || null,
+                        name: classDivision ? `${classDivision.level?.name || 'Unknown'} ${classDivision.division || ''}`.trim() : 'Unknown',
+                        division: classDivision?.division || null,
+                        level: classDivision?.level?.name || null,
+                        sequence_number: classDivision?.level?.sequence_number || null
+                    }
+                };
+            });
+
             res.json({
                 status: 'success',
                 data: {
-                    birthdays: paginatedStudents,
-                    count: paginatedStudents.length,
+                    birthdays: enhancedBirthdays,
+                    count: enhancedBirthdays.length,
                     total_count: totalCount,
                     filter: filterInfo,
                     class_division_ids: assignedIds,
+                    class_divisions: formattedClassDivisions, // Use formatted class divisions (always populated)
                     pagination: {
                         page,
                         limit,
