@@ -225,6 +225,41 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
             logger.info(`Using academic year from class division: ${academicYear.year_name}`);
         }
 
+        // If no teacher ID provided, try to get the class teacher
+        let classTeacherId = teacherId;
+        if (!classTeacherId) {
+            try {
+                // First try to get from class_teacher_assignments
+                const { data: teacherAssignment, error: assignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('teacher_id')
+                    .eq('class_division_id', classDivisionId)
+                    .eq('is_active', true)
+                    .limit(1)
+                    .single();
+
+                if (!assignmentError && teacherAssignment) {
+                    classTeacherId = teacherAssignment.teacher_id;
+                    logger.info('Found class teacher from assignments:', classTeacherId);
+                } else {
+                    // Fallback to legacy teacher_id in class_divisions
+                    const { data: classDivision, error: classError } = await adminSupabase
+                        .from('class_divisions')
+                        .select('teacher_id')
+                        .eq('id', classDivisionId)
+                        .single();
+
+                    if (!classError && classDivision?.teacher_id) {
+                        classTeacherId = classDivision.teacher_id;
+                        logger.info('Found class teacher from legacy field:', classTeacherId);
+                    }
+                }
+            } catch (teacherError) {
+                logger.warn('Could not determine class teacher:', teacherError.message);
+                // Continue without teacher ID - we'll handle this case
+            }
+        }
+
         // Check if attendance already exists
         const { data: existingAttendance, error: checkError } = await adminSupabase
             .from('daily_attendance')
@@ -282,7 +317,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
                     class_division_id: classDivisionId,
                     academic_year_id: academicYear.id,
                     attendance_date: date,
-                    marked_by: null, // System-generated
+                    marked_by: classTeacherId || 'system', // Use class teacher or 'system' for holidays
                     is_holiday: true,
                     holiday_reason: reason
                 }])
@@ -302,7 +337,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
                     class_division_id: classDivisionId,
                     academic_year_id: academicYear.id,
                     attendance_date: date,
-                    marked_by: null // Will be updated when teacher marks attendance
+                    marked_by: classTeacherId || 'system' // Use class teacher or 'system' as fallback
                 }])
                 .select()
                 .single();
@@ -384,6 +419,7 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
             academic_year_name: academicYear.year_name,
             students_count: students?.length || 0,
             teacher_id: teacherId,
+            class_teacher_id: classTeacherId,
             students: students?.map(s => s.student_id) || []
         });
 
@@ -397,58 +433,53 @@ async function createOrGetDailyAttendance(classDivisionId, date, teacherId = nul
 
         // Create default absent records for all students (only if they don't already exist)
         if (students && students.length > 0) {
-            // Only create default records if we have a teacher ID
-            if (teacherId) {
-                // Check if attendance records already exist for this daily attendance
-                const { data: existingRecords, error: checkError } = await adminSupabase
-                    .from('student_attendance_records')
-                    .select('student_id')
-                    .eq('daily_attendance_id', dailyAttendance.id);
+            // Check if attendance records already exist for this daily attendance
+            const { data: existingRecords, error: checkError } = await adminSupabase
+                .from('student_attendance_records')
+                .select('student_id')
+                .eq('daily_attendance_id', dailyAttendance.id);
 
-                if (checkError) throw checkError;
+            if (checkError) throw checkError;
 
-                logger.info('Existing attendance records check:', {
+            logger.info('Existing attendance records check:', {
+                daily_attendance_id: dailyAttendance.id,
+                existing_records_count: existingRecords?.length || 0,
+                existing_student_ids: existingRecords?.map(r => r.student_id) || []
+            });
+
+            // Only create records for students who don't already have attendance records
+            const existingStudentIds = existingRecords ? existingRecords.map(r => r.student_id) : [];
+            const studentsNeedingRecords = students.filter(student =>
+                !existingStudentIds.includes(student.student_id)
+            );
+
+            logger.info('Creating attendance records:', {
+                total_students: students.length,
+                existing_records: existingStudentIds.length,
+                students_needing_records: studentsNeedingRecords.length
+            });
+
+            if (studentsNeedingRecords.length > 0) {
+                const defaultRecords = studentsNeedingRecords.map(student => ({
                     daily_attendance_id: dailyAttendance.id,
-                    existing_records_count: existingRecords?.length || 0,
-                    existing_student_ids: existingRecords?.map(r => r.student_id) || []
-                });
+                    student_id: student.student_id,
+                    status: 'absent',
+                    remarks: 'Not marked by teacher - default status',
+                    marked_by: classTeacherId || 'system' // Use class teacher ID or 'system' as fallback
+                }));
 
-                // Only create records for students who don't already have attendance records
-                const existingStudentIds = existingRecords ? existingRecords.map(r => r.student_id) : [];
-                const studentsNeedingRecords = students.filter(student =>
-                    !existingStudentIds.includes(student.student_id)
-                );
+                const { error: recordsError } = await adminSupabase
+                    .from('student_attendance_records')
+                    .insert(defaultRecords);
 
-                logger.info('Creating attendance records:', {
-                    total_students: students.length,
-                    existing_records: existingStudentIds.length,
-                    students_needing_records: studentsNeedingRecords.length
-                });
-
-                if (studentsNeedingRecords.length > 0) {
-                    const defaultRecords = studentsNeedingRecords.map(student => ({
-                        daily_attendance_id: dailyAttendance.id,
-                        student_id: student.student_id,
-                        status: 'absent',
-                        remarks: 'Not marked by teacher - default status',
-                        marked_by: null
-                    }));
-
-                    const { error: recordsError } = await adminSupabase
-                        .from('student_attendance_records')
-                        .insert(defaultRecords);
-
-                    if (recordsError) {
-                        logger.error('Error creating attendance records:', recordsError);
-                        throw recordsError;
-                    }
-
-                    logger.info('Successfully created attendance records for students');
-                } else {
-                    logger.info('No new attendance records needed - all students already have records');
+                if (recordsError) {
+                    logger.error('Error creating attendance records:', recordsError);
+                    throw recordsError;
                 }
+
+                logger.info('Successfully created attendance records for students');
             } else {
-                logger.warn('No teacher ID provided, skipping default student attendance records creation');
+                logger.info('No new attendance records needed - all students already have records');
             }
         }
 

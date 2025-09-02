@@ -521,9 +521,9 @@ router.post('/start-conversation', authenticate, async (req, res) => {
                     message_type: 'text'
                 })
                 .select(`
-                    *,
-                    sender:users!chat_messages_sender_id_fkey(full_name, role)
-                `)
+                *,
+                sender:users!chat_messages_sender_id_fkey(full_name, role)
+            `)
                 .single();
 
             if (messageError) {
