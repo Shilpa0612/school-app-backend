@@ -543,18 +543,36 @@ router.post('/daily', authenticate, async (req, res) => {
             attendance_date,
             present_students_count: present_students?.length || 0,
             user_id: req.user.id,
-            user_role: req.user.role
+            user_role: req.user.role,
+            request_body: req.body
         });
 
         if (!class_division_id || !attendance_date || !present_students) {
             logger.error('Missing required fields:', {
                 class_division_id: !!class_division_id,
                 attendance_date: !!attendance_date,
-                present_students: !!present_students
+                present_students: !!present_students,
+                received_body: req.body
             });
             return res.status(400).json({
                 status: 'error',
-                message: 'class_division_id, attendance_date, and present_students are required'
+                message: 'class_division_id, attendance_date, and present_students are required',
+                required_fields: ['class_division_id', 'attendance_date', 'present_students'],
+                received_fields: Object.keys(req.body),
+                missing_fields: ['class_division_id', 'attendance_date', 'present_students'].filter(field => !req.body[field]),
+                endpoint: '/api/attendance/daily'
+            });
+        }
+
+        // Validate present_students is an array
+        if (!Array.isArray(present_students)) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'present_students must be an array',
+                received_type: typeof present_students,
+                expected_type: 'array',
+                received_value: present_students,
+                endpoint: '/api/attendance/daily'
             });
         }
 
@@ -564,18 +582,51 @@ router.post('/daily', authenticate, async (req, res) => {
             if (!isTeacher) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'You can only mark attendance for your assigned classes'
+                    message: 'You can only mark attendance for your assigned classes',
+                    requested_class_id: class_division_id,
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    required_permission: 'teacher_assigned_to_class'
                 });
             }
         } else if (!['admin', 'principal'].includes(req.user.role)) {
             return res.status(403).json({
                 status: 'error',
-                message: 'Only teachers, admin, and principal can mark attendance'
+                message: 'Only teachers, admin, and principal can mark attendance',
+                user_role: req.user.role,
+                required_roles: ['teacher', 'admin', 'principal'],
+                endpoint: '/api/attendance/daily'
             });
         }
 
         // Create or get daily attendance record (automatically handles holidays)
-        const dailyAttendance = await createOrGetDailyAttendance(class_division_id, attendance_date, req.user.id);
+        let dailyAttendance;
+        try {
+            dailyAttendance = await createOrGetDailyAttendance(class_division_id, attendance_date, req.user.id);
+            logger.info('Daily attendance record created/retrieved:', {
+                id: dailyAttendance.id,
+                class_division_id: dailyAttendance.class_division_id,
+                attendance_date: dailyAttendance.attendance_date,
+                is_holiday: dailyAttendance.is_holiday
+            });
+        } catch (attendanceError) {
+            logger.error('Error creating/getting daily attendance:', attendanceError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to create or get daily attendance record',
+                error_details: {
+                    message: attendanceError.message,
+                    code: attendanceError.code || 'UNKNOWN_ERROR'
+                },
+                debug_info: {
+                    class_division_id,
+                    attendance_date,
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
 
         // If it's a holiday, return holiday status
         if (dailyAttendance.is_holiday) {
@@ -583,56 +634,149 @@ router.post('/daily', authenticate, async (req, res) => {
                 status: 'success',
                 data: {
                     daily_attendance: dailyAttendance,
-                    message: `Holiday: ${dailyAttendance.holiday_reason}`
+                    message: `Holiday: ${dailyAttendance.holiday_reason}`,
+                    is_holiday: true
                 }
             });
         }
 
         // Update marked_by to current user
-        await adminSupabase
-            .from('daily_attendance')
-            .update({ marked_by: req.user.id })
-            .eq('id', dailyAttendance.id);
+        try {
+            await adminSupabase
+                .from('daily_attendance')
+                .update({ marked_by: req.user.id })
+                .eq('id', dailyAttendance.id);
+            logger.info('Updated marked_by for daily attendance:', {
+                daily_attendance_id: dailyAttendance.id,
+                marked_by: req.user.id
+            });
+        } catch (updateError) {
+            logger.error('Error updating marked_by:', updateError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to update attendance marker',
+                error_details: {
+                    message: updateError.message,
+                    code: updateError.code || 'UNKNOWN_ERROR'
+                },
+                debug_info: {
+                    daily_attendance_id: dailyAttendance.id,
+                    user_id: req.user.id,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
 
         // If present_students provided, update their status to present
         if (present_students && Array.isArray(present_students) && present_students.length > 0) {
-            const updatePromises = present_students.map(async (studentId) => {
-                const { error } = await adminSupabase
-                    .from('student_attendance_records')
-                    .update({
-                        status: 'present',
-                        remarks: 'Marked present by teacher',
-                        marked_by: req.user.id,
-                        updated_at: new Date().toISOString()
-                    })
-                    .eq('daily_attendance_id', dailyAttendance.id)
-                    .eq('student_id', studentId);
+            try {
+                const updatePromises = present_students.map(async (studentId) => {
+                    const { error } = await adminSupabase
+                        .from('student_attendance_records')
+                        .update({
+                            status: 'present',
+                            remarks: 'Marked present by teacher',
+                            marked_by: req.user.id,
+                            updated_at: new Date().toISOString()
+                        })
+                        .eq('daily_attendance_id', dailyAttendance.id)
+                        .eq('student_id', studentId);
 
-                if (error) throw error;
-            });
+                    if (error) {
+                        logger.error('Error updating student attendance:', {
+                            student_id: studentId,
+                            error: error.message
+                        });
+                        throw error;
+                    }
+                });
 
-            await Promise.all(updatePromises);
+                await Promise.all(updatePromises);
+                logger.info('Updated present students:', {
+                    count: present_students.length,
+                    student_ids: present_students
+                });
+            } catch (updateError) {
+                logger.error('Error updating present students:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to update student attendance records',
+                    error_details: {
+                        message: updateError.message,
+                        code: updateError.code || 'UNKNOWN_ERROR'
+                    },
+                    debug_info: {
+                        daily_attendance_id: dailyAttendance.id,
+                        present_students_count: present_students.length,
+                        user_id: req.user.id,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+            }
         }
 
         // Get student attendance records
-        const { data: studentRecords, error: studentError } = await adminSupabase
-            .from('student_attendance_records')
-            .select('*')
-            .eq('daily_attendance_id', dailyAttendance.id);
+        let studentRecords;
+        try {
+            const { data: studentData, error: studentError } = await adminSupabase
+                .from('student_attendance_records')
+                .select('*')
+                .eq('daily_attendance_id', dailyAttendance.id);
 
-        if (studentError) throw studentError;
+            if (studentError) {
+                logger.error('Error fetching student attendance records:', studentError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch student attendance records',
+                    error_details: {
+                        message: studentError.message,
+                        code: studentError.code || 'UNKNOWN_ERROR'
+                    },
+                    debug_info: {
+                        daily_attendance_id: dailyAttendance.id,
+                        user_id: req.user.id,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+            }
+
+            studentRecords = studentData || [];
+        } catch (fetchError) {
+            logger.error('Error in student records fetch:', fetchError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch student records',
+                error_details: {
+                    message: fetchError.message,
+                    code: fetchError.code || 'UNKNOWN_ERROR'
+                },
+                debug_info: {
+                    daily_attendance_id: dailyAttendance.id,
+                    user_id: req.user.id,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
 
         // Get student details separately
         let studentDetails = [];
         if (studentRecords && studentRecords.length > 0) {
-            const studentIds = studentRecords.map(record => record.student_id);
-            const { data: students, error: studentsError } = await adminSupabase
-                .from('students_master')
-                .select('id, full_name, admission_number')
-                .in('id', studentIds);
+            try {
+                const studentIds = studentRecords.map(record => record.student_id);
+                const { data: students, error: studentsError } = await adminSupabase
+                    .from('students_master')
+                    .select('id, full_name, admission_number')
+                    .in('id', studentIds);
 
-            if (!studentsError && students) {
-                studentDetails = students;
+                if (studentsError) {
+                    logger.warn('Error fetching student details:', studentsError);
+                    // Continue without student details rather than failing completely
+                } else if (students) {
+                    studentDetails = students;
+                }
+            } catch (studentDetailsError) {
+                logger.warn('Error in student details fetch:', studentDetailsError);
+                // Continue without student details
             }
         }
 
@@ -649,16 +793,54 @@ router.post('/daily', authenticate, async (req, res) => {
             status: 'success',
             data: {
                 daily_attendance: dailyAttendance,
-                student_records: studentRecordsWithDetails || []
+                student_records: studentRecordsWithDetails || [],
+                summary: {
+                    total_students: studentRecordsWithDetails.length,
+                    present_count: studentRecordsWithDetails.filter(r => r.status === 'present').length,
+                    absent_count: studentRecordsWithDetails.filter(r => r.status === 'absent').length,
+                    updated_by: req.user.id,
+                    updated_at: new Date().toISOString()
+                }
             },
             message: 'Attendance marked successfully'
         });
     } catch (error) {
         logger.error('Error marking daily attendance:', error);
-        res.status(500).json({
+
+        // Provide detailed error response
+        const errorResponse = {
             status: 'error',
-            message: 'Failed to mark attendance'
-        });
+            message: 'Internal server error occurred while marking daily attendance',
+            error_details: {
+                message: error.message,
+                name: error.name,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            },
+            debug_info: {
+                request_body: req.body,
+                user_id: req.user?.id || 'unknown',
+                user_role: req.user?.role || 'unknown',
+                timestamp: new Date().toISOString(),
+                endpoint: '/api/attendance/daily'
+            }
+        };
+
+        // Add specific error details based on error type
+        if (error.code === 'PGRST301') {
+            errorResponse.error_details.hint = 'Database connection issue. Please try again.';
+            errorResponse.error_details.code = 'DATABASE_CONNECTION_ERROR';
+        } else if (error.code === 'PGRST116') {
+            errorResponse.error_details.hint = 'No data found for the specified criteria.';
+            errorResponse.error_details.code = 'NO_DATA_FOUND';
+        } else if (error.name === 'TypeError') {
+            errorResponse.error_details.hint = 'Data type mismatch. Please check your request parameters.';
+            errorResponse.error_details.code = 'TYPE_ERROR';
+        } else if (error.name === 'ValidationError') {
+            errorResponse.error_details.hint = 'Invalid data provided. Please check your request format.';
+            errorResponse.error_details.code = 'VALIDATION_ERROR';
+        }
+
+        res.status(500).json(errorResponse);
     }
 });
 
@@ -807,10 +989,20 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
         const { class_division_id } = req.params;
         const { date } = req.query;
 
+        logger.info('Daily attendance request for class:', {
+            class_division_id,
+            date,
+            user_id: req.user.id,
+            user_role: req.user.role
+        });
+
         if (!date) {
             return res.status(400).json({
                 status: 'error',
-                message: 'Date parameter is required'
+                message: 'Date parameter is required',
+                required_params: ['date'],
+                received_params: req.query,
+                endpoint: '/api/attendance/daily/class/:class_division_id'
             });
         }
 
@@ -820,18 +1012,46 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
             if (!isTeacher) {
                 return res.status(403).json({
                     status: 'error',
-                    message: 'You can only view attendance for your assigned classes'
+                    message: 'You can only view attendance for your assigned classes',
+                    requested_class_id: class_division_id,
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    required_permission: 'teacher_assigned_to_class'
                 });
             }
         } else if (!['admin', 'principal'].includes(req.user.role)) {
             return res.status(403).json({
                 status: 'error',
-                message: 'Access denied'
+                message: 'Access denied. Only teachers, admins, and principals can view class attendance',
+                user_role: req.user.role,
+                required_roles: ['admin', 'principal', 'teacher'],
+                endpoint: '/api/attendance/daily/class/:class_division_id'
             });
         }
 
         // Get active academic year
-        const academicYear = await getActiveAcademicYear();
+        let academicYear;
+        try {
+            academicYear = await getActiveAcademicYear();
+            logger.info('Active academic year:', academicYear);
+        } catch (academicYearError) {
+            logger.error('Error getting active academic year:', academicYearError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to get active academic year',
+                error_details: {
+                    message: academicYearError.message,
+                    code: academicYearError.code || 'UNKNOWN_ERROR'
+                },
+                debug_info: {
+                    class_division_id,
+                    date,
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
 
         // Build query for daily attendance (simplified - no periods)
         let query = adminSupabase
@@ -855,11 +1075,31 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
             date,
             academic_year_id: academicYear.id,
             found_record: !!dailyAttendance,
-            error: dailyError?.message
+            error: dailyError?.message,
+            error_code: dailyError?.code
         });
 
         if (dailyError && dailyError.code !== 'PGRST116') {
-            throw dailyError;
+            logger.error('Database error in daily attendance query:', dailyError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Database error occurred while fetching attendance',
+                error_details: {
+                    message: dailyError.message,
+                    code: dailyError.code || 'UNKNOWN_ERROR',
+                    details: dailyError.details || null,
+                    hint: dailyError.hint || null
+                },
+                debug_info: {
+                    class_division_id,
+                    date,
+                    academic_year_id: academicYear.id,
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    query_executed: true,
+                    timestamp: new Date().toISOString()
+                }
+            });
         }
 
         if (!dailyAttendance) {
@@ -868,7 +1108,13 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
                 data: {
                     daily_attendance: null,
                     student_records: [],
-                    message: 'No attendance marked for this date'
+                    message: 'No attendance marked for this date',
+                    debug_info: {
+                        class_division_id,
+                        date,
+                        academic_year_id: academicYear.id,
+                        query_executed: true
+                    }
                 }
             });
         }
@@ -879,19 +1125,46 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
             .select('*')
             .eq('daily_attendance_id', dailyAttendance.id);
 
-        if (studentError) throw studentError;
+        if (studentError) {
+            logger.error('Error fetching student attendance records:', studentError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch student attendance records',
+                error_details: {
+                    message: studentError.message,
+                    code: studentError.code || 'UNKNOWN_ERROR',
+                    details: studentError.details || null
+                },
+                debug_info: {
+                    daily_attendance_id: dailyAttendance.id,
+                    class_division_id,
+                    date,
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
 
         // Get student details separately
         let studentDetails = [];
         if (studentRecords && studentRecords.length > 0) {
-            const studentIds = studentRecords.map(record => record.student_id);
-            const { data: students, error: studentsError } = await adminSupabase
-                .from('students_master')
-                .select('id, full_name, admission_number')
-                .in('id', studentIds);
+            try {
+                const studentIds = studentRecords.map(record => record.student_id);
+                const { data: students, error: studentsError } = await adminSupabase
+                    .from('students_master')
+                    .select('id, full_name, admission_number')
+                    .in('id', studentIds);
 
-            if (!studentsError && students) {
-                studentDetails = students;
+                if (studentsError) {
+                    logger.warn('Error fetching student details:', studentsError);
+                    // Continue without student details rather than failing completely
+                } else if (students) {
+                    studentDetails = students;
+                }
+            } catch (studentDetailsError) {
+                logger.warn('Error in student details fetch:', studentDetailsError);
+                // Continue without student details
             }
         }
 
@@ -908,15 +1181,50 @@ router.get('/daily/class/:class_division_id', authenticate, async (req, res) => 
             status: 'success',
             data: {
                 daily_attendance: dailyAttendance,
-                student_records: studentRecordsWithDetails || []
+                student_records: studentRecordsWithDetails || [],
+                summary: {
+                    total_students: studentRecordsWithDetails.length,
+                    present_count: studentRecordsWithDetails.filter(r => r.status === 'present').length,
+                    absent_count: studentRecordsWithDetails.filter(r => r.status === 'absent').length,
+                    holiday: dailyAttendance.is_holiday || false
+                }
             }
         });
     } catch (error) {
         logger.error('Error fetching daily attendance:', error);
-        res.status(500).json({
+
+        // Provide detailed error response
+        const errorResponse = {
             status: 'error',
-            message: 'Failed to fetch attendance'
-        });
+            message: 'Internal server error occurred while fetching daily attendance',
+            error_details: {
+                message: error.message,
+                name: error.name,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            },
+            debug_info: {
+                class_division_id: req.params.class_division_id,
+                date: req.query.date,
+                user_id: req.user?.id || 'unknown',
+                user_role: req.user?.role || 'unknown',
+                timestamp: new Date().toISOString(),
+                endpoint: '/api/attendance/daily/class/:class_division_id'
+            }
+        };
+
+        // Add specific error details based on error type
+        if (error.code === 'PGRST301') {
+            errorResponse.error_details.hint = 'Database connection issue. Please try again.';
+            errorResponse.error_details.code = 'DATABASE_CONNECTION_ERROR';
+        } else if (error.code === 'PGRST116') {
+            errorResponse.error_details.hint = 'No data found for the specified criteria.';
+            errorResponse.error_details.code = 'NO_DATA_FOUND';
+        } else if (error.name === 'TypeError') {
+            errorResponse.error_details.hint = 'Data type mismatch. Please check your request parameters.';
+            errorResponse.error_details.code = 'TYPE_ERROR';
+        }
+
+        res.status(500).json(errorResponse);
     }
 });
 
@@ -2985,6 +3293,262 @@ router.get('/teacher/summary', authenticate, async (req, res) => {
             status: 'error',
             message: 'Failed to fetch teacher summary'
         });
+    }
+});
+
+// Get daily attendance overview (for dashboard/overview)
+router.get('/daily', authenticate, async (req, res) => {
+    try {
+        const { date, class_division_id } = req.query;
+
+        logger.info('Daily attendance overview request:', {
+            user_id: req.user.id,
+            user_role: req.user.role,
+            date,
+            class_division_id,
+            query_params: req.query
+        });
+
+        // Check permissions
+        if (!['admin', 'principal', 'teacher'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied. Only teachers, admins, and principals can view daily attendance overview',
+                user_role: req.user.role,
+                required_roles: ['admin', 'principal', 'teacher']
+            });
+        }
+
+        // Get active academic year
+        let academicYear;
+        try {
+            academicYear = await getActiveAcademicYear();
+            logger.info('Active academic year:', academicYear);
+        } catch (academicYearError) {
+            logger.error('Error getting active academic year:', academicYearError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to get active academic year',
+                error_details: {
+                    message: academicYearError.message,
+                    code: academicYearError.code || 'UNKNOWN_ERROR'
+                },
+                debug_info: {
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
+
+        // Build base query
+        let query = adminSupabase
+            .from('daily_attendance')
+            .select(`
+                *,
+                class_divisions!inner(
+                    id,
+                    division,
+                    class_level:class_level_id(
+                        id,
+                        name,
+                        sequence_number
+                    )
+                ),
+                marked_by_user:users!daily_attendance_marked_by_fkey(
+                    id,
+                    full_name,
+                    role
+                )
+            `)
+            .eq('academic_year_id', academicYear.id);
+
+        // Apply filters
+        if (date) {
+            query = query.eq('attendance_date', date);
+        }
+
+        if (class_division_id) {
+            // Check if teacher has access to this class
+            if (req.user.role === 'teacher') {
+                const isTeacher = await isTeacherForClass(req.user.id, class_division_id);
+                if (!isTeacher) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'You can only view attendance for your assigned classes',
+                        requested_class_id: class_division_id,
+                        user_id: req.user.id,
+                        user_role: req.user.role
+                    });
+                }
+            }
+            query = query.eq('class_division_id', class_division_id);
+        } else if (req.user.role === 'teacher') {
+            // For teachers, only show their assigned classes
+            const { data: teacherClasses, error: teacherClassesError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('class_division_id')
+                .eq('teacher_id', req.user.id)
+                .eq('is_active', true);
+
+            if (teacherClassesError) {
+                logger.error('Error fetching teacher classes:', teacherClassesError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch your assigned classes',
+                    error_details: {
+                        message: teacherClassesError.message,
+                        code: teacherClassesError.code || 'UNKNOWN_ERROR'
+                    },
+                    debug_info: {
+                        user_id: req.user.id,
+                        user_role: req.user.role,
+                        timestamp: new Date().toISOString()
+                    }
+                });
+            }
+
+            if (!teacherClasses || teacherClasses.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        daily_attendance: [],
+                        summary: {
+                            total_classes: 0,
+                            total_students: 0,
+                            present_count: 0,
+                            absent_count: 0,
+                            holiday_count: 0
+                        },
+                        message: 'No classes assigned to you'
+                    }
+                });
+            }
+
+            const teacherClassIds = teacherClasses.map(tc => tc.class_division_id);
+            query = query.in('class_division_id', teacherClassIds);
+        }
+
+        // Execute query
+        const { data: dailyAttendance, error: dailyError } = await query;
+
+        if (dailyError) {
+            logger.error('Error fetching daily attendance:', dailyError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch daily attendance data',
+                error_details: {
+                    message: dailyError.message,
+                    code: dailyError.code || 'UNKNOWN_ERROR',
+                    details: dailyError.details || null,
+                    hint: dailyError.hint || null
+                },
+                debug_info: {
+                    user_id: req.user.id,
+                    user_role: req.user.role,
+                    query_params: req.query,
+                    academic_year_id: academicYear.id,
+                    timestamp: new Date().toISOString()
+                }
+            });
+        }
+
+        // Get student counts for each class
+        let summary = {
+            total_classes: 0,
+            total_students: 0,
+            present_count: 0,
+            absent_count: 0,
+            holiday_count: 0
+        };
+
+        if (dailyAttendance && dailyAttendance.length > 0) {
+            summary.total_classes = dailyAttendance.length;
+
+            for (const attendance of dailyAttendance) {
+                if (attendance.is_holiday) {
+                    summary.holiday_count++;
+                } else {
+                    // Get student count for this class
+                    try {
+                        const { data: studentRecords, error: studentError } = await adminSupabase
+                            .from('student_attendance_records')
+                            .select('status')
+                            .eq('daily_attendance_id', attendance.id);
+
+                        if (studentError) {
+                            logger.warn('Error getting student records for attendance:', {
+                                attendance_id: attendance.id,
+                                error: studentError.message
+                            });
+                            continue;
+                        }
+
+                        if (studentRecords) {
+                            summary.total_students += studentRecords.length;
+                            summary.present_count += studentRecords.filter(r => r.status === 'present').length;
+                            summary.absent_count += studentRecords.filter(r => r.status === 'absent').length;
+                        }
+                    } catch (studentCountError) {
+                        logger.warn('Error counting students for attendance:', {
+                            attendance_id: attendance.id,
+                            error: studentCountError.message
+                        });
+                    }
+                }
+            }
+        }
+
+        res.json({
+            status: 'success',
+            data: {
+                daily_attendance: dailyAttendance || [],
+                summary,
+                academic_year: {
+                    id: academicYear.id,
+                    name: academicYear.year_name
+                },
+                filters: {
+                    date,
+                    class_division_id
+                }
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in daily attendance overview:', error);
+
+        // Provide detailed error response
+        const errorResponse = {
+            status: 'error',
+            message: 'Internal server error occurred while fetching daily attendance overview',
+            error_details: {
+                message: error.message,
+                name: error.name,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+            },
+            debug_info: {
+                user_id: req.user?.id || 'unknown',
+                user_role: req.user?.role || 'unknown',
+                query_params: req.query,
+                timestamp: new Date().toISOString(),
+                endpoint: '/api/attendance/daily'
+            }
+        };
+
+        // Add specific error details based on error type
+        if (error.code === 'PGRST301') {
+            errorResponse.error_details.hint = 'Database connection issue. Please try again.';
+            errorResponse.error_details.code = 'DATABASE_CONNECTION_ERROR';
+        } else if (error.code === 'PGRST116') {
+            errorResponse.error_details.hint = 'No data found for the specified criteria.';
+            errorResponse.error_details.code = 'NO_DATA_FOUND';
+        } else if (error.code === 'PGRST301') {
+            errorResponse.error_details.hint = 'Database timeout. Please try again.';
+            errorResponse.error_details.code = 'DATABASE_TIMEOUT';
+        }
+
+        res.status(500).json(errorResponse);
     }
 });
 
