@@ -5,6 +5,74 @@ import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
+// Helper function to check for existing threads between participants
+async function findExistingThread(participantIds, threadType) {
+    try {
+        // For direct chats, find exact match of 2 participants
+        if (threadType === 'direct') {
+            const { data: existingThreads, error } = await adminSupabase
+                .from('chat_threads')
+                .select(`
+                    id,
+                    title,
+                    thread_type,
+                    created_at,
+                    updated_at,
+                    participants:chat_participants(user_id)
+                `)
+                .eq('thread_type', 'direct');
+
+            if (error) {
+                logger.error('Error checking for existing threads:', error);
+                return null;
+            }
+
+            // Find thread with exact participant match
+            for (const thread of existingThreads || []) {
+                const threadParticipantIds = thread.participants.map(p => p.user_id).sort();
+                const requestedParticipantIds = [...participantIds].sort();
+
+                if (JSON.stringify(threadParticipantIds) === JSON.stringify(requestedParticipantIds)) {
+                    return thread;
+                }
+            }
+        } else {
+            // For group chats, check if exact same participant set exists
+            const { data: existingThreads, error } = await adminSupabase
+                .from('chat_threads')
+                .select(`
+                    id,
+                    title,
+                    thread_type,
+                    created_at,
+                    updated_at,
+                    participants:chat_participants(user_id)
+                `)
+                .eq('thread_type', 'group');
+
+            if (error) {
+                logger.error('Error checking for existing group threads:', error);
+                return null;
+            }
+
+            // Find thread with exact participant match
+            for (const thread of existingThreads || []) {
+                const threadParticipantIds = thread.participants.map(p => p.user_id).sort();
+                const requestedParticipantIds = [...participantIds].sort();
+
+                if (JSON.stringify(threadParticipantIds) === JSON.stringify(requestedParticipantIds)) {
+                    return thread;
+                }
+            }
+        }
+
+        return null;
+    } catch (error) {
+        logger.error('Error in findExistingThread:', error);
+        return null;
+    }
+}
+
 // Debug endpoint to check table structure
 router.get('/debug/tables', authenticate, async (req, res) => {
     try {
@@ -338,92 +406,160 @@ router.post('/start-conversation', authenticate, async (req, res) => {
             });
         }
 
-        // Create thread using adminSupabase to bypass RLS
-        const { data: thread, error: threadError } = await adminSupabase
-            .from('chat_threads')
-            .insert({
-                thread_type,
-                title: title || `${users.find(u => u.id === req.user.id)?.full_name} & ${users.find(u => u.id !== req.user.id)?.full_name}`,
-                created_by: req.user.id
-            })
-            .select()
-            .single();
+        // Check for existing thread
+        const existingThread = await findExistingThread(allParticipants, thread_type);
 
-        if (threadError) {
-            logger.error('Error creating chat thread:', threadError);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to create chat thread'
-            });
-        }
+        if (existingThread) {
+            logger.info('Found existing thread, reusing it:', existingThread);
+            // If thread exists, add current user as participant
+            const { error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .insert({ thread_id: existingThread.id, user_id: req.user.id, role: 'member' });
 
-        // Add participants using adminSupabase to bypass RLS
-        const participantData = allParticipants.map(userId => ({
-            thread_id: thread.id,
-            user_id: userId,
-            role: userId === req.user.id ? 'admin' : 'member'
-        }));
-
-        const { error: participantsError } = await adminSupabase
-            .from('chat_participants')
-            .insert(participantData);
-
-        if (participantsError) {
-            logger.error('Error adding participants:', participantsError);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to add participants'
-            });
-        }
-
-        // Send the first message
-        const { data: message, error: messageError } = await adminSupabase
-            .from('chat_messages')
-            .insert({
-                thread_id: thread.id,
-                sender_id: req.user.id,
-                content: message_content.trim(),
-                message_type: 'text'
-            })
-            .select(`
-                *,
-                sender:users!chat_messages_sender_id_fkey(full_name, role)
-            `)
-            .single();
-
-        if (messageError) {
-            logger.error('Error sending first message:', messageError);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to send first message'
-            });
-        }
-
-        // Update thread's updated_at timestamp
-        await adminSupabase
-            .from('chat_threads')
-            .update({ updated_at: new Date().toISOString() })
-            .eq('id', thread.id);
-
-        res.status(201).json({
-            status: 'success',
-            data: {
-                thread: {
-                    id: thread.id,
-                    thread_type: thread.thread_type,
-                    title: thread.title,
-                    created_by: thread.created_by,
-                    created_at: thread.created_at
-                },
-                message: {
-                    id: message.id,
-                    content: message.content,
-                    sender: message.sender,
-                    created_at: message.created_at
-                },
-                participants: allParticipants.length
+            if (participantError) {
+                logger.error('Error adding participant to existing thread:', participantError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to add participant to existing thread'
+                });
             }
-        });
+
+            // Send the first message
+            const { data: message, error: messageError } = await adminSupabase
+                .from('chat_messages')
+                .insert({
+                    thread_id: existingThread.id,
+                    sender_id: req.user.id,
+                    content: message_content.trim(),
+                    message_type: 'text'
+                })
+                .select(`
+                    *,
+                    sender:users!chat_messages_sender_id_fkey(full_name, role)
+                `)
+                .single();
+
+            if (messageError) {
+                logger.error('Error sending first message:', messageError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to send first message'
+                });
+            }
+
+            // Update thread's updated_at timestamp
+            await adminSupabase
+                .from('chat_threads')
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', existingThread.id);
+
+            res.status(201).json({
+                status: 'success',
+                data: {
+                    thread: {
+                        id: existingThread.id,
+                        thread_type: existingThread.thread_type,
+                        title: existingThread.title,
+                        created_by: existingThread.created_by,
+                        created_at: existingThread.created_at
+                    },
+                    message: {
+                        id: message.id,
+                        content: message.content,
+                        sender: message.sender,
+                        created_at: message.created_at
+                    },
+                    participants: allParticipants.length
+                }
+            });
+        } else {
+            // Create new thread
+            const { data: thread, error: threadError } = await adminSupabase
+                .from('chat_threads')
+                .insert({
+                    thread_type,
+                    title: title || `${users.find(u => u.id === req.user.id)?.full_name} & ${users.find(u => u.id !== req.user.id)?.full_name}`,
+                    created_by: req.user.id
+                })
+                .select()
+                .single();
+
+            if (threadError) {
+                logger.error('Error creating chat thread:', threadError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create chat thread'
+                });
+            }
+
+            // Add participants using adminSupabase to bypass RLS
+            const participantData = allParticipants.map(userId => ({
+                thread_id: thread.id,
+                user_id: userId,
+                role: userId === req.user.id ? 'admin' : 'member'
+            }));
+
+            const { error: participantsError } = await adminSupabase
+                .from('chat_participants')
+                .insert(participantData);
+
+            if (participantsError) {
+                logger.error('Error adding participants:', participantsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to add participants'
+                });
+            }
+
+            // Send the first message
+            const { data: message, error: messageError } = await adminSupabase
+                .from('chat_messages')
+                .insert({
+                    thread_id: thread.id,
+                    sender_id: req.user.id,
+                    content: message_content.trim(),
+                    message_type: 'text'
+                })
+                .select(`
+                    *,
+                    sender:users!chat_messages_sender_id_fkey(full_name, role)
+                `)
+                .single();
+
+            if (messageError) {
+                logger.error('Error sending first message:', messageError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to send first message'
+                });
+            }
+
+            // Update thread's updated_at timestamp
+            await adminSupabase
+                .from('chat_threads')
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', thread.id);
+
+            res.status(201).json({
+                status: 'success',
+                data: {
+                    thread: {
+                        id: thread.id,
+                        thread_type: thread.thread_type,
+                        title: thread.title,
+                        created_by: thread.created_by,
+                        created_at: thread.created_at
+                    },
+                    message: {
+                        id: message.id,
+                        content: message.content,
+                        sender: message.sender,
+                        created_at: message.created_at
+                    },
+                    participants: allParticipants.length
+                }
+            });
+        }
 
     } catch (error) {
         logger.error('Error in start conversation:', error);
@@ -497,48 +633,72 @@ router.post('/threads', authenticate, async (req, res) => {
             });
         }
 
-        // Create thread using adminSupabase to bypass RLS
-        const { data: thread, error: threadError } = await adminSupabase
-            .from('chat_threads')
-            .insert({
-                thread_type,
-                title: title || null,
-                created_by: req.user.id
-            })
-            .select()
-            .single();
+        // Check for existing thread
+        const existingThread = await findExistingThread(participants, thread_type);
 
-        if (threadError) {
-            logger.error('Error creating chat thread:', threadError);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to create chat thread'
+        if (existingThread) {
+            logger.info('Found existing thread, reusing it:', existingThread);
+            // If thread exists, add current user as participant
+            const { error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .insert({ thread_id: existingThread.id, user_id: req.user.id, role: 'member' });
+
+            if (participantError) {
+                logger.error('Error adding participant to existing thread:', participantError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to add participant to existing thread'
+                });
+            }
+
+            res.status(201).json({
+                status: 'success',
+                data: existingThread
+            });
+        } else {
+            // Create new thread
+            const { data: thread, error: threadError } = await adminSupabase
+                .from('chat_threads')
+                .insert({
+                    thread_type,
+                    title: title || null,
+                    created_by: req.user.id
+                })
+                .select()
+                .single();
+
+            if (threadError) {
+                logger.error('Error creating chat thread:', threadError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to create chat thread'
+                });
+            }
+
+            // Add participants using adminSupabase to bypass RLS
+            const participantData = participants.map(userId => ({
+                thread_id: thread.id,
+                user_id: userId,
+                role: userId === req.user.id ? 'admin' : 'member'
+            }));
+
+            const { error: participantsError } = await adminSupabase
+                .from('chat_participants')
+                .insert(participantData);
+
+            if (participantsError) {
+                logger.error('Error adding participants:', participantsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to add participants'
+                });
+            }
+
+            res.status(201).json({
+                status: 'success',
+                data: thread
             });
         }
-
-        // Add participants using adminSupabase to bypass RLS
-        const participantData = participants.map(userId => ({
-            thread_id: thread.id,
-            user_id: userId,
-            role: userId === req.user.id ? 'admin' : 'member'
-        }));
-
-        const { error: participantsError } = await adminSupabase
-            .from('chat_participants')
-            .insert(participantData);
-
-        if (participantsError) {
-            logger.error('Error adding participants:', participantsError);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to add participants'
-            });
-        }
-
-        res.status(201).json({
-            status: 'success',
-            data: thread
-        });
 
     } catch (error) {
         logger.error('Error in create chat thread:', error);
@@ -991,6 +1151,185 @@ router.post('/threads/:id/participants', authenticate, async (req, res) => {
     }
 });
 
+// Expand existing group chat by adding new participants
+router.post('/threads/:id/expand', authenticate, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { new_participants, message_content = null } = req.body;
+
+        if (!new_participants || !Array.isArray(new_participants) || new_participants.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'New participants array is required'
+            });
+        }
+
+        // Verify user is admin of the thread
+        const { data: participant, error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .select('role')
+            .eq('thread_id', id)
+            .eq('user_id', req.user.id)
+            .single();
+
+        if (participantError || participant.role !== 'admin') {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Only thread admins can expand group chats'
+            });
+        }
+
+        // Check if thread is a group chat
+        const { data: thread, error: threadError } = await adminSupabase
+            .from('chat_threads')
+            .select('thread_type, title')
+            .eq('id', id)
+            .single();
+
+        if (threadError || !thread) {
+            return res.status(404).json({
+                status: 'error',
+                message: 'Thread not found'
+            });
+        }
+
+        if (thread.thread_type !== 'group') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Can only expand group chats'
+            });
+        }
+
+        // Verify new participants exist
+        const { data: users, error: usersError } = await adminSupabase
+            .from('users')
+            .select('id, full_name')
+            .in('id', new_participants);
+
+        if (usersError) {
+            logger.error('Error verifying new participants:', usersError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to verify new participants'
+            });
+        }
+
+        if (users.length !== new_participants.length) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'One or more new participants not found'
+            });
+        }
+
+        // Check if any new participants are already in the thread
+        const { data: existingParticipants, error: existingError } = await adminSupabase
+            .from('chat_participants')
+            .select('user_id')
+            .eq('thread_id', id)
+            .in('user_id', new_participants);
+
+        if (existingError) {
+            logger.error('Error checking existing participants:', existingError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to check existing participants'
+            });
+        }
+
+        const existingUserIds = existingParticipants.map(p => p.user_id);
+        const actuallyNewUserIds = new_participants.filter(id => !existingUserIds.includes(id));
+
+        if (actuallyNewUserIds.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'All new participants are already in the group'
+            });
+        }
+
+        // Add new participants
+        const participantData = actuallyNewUserIds.map(userId => ({
+            thread_id: id,
+            user_id: userId,
+            role: 'member'
+        }));
+
+        const { data: newParticipants, error: addError } = await adminSupabase
+            .from('chat_participants')
+            .insert(participantData)
+            .select(`
+                *,
+                user:users(full_name, role)
+            `);
+
+        if (addError) {
+            logger.error('Error adding new participants:', addError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to add new participants'
+            });
+        }
+
+        // Update thread title to reflect new participant count
+        const { data: allParticipants, error: countError } = await adminSupabase
+            .from('chat_participants')
+            .select('user_id')
+            .eq('thread_id', id);
+
+        if (!countError && allParticipants) {
+            const newTitle = `Group Chat (${allParticipants.length} participants)`;
+            await adminSupabase
+                .from('chat_threads')
+                .update({
+                    title: newTitle,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', id);
+        }
+
+        // Send welcome message if provided
+        let welcomeMessage = null;
+        if (message_content && message_content.trim()) {
+            const { data: message, error: messageError } = await adminSupabase
+                .from('chat_messages')
+                .insert({
+                    thread_id: id,
+                    sender_id: req.user.id,
+                    content: message_content.trim(),
+                    message_type: 'text',
+                    status: 'sent'
+                })
+                .select(`
+                    *,
+                    sender:users!chat_messages_sender_id_fkey(full_name, role)
+                `)
+                .single();
+
+            if (!messageError) {
+                welcomeMessage = message;
+            }
+        }
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                thread_id: id,
+                added_participants: newParticipants,
+                total_added: newParticipants.length,
+                already_participants: existingUserIds,
+                new_title: `Group Chat (${(allParticipants?.length || 0)} participants)`,
+                welcome_message: welcomeMessage
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error expanding group chat:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
 // Real-time messaging endpoints
 
 // Subscribe to real-time messages
@@ -1257,6 +1596,98 @@ router.get('/my-threads', authenticate, async (req, res) => {
 
     } catch (error) {
         logger.error('Error in get my threads:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Check if thread exists between participants
+router.post('/check-existing-thread', authenticate, async (req, res) => {
+    try {
+        const { participants, thread_type = 'direct' } = req.body;
+
+        if (!participants || !Array.isArray(participants) || participants.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Participants array is required'
+            });
+        }
+
+        // Validate thread type
+        if (!['direct', 'group'].includes(thread_type)) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Thread type must be direct or group'
+            });
+        }
+
+        // Add current user to participants if not already included
+        const allParticipants = participants.includes(req.user.id)
+            ? participants
+            : [...participants, req.user.id];
+
+        // For direct chats, ensure only 2 participants
+        if (thread_type === 'direct' && allParticipants.length !== 2) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Direct chats must have exactly 2 participants'
+            });
+        }
+
+        // Check for existing thread
+        const existingThread = await findExistingThread(allParticipants, thread_type);
+
+        if (existingThread) {
+            // Get participant details
+            const { data: participantDetails, error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .select(`
+                    user_id,
+                    role,
+                    last_read_at,
+                    user:users(full_name, role)
+                `)
+                .eq('thread_id', existingThread.id);
+
+            if (participantError) {
+                logger.error('Error fetching participant details:', participantError);
+            }
+
+            // Get message count
+            const { count: messageCount, error: countError } = await adminSupabase
+                .from('chat_messages')
+                .select('*', { count: 'exact', head: true })
+                .eq('thread_id', existingThread.id);
+
+            if (countError) {
+                logger.error('Error getting message count:', countError);
+            }
+
+            return res.json({
+                status: 'success',
+                data: {
+                    exists: true,
+                    thread: {
+                        ...existingThread,
+                        participants: participantDetails || [],
+                        message_count: messageCount || 0
+                    }
+                }
+            });
+        } else {
+            return res.json({
+                status: 'success',
+                data: {
+                    exists: false,
+                    thread: null
+                }
+            });
+        }
+
+    } catch (error) {
+        logger.error('Error checking existing thread:', error);
         res.status(500).json({
             status: 'error',
             message: 'Internal server error'
