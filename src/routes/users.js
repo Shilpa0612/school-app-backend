@@ -247,107 +247,86 @@ router.put('/parents/:parent_id',
     }
 );
 
-// Get children with class and teacher information (for parents)
+// Get children with class and teacher information (for parents) - OPTIMIZED VERSION
 router.get('/children',
     authenticate,
     authorize('parent'),
     async (req, res, next) => {
         try {
-            // Debug: Log the authenticated user
-            console.log('Authenticated user:', {
-                id: req.user.id,
-                name: req.user.full_name,
-                role: req.user.role
-            });
+            console.time('children_endpoint_optimized');
 
-            // Get parent-student mappings
-            const { data: mappings, error: mappingsError } = await adminSupabase
+            // SINGLE OPTIMIZED QUERY: Get all data in one go with proper joins
+            const { data: childrenData, error } = await adminSupabase
                 .from('parent_student_mappings')
                 .select(`
                     student_id,
                     relationship,
-                    is_primary_guardian
-                `)
-                .eq('parent_id', req.user.id);
-
-            if (mappingsError) {
-                console.error('Error fetching mappings:', mappingsError);
-                return res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to fetch student mappings'
-                });
-            }
-
-            if (!mappings || mappings.length === 0) {
-                return res.json({
-                    status: 'success',
-                    data: {
-                        children: []
-                    }
-                });
-            }
-
-            // Get student details with academic records
-            const { data: students, error: studentsError } = await adminSupabase
-                .from('students_master')
-                .select(`
-                    id,
-                    full_name,
-                    admission_number,
-                    student_academic_records (
+                    is_primary_guardian,
+                    students:students_master!inner (
                         id,
-                        roll_number,
-                        status,
-                        class_division:class_division_id (
+                        full_name,
+                        admission_number,
+                        profile_photo_path,
+                        student_academic_records!inner (
                             id,
-                            division,
-                            academic_year:academic_year_id (year_name),
-                            class_level:class_level_id (name),
-                            teacher:teacher_id (
+                            roll_number,
+                            status,
+                            class_division:class_division_id (
                                 id,
-                                full_name,
-                                phone_number,
-                                email
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name),
+                                teacher:teacher_id (
+                                    id,
+                                    full_name,
+                                    phone_number,
+                                    email
+                                )
                             )
                         )
                     )
                 `)
-                .in('id', mappings.map(m => m.student_id));
+                .eq('parent_id', req.user.id)
+                .eq('students.student_academic_records.status', 'ongoing');
 
-            if (studentsError) {
-                console.error('Error fetching students:', studentsError);
+            if (error) {
+                console.error('Error fetching children data:', error);
                 return res.status(500).json({
                     status: 'error',
-                    message: 'Failed to fetch student details'
+                    message: 'Failed to fetch children data'
                 });
             }
 
-            // Format the response
-            const children = students.map(student => {
-                // Find the mapping for this student to get relationship info
-                const mapping = mappings.find(m => m.student_id === student.id);
+            console.time('data_processing');
 
-                // Find current academic record
-                const currentAcademicRecord = student.student_academic_records?.find(r => r.status === 'ongoing');
+            // Process data in memory (much faster than multiple queries)
+            const children = (childrenData || []).map((mapping) => {
+                const student = mapping.students;
+                const academicRecord = student.student_academic_records?.[0];
+                const classDivision = academicRecord?.class_division;
+
+                // Check if profile photo exists for onboarding
+                const hasProfilePhoto = !!(student.profile_photo_path && student.profile_photo_path.trim() !== '');
 
                 // Build the response object
                 const childInfo = {
                     id: student.id,
                     name: student.full_name,
                     admission_number: student.admission_number,
-                    relationship: mapping?.relationship,
-                    is_primary_guardian: mapping?.is_primary_guardian
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian,
+                    onboarding: hasProfilePhoto, // true if profile photo exists, false otherwise
+                    profile_photo_path: student.profile_photo_path || null
                 };
 
                 // Add class information if available
-                if (currentAcademicRecord?.class_division) {
-                    const classDivision = currentAcademicRecord.class_division;
+                if (classDivision) {
                     childInfo.class_info = {
                         class_division_id: classDivision.id,
                         class_name: `${classDivision.class_level?.name || 'Unknown'} ${classDivision.division}`,
                         division: classDivision.division,
                         academic_year: classDivision.academic_year?.year_name,
-                        roll_number: currentAcademicRecord.roll_number,
+                        roll_number: academicRecord.roll_number,
                         teacher: classDivision.teacher ? {
                             id: classDivision.teacher.id,
                             name: classDivision.teacher.full_name,
@@ -362,20 +341,26 @@ router.get('/children',
                 return childInfo;
             });
 
-            // Debug: Log success
-            console.log('Successfully fetched children data:', {
-                total_children: children.length,
-                with_class_info: children.filter(c => c.class_info).length
-            });
+            console.timeEnd('data_processing');
+
+            // Calculate summary statistics
+            const totalChildren = children.length;
+            const childrenWithPhotos = children.filter(c => c.onboarding).length;
+            const childrenWithoutPhotos = children.filter(c => !c.onboarding).length;
+            const childrenWithClassInfo = children.filter(c => c.class_info).length;
+
+            console.timeEnd('children_endpoint_optimized');
 
             res.json({
                 status: 'success',
                 data: {
-                    children,
-                    debug: {
-                        authenticated_user_id: req.user.id,
-                        mappings_count: mappings.length,
-                        students_found: students.length
+                    children: children.sort((a, b) => a.name.localeCompare(b.name)),
+                    summary: {
+                        total_children: totalChildren,
+                        children_with_profile_photos: childrenWithPhotos,
+                        children_without_profile_photos: childrenWithoutPhotos,
+                        children_with_class_info: childrenWithClassInfo,
+                        onboarding_completion_rate: totalChildren > 0 ? Math.round((childrenWithPhotos / totalChildren) * 100) : 0
                     }
                 }
             });
@@ -387,287 +372,211 @@ router.get('/children',
     }
 );
 
-// Get teachers for the classes of the authenticated parent's children
+// Get children's teachers for the authenticated parent (OPTIMIZED VERSION)
 router.get('/children/teachers',
     authenticate,
     authorize('parent'),
     async (req, res, next) => {
         try {
-            // Fetch the parent's child mappings
-            const { data: mappings, error: mappingError } = await adminSupabase
+            console.time('children_teachers_optimized');
+
+            // SINGLE OPTIMIZED QUERY: Get all data in one go with proper joins
+            const { data: childrenData, error } = await adminSupabase
                 .from('parent_student_mappings')
                 .select(`
                     student_id,
-                    students:students_master (
+                    relationship,
+                    is_primary_guardian,
+                    students:students_master!inner (
                         id,
                         full_name,
-                        admission_number
+                        admission_number,
+                        student_academic_records!inner (
+                            class_division_id,
+                            roll_number,
+                            status,
+                            class_division:class_division_id (
+                                id,
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name),
+                                class_teacher_assignments!inner (
+                                    id,
+                                    assignment_type,
+                                    subject,
+                                    is_primary,
+                                    assigned_date,
+                                    teacher:teacher_id (
+                                        id,
+                                        full_name,
+                                        phone_number,
+                                        email
+                                    )
+                                )
+                            )
+                        )
                     )
                 `)
-                .eq('parent_id', req.user.id);
+                .eq('parent_id', req.user.id)
+                .eq('students.student_academic_records.status', 'ongoing')
+                .eq('students.student_academic_records.class_division.class_teacher_assignments.is_active', true);
 
-            if (mappingError) throw mappingError;
+            if (error) throw error;
 
-            const studentIds = (mappings || []).map(m => m.student_id);
-            if (studentIds.length === 0) {
-                return res.json({ status: 'success', data: { teachers_by_child: [], principal: null } });
-            }
+            console.time('data_processing');
 
-            // Get ongoing academic records for these students
-            const { data: records, error: recError } = await adminSupabase
-                .from('student_academic_records')
-                .select('student_id, class_division_id')
-                .in('student_id', studentIds)
-                .eq('status', 'ongoing');
+            // Process data in memory (much faster than multiple queries)
+            const children = (childrenData || []).map((mapping) => {
+                const student = mapping.students;
+                const academicRecord = student.student_academic_records?.[0];
+                const classDivision = academicRecord?.class_division;
 
-            if (recError) throw recError;
+                if (!classDivision || !classDivision.class_teacher_assignments) {
+                    return null;
+                }
 
-            const classIds = Array.from(new Set((records || []).map(r => r.class_division_id).filter(Boolean)));
-            if (classIds.length === 0) {
-                return res.json({ status: 'success', data: { teachers_by_child: [], principal: null } });
-            }
-
-            // Fetch teacher assignments for these classes
-            const { data: assignments, error: aErr } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select(`
-                    id,
-                    class_division_id,
-                    teacher_id,
-                    assignment_type,
-                    subject,
-                    is_primary,
-                    teacher:teacher_id(id, full_name, phone_number, email)
-                `)
-                .in('class_division_id', classIds)
-                .eq('is_active', true)
-                .order('is_primary', { ascending: false });
-
-            if (aErr) throw aErr;
-
-            // Build map class_division_id -> teachers
-            const classToTeachers = new Map();
-            for (const a of assignments || []) {
-                const arr = classToTeachers.get(a.class_division_id) || [];
-                arr.push({
-                    assignment_id: a.id,
-                    teacher_id: a.teacher_id,
-                    full_name: a.teacher?.full_name || null,
-                    phone_number: a.teacher?.phone_number || null,
-                    email: a.teacher?.email || null,
-                    assignment_type: a.assignment_type,
-                    subject: a.subject || null,
-                    is_primary: a.is_primary
-                });
-                classToTeachers.set(a.class_division_id, arr);
-            }
-
-            // Optionally include legacy teacher_id if no assignments exist
-            if ((assignments || []).length === 0) {
-                const { data: legacyClasses } = await adminSupabase
-                    .from('class_divisions')
-                    .select('id, teacher:teacher_id(id, full_name, phone_number, email)')
-                    .in('id', classIds);
-
-                for (const lc of legacyClasses || []) {
-                    if (lc.teacher) {
-                        classToTeachers.set(lc.id, [{
-                            assignment_id: `legacy-${lc.id}`,
-                            teacher_id: lc.teacher.id,
-                            full_name: lc.teacher.full_name,
-                            phone_number: lc.teacher.phone_number,
-                            email: lc.teacher.email,
-                            assignment_type: 'class_teacher',
-                            subject: null,
-                            is_primary: true
-                        }]);
+                const teachers = classDivision.class_teacher_assignments.map((assignment) => ({
+                    assignment_id: assignment.id,
+                    teacher_id: assignment.teacher.id,
+                    full_name: assignment.teacher.full_name,
+                    phone_number: assignment.teacher.phone_number,
+                    email: assignment.teacher.email,
+                    assignment_type: assignment.assignment_type,
+                    subject: assignment.subject,
+                    is_primary: assignment.is_primary,
+                    assigned_date: assignment.assigned_date,
+                    contact_info: {
+                        phone: assignment.teacher.phone_number,
+                        email: assignment.teacher.email
                     }
+                }));
+
+                const classInfo = {
+                    class_division_id: classDivision.id,
+                    class_name: `${classDivision.class_level?.name || 'Unknown'} ${classDivision.division}`,
+                    division: classDivision.division,
+                    academic_year: classDivision.academic_year?.year_name,
+                    class_level: classDivision.class_level?.name,
+                    roll_number: academicRecord.roll_number
+                };
+
+                return {
+                    student_id: mapping.student_id,
+                    student_name: student.full_name,
+                    admission_number: student.admission_number,
+                    relationship: mapping.relationship,
+                    is_primary_guardian: mapping.is_primary_guardian,
+                    class_info: classInfo,
+                    teachers: teachers
+                };
+            }).filter(Boolean); // Remove null entries
+
+            // OPTIMIZED CHAT INFO: Single query for all chat threads
+            const teacherIds = [...new Set(children.flatMap(c => c.teachers.map(t => t.teacher_id)))];
+            let chatInfoMap = new Map();
+
+            if (teacherIds.length > 0) {
+                // Get all chat threads where parent and teachers are participants
+                const { data: chatThreads, error: chatError } = await adminSupabase
+                    .from('chat_threads')
+                    .select(`
+                        id,
+                        title,
+                        thread_type,
+                        created_at,
+                        updated_at,
+                        participants:chat_participants(
+                            user_id,
+                            role,
+                            last_read_at,
+                            user:users(full_name, role)
+                        ),
+                        message_count:chat_messages(count)
+                    `)
+                    .eq('thread_type', 'direct')
+                    .or(`participants.user_id.eq.${req.user.id},participants.user_id.in.(${teacherIds.join(',')})`);
+
+                if (!chatError && chatThreads) {
+                    // Build chat info map for quick lookup
+                    chatThreads.forEach(thread => {
+                        const participants = thread.participants || [];
+                        const hasParent = participants.some(p => p.user_id === req.user.id);
+                        const teacherParticipant = participants.find(p => teacherIds.includes(p.user_id));
+
+                        if (hasParent && teacherParticipant) {
+                            chatInfoMap.set(teacherParticipant.user_id, {
+                                has_thread: true,
+                                thread_id: thread.id,
+                                message_count: thread.message_count?.[0]?.count || 0,
+                                participants: participants,
+                                thread_title: thread.title,
+                                thread_type: thread.thread_type,
+                                created_at: thread.created_at,
+                                updated_at: thread.updated_at
+                            });
+                        }
+                    });
                 }
             }
 
-            // Principal info
+            // Add chat info to teachers
+            children.forEach(child => {
+                child.teachers.forEach(teacher => {
+                    teacher.chat_info = chatInfoMap.get(teacher.teacher_id) || {
+                        has_thread: false,
+                        thread_id: null,
+                        message_count: 0,
+                        participants: []
+                    };
+                });
+            });
+
+            console.timeEnd('data_processing');
+
+            // Get principal info (single query)
             const { data: principal } = await adminSupabase
                 .from('users')
-                .select('id, full_name')
+                .select('id, full_name, email, phone_number')
                 .eq('role', 'principal')
                 .limit(1)
                 .maybeSingle();
 
-            // Assemble response by child
-            const teachersByChild = [];
-            for (const mapping of mappings || []) {
-                const studentId = mapping.student_id;
-                const student = mapping.students;
-                const rec = (records || []).find(r => r.student_id === studentId);
-                const classId = rec?.class_division_id || null;
-                const teachers = classId ? (classToTeachers.get(classId) || []) : [];
-                teachersByChild.push({
-                    student_id: studentId,
-                    student_name: student?.full_name || 'Unknown',
-                    admission_number: student?.admission_number || 'Unknown',
-                    class_division_id: classId,
-                    teachers
-                });
-            }
+            // Calculate summary statistics
+            const allTeachers = children.flatMap(c => c.teachers);
+            const teachersWithChat = allTeachers.filter(t => t.chat_info.has_thread).length;
+            const teachersWithoutChat = allTeachers.filter(t => !t.chat_info.has_thread).length;
+            const allClasses = new Set(children.map(c => c.class_info?.class_division_id).filter(Boolean));
 
-            // Get chat thread information for each teacher
-            const teachersByChildWithChat = await Promise.all(
-                teachersByChild.map(async (childData) => {
-                    const teachersWithChatInfo = await Promise.all(
-                        childData.teachers.map(async (teacher) => {
-                            try {
-                                // Check if there's an existing chat thread between parent and teacher
-                                // First, get all threads where parent is a participant
-                                const { data: parentThreads, error: parentThreadError } = await adminSupabase
-                                    .from('chat_participants')
-                                    .select('thread_id')
-                                    .eq('user_id', req.user.id);
-
-                                if (parentThreadError || !parentThreads || parentThreads.length === 0) {
-                                    return {
-                                        ...teacher,
-                                        chat_info: {
-                                            has_thread: false,
-                                            thread_id: null,
-                                            message_count: 0,
-                                            participants: []
-                                        }
-                                    };
-                                }
-
-                                // Get all threads where teacher is a participant
-                                const { data: teacherThreads, error: teacherThreadError } = await adminSupabase
-                                    .from('chat_participants')
-                                    .select('thread_id')
-                                    .eq('user_id', teacher.teacher_id);
-
-                                if (teacherThreadError || !teacherThreads || teacherThreads.length === 0) {
-                                    return {
-                                        ...teacher,
-                                        chat_info: {
-                                            has_thread: false,
-                                            thread_id: null,
-                                            message_count: 0,
-                                            participants: []
-                                        }
-                                    };
-                                }
-
-                                // Find common thread IDs
-                                const parentThreadIds = parentThreads.map(t => t.thread_id);
-                                const teacherThreadIds = teacherThreads.map(t => t.thread_id);
-                                const commonThreadIds = parentThreadIds.filter(id => teacherThreadIds.includes(id));
-
-                                if (commonThreadIds.length === 0) {
-                                    return {
-                                        ...teacher,
-                                        chat_info: {
-                                            has_thread: false,
-                                            thread_id: null,
-                                            message_count: 0,
-                                            participants: []
-                                        }
-                                    };
-                                }
-
-                                // Get the thread details (take the first common thread)
-                                const { data: thread, error: threadError } = await adminSupabase
-                                    .from('chat_threads')
-                                    .select(`
-                                        id,
-                                        title,
-                                        thread_type,
-                                        created_at,
-                                        updated_at,
-                                        participants:chat_participants(
-                                            user_id,
-                                            role,
-                                            last_read_at,
-                                            user:users(full_name, role)
-                                        )
-                                    `)
-                                    .eq('id', commonThreadIds[0])
-                                    .eq('thread_type', 'direct')
-                                    .single();
-
-                                if (threadError || !thread) {
-                                    return {
-                                        ...teacher,
-                                        chat_info: {
-                                            has_thread: false,
-                                            thread_id: null,
-                                            message_count: 0,
-                                            participants: []
-                                        }
-                                    };
-                                }
-
-                                // Get message count for this thread
-                                const { count: messageCount, error: countError } = await adminSupabase
-                                    .from('chat_messages')
-                                    .select('*', { count: 'exact', head: true })
-                                    .eq('thread_id', thread.id);
-
-                                if (countError) {
-                                    console.error('Error getting message count for thread:', thread.id, countError);
-                                }
-
-                                return {
-                                    ...teacher,
-                                    chat_info: {
-                                        has_thread: true,
-                                        thread_id: thread.id,
-                                        message_count: messageCount || 0,
-                                        participants: thread.participants || [],
-                                        thread_title: thread.title,
-                                        thread_type: thread.thread_type,
-                                        created_at: thread.created_at,
-                                        updated_at: thread.updated_at
-                                    }
-                                };
-                            } catch (error) {
-                                console.error('Error getting chat info for teacher:', teacher.teacher_id, error);
-                                return {
-                                    ...teacher,
-                                    chat_info: {
-                                        has_thread: false,
-                                        thread_id: null,
-                                        message_count: 0,
-                                        participants: []
-                                    }
-                                };
-                            }
-                        })
-                    );
-
-                    return {
-                        ...childData,
-                        teachers: teachersWithChatInfo
-                    };
-                })
-            );
-
-            // Calculate chat-related summary statistics
-            const allTeachersWithChat = teachersByChildWithChat.flatMap(child => child.teachers);
-            const teachersWithChat = allTeachersWithChat.filter(t => t.chat_info.has_thread).length;
-            const teachersWithoutChat = allTeachersWithChat.filter(t => !t.chat_info.has_thread).length;
+            console.timeEnd('children_teachers_optimized');
 
             res.json({
                 status: 'success',
                 data: {
-                    principal: principal ? { id: principal.id, full_name: principal.full_name } : null,
-                    teachers_by_child: teachersByChildWithChat,
+                    children: children.sort((a, b) => a.student_name.localeCompare(b.student_name)),
+                    principal: principal ? {
+                        id: principal.id,
+                        full_name: principal.full_name,
+                        email: principal.email,
+                        phone_number: principal.phone_number,
+                        role: 'principal',
+                        contact_info: {
+                            phone: principal.phone_number,
+                            email: principal.email
+                        }
+                    } : null,
                     summary: {
-                        total_children: teachersByChildWithChat.length,
-                        total_teachers: allTeachersWithChat.length,
+                        total_children: children.length,
+                        total_teachers: allTeachers.length,
+                        total_classes: allClasses.size,
+                        children_with_teachers: children.filter(c => c.teachers.length > 0).length,
+                        children_without_teachers: children.filter(c => c.teachers.length === 0).length,
                         teachers_with_chat: teachersWithChat,
-                        teachers_without_chat: teachersWithoutChat,
-                        children_with_teachers: teachersByChildWithChat.filter(c => c.teachers.length > 0).length,
-                        children_without_teachers: teachersByChildWithChat.filter(c => c.teachers.length === 0).length
+                        teachers_without_chat: teachersWithoutChat
                     }
                 }
             });
         } catch (error) {
+            console.error('Error in get children teachers:', error);
             next(error);
         }
     }

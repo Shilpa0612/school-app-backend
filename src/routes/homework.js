@@ -272,12 +272,31 @@ router.get('/',
                 // Filter by class level through class division
                 query = query.eq('class_division.level.id', req.query.class_level_id);
             }
-            if (req.query.due_date_from) {
-                query = query.gte('due_date', req.query.due_date_from);
+
+            // FIXED: Proper date range filtering with inclusive boundaries
+            if (req.query.due_date_from || req.query.due_date_to) {
+                if (req.query.due_date_from) {
+                    // Convert to start of day for inclusive from date
+                    // Explicitly use UTC to avoid timezone issues
+                    const fromDateISO = req.query.due_date_from + 'T00:00:00.000Z';
+                    console.log('🔍 DEBUG - due_date_from conversion:', {
+                        input: req.query.due_date_from,
+                        fromDateISO: fromDateISO
+                    });
+                    query = query.gte('due_date', fromDateISO);
+                }
+                if (req.query.due_date_to) {
+                    // Convert to end of day for inclusive to date
+                    // Explicitly use UTC to avoid timezone issues
+                    const toDateISO = req.query.due_date_to + 'T23:59:59.999Z';
+                    console.log('🔍 DEBUG - due_date_to conversion:', {
+                        input: req.query.due_date_to,
+                        toDateISO: toDateISO
+                    });
+                    query = query.lte('due_date', toDateISO);
+                }
             }
-            if (req.query.due_date_to) {
-                query = query.lte('due_date', req.query.due_date_to);
-            }
+
             if (req.query.status) {
                 // Filter by due date status (overdue, upcoming, completed)
                 const now = new Date();
@@ -355,21 +374,59 @@ router.get('/',
             if (req.query.class_level_id) {
                 countQuery = countQuery.eq('class_division.level.id', req.query.class_level_id);
             }
-            if (req.query.due_date_from) {
-                countQuery = countQuery.gte('due_date', req.query.due_date_from);
-            }
-            if (req.query.due_date_to) {
-                countQuery = countQuery.lte('due_date', req.query.due_date_to);
+
+            // FIXED: Apply the same date range filtering to count query
+            if (req.query.due_date_from || req.query.due_date_to) {
+                if (req.query.due_date_from) {
+                    // Convert to start of day for inclusive from date
+                    // Explicitly use UTC to avoid timezone issues
+                    const fromDateISO = req.query.due_date_from + 'T00:00:00.000Z';
+                    console.log('🔍 DEBUG - due_date_from conversion:', {
+                        input: req.query.due_date_from,
+                        fromDateISO: fromDateISO
+                    });
+                    countQuery = countQuery.gte('due_date', fromDateISO);
+                }
+                if (req.query.due_date_to) {
+                    // Convert to end of day for inclusive to date
+                    // Explicitly use UTC to avoid timezone issues
+                    const toDateISO = req.query.due_date_to + 'T23:59:59.999Z';
+                    console.log('🔍 DEBUG - due_date_to conversion:', {
+                        input: req.query.due_date_to,
+                        toDateISO: toDateISO
+                    });
+                    countQuery = countQuery.lte('due_date', toDateISO);
+                }
             }
 
             const { count, error: countError } = await countQuery;
             if (countError) throw countError;
+
+            // DEBUG: Show what we're actually querying
+            console.log('🔍 DEBUG - Final query parameters:', {
+                due_date_from: req.query.due_date_from,
+                due_date_to: req.query.due_date_to,
+                count_result: count,
+                user_role: req.user.role
+            });
 
             const { data, error } = await query
                 .order('due_date', { ascending: true })
                 .range(offset, offset + limit - 1);
 
             if (error) throw error;
+
+            // DEBUG: Show the actual results and their due dates
+            if (data && data.length > 0) {
+                console.log('🔍 DEBUG - Query results due dates:', data.map(hw => ({
+                    id: hw.id,
+                    title: hw.title,
+                    due_date: hw.due_date,
+                    due_date_type: typeof hw.due_date
+                })));
+            } else {
+                console.log('🔍 DEBUG - No results found');
+            }
 
             res.json({
                 status: 'success',
