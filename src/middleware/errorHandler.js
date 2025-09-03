@@ -38,7 +38,56 @@ export const errorHandler = (err, req, res, _next) => {
     // Handle database-specific errors
     if (err.code) {
         switch (err.code) {
-            case '23505': // Unique constraint violation
+            case '23505': { // Unique constraint violation
+                const lowerMsg = (err.message || '').toLowerCase();
+                const lowerDetail = (err.detail || '').toLowerCase();
+
+                const includes = (text) => lowerMsg.includes(text) || lowerDetail.includes(text);
+
+                if (includes('admission_number')) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Admission number already exists',
+                        details: 'This admission number is already registered in the system',
+                        field: 'admission_number',
+                        error_code: err.code,
+                        suggestion: 'Please use a different admission number'
+                    });
+                }
+
+                if (includes('phone_number')) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Phone number already exists',
+                        details: 'This phone number is already registered',
+                        field: 'phone_number',
+                        error_code: err.code,
+                        suggestion: 'Please use a different phone number'
+                    });
+                }
+
+                if (includes('email')) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Email already exists',
+                        details: 'This email address is already registered',
+                        field: 'email',
+                        error_code: err.code,
+                        suggestion: 'Please use a different email address'
+                    });
+                }
+
+                if (includes('roll_number')) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Roll number already exists in this class',
+                        details: 'This roll number is already assigned to another student',
+                        field: 'roll_number',
+                        error_code: err.code,
+                        suggestion: 'Please use a different roll number for this class'
+                    });
+                }
+
                 return res.status(400).json({
                     status: 'error',
                     message: 'Duplicate entry',
@@ -46,6 +95,7 @@ export const errorHandler = (err, req, res, _next) => {
                     error_code: err.code,
                     suggestion: 'Please check for existing records and modify your request'
                 });
+            }
             case '23503': // Foreign key constraint violation
                 return res.status(400).json({
                     status: 'error',
@@ -84,11 +134,11 @@ export const errorHandler = (err, req, res, _next) => {
     // Default error with enhanced details
     const statusCode = err.statusCode || 500;
     const isProduction = process.env.NODE_ENV === 'production';
-    
+
     const response = {
         status: 'error',
         message: isProduction ? 'Internal Server Error' : err.message,
-        details: isProduction 
+        details: isProduction
             ? 'An unexpected error occurred. Please contact support if this persists.'
             : err.message,
         error_code: err.code || 'UNKNOWN_ERROR',
@@ -97,7 +147,7 @@ export const errorHandler = (err, req, res, _next) => {
         timestamp: new Date().toISOString(),
         endpoint: `${req.method} ${req.path}`,
         // Include additional debug info only in development
-        ...(process.env.NODE_ENV !== 'production' && { 
+        ...(process.env.NODE_ENV !== 'production' && {
             stack: err.stack,
             request_id: req.headers['x-request-id'] || 'unknown'
         })

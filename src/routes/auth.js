@@ -186,11 +186,7 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
 
     } catch (error) {
         logger.error('Error in create-parent endpoint:', error);
-        res.status(500).json({
-            status: 'error',
-            message: 'Internal server error',
-            details: error.message
-        });
+        return next(error);
     }
 });
 
