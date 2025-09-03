@@ -822,7 +822,7 @@ router.get('/events/teacher',
             }
 
             // Get all class divisions where teacher is assigned
-            const { data: teacherAssignments, error: assignmentsError } = await supabase
+            const { data: teacherAssignments, error: assignmentsError } = await adminSupabase
                 .from('class_teacher_assignments')
                 .select(`
                     class_division_id,
@@ -884,8 +884,33 @@ router.get('/events/teacher',
                     query = query.order('event_date', { ascending: true });
                 }
 
-                const { data, error } = await query;
-                if (error) throw error;
+                let { data, error } = await query;
+
+                // Fallback: if IST RPC errors or returns no data, try standard query path
+                if (use_ist === 'true' && (error || !data || data.length === 0)) {
+                    query = supabase
+                        .from('calendar_events')
+                        .select(`
+                            *,
+                            creator:created_by (id, full_name, role),
+                            class:class_division_id (
+                                id,
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name)
+                            )
+                        `)
+                        .eq('event_type', 'school_wide');
+
+                    if (start_date) query = query.gte('event_date', start_date);
+                    if (end_date) query = query.lte('event_date', end_date);
+                    if (event_category) query = query.eq('event_category', event_category);
+                    query = query.order('event_date', { ascending: true });
+
+                    const fallback = await query;
+                    data = fallback.data || [];
+                    error = fallback.error;
+                }
 
                 // Post-process to filter by status if using IST functions
                 let filteredEvents = data || [];
@@ -984,8 +1009,49 @@ router.get('/events/teacher',
                 query = query.order('event_date', { ascending: true });
             }
 
-            const { data, error } = await query;
-            if (error) throw error;
+            let { data, error } = await query;
+
+            // Fallback: if IST RPC errors or returns no data, try standard query with OR conditions
+            if (use_ist === 'true' && (error || !data || data.length === 0)) {
+                query = supabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by (id, full_name, role),
+                        class:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `);
+
+                const conditions = ['event_type.eq.school_wide'];
+                if (classDivisionIds.length > 0) {
+                    conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
+                    conditions.push(`class_division_ids.cs.{${classDivisionIds.join(',')}}`);
+                }
+                query = query.or(conditions.join(','));
+
+                if (start_date) query = query.gte('event_date', start_date);
+                if (end_date) query = query.lte('event_date', end_date);
+                if (event_category) query = query.eq('event_category', event_category);
+                if (event_type) query = query.eq('event_type', event_type);
+                if (class_division_id) {
+                    if (!classDivisionIds.includes(class_division_id)) {
+                        return res.status(403).json({
+                            status: 'error',
+                            message: 'You are not assigned to this class'
+                        });
+                    }
+                    query = query.eq('class_division_id', class_division_id);
+                }
+                query = query.order('event_date', { ascending: true });
+
+                const fallback = await query;
+                data = fallback.data || [];
+                error = fallback.error;
+            }
 
             // Post-process to filter by status if using IST functions
             let filteredEvents = data || [];
