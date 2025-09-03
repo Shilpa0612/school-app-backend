@@ -119,108 +119,161 @@ router.get('/',
             // Get the student IDs that match our filters
             const studentIds = academicRecords ? academicRecords.map(record => record.student_id) : [];
 
-            // Now build the main query for students
-            let query = adminSupabase
-                .from('students_master')
-                .select(`
-                    *,
-                    student_academic_records (
+            // Build database-level count and data queries
+            const applyStudentFilters = (qb) => {
+                if (status) qb = qb.eq('status', status);
+                if (search) qb = qb.or(`full_name.ilike.%${search}%,admission_number.ilike.%${search}%`);
+                if (academic_year_id || class_division_id || class_level_id) {
+                    if (studentIds.length > 0) {
+                        qb = qb.in('id', studentIds);
+                    } else {
+                        // If filters provided but no matches in academic records, short-circuit with empty response
+                        return null;
+                    }
+                }
+                return qb;
+            };
+
+            // Count query
+            let countQuery = applyStudentFilters(
+                adminSupabase
+                    .from('students_master')
+                    .select('id', { count: 'exact', head: true })
+            );
+
+            if (countQuery === null) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        students: [],
+                        count: 0,
+                        total_count: 0,
+                        pagination: {
+                            page: parseInt(page),
+                            limit: parseInt(limit),
+                            total: 0,
+                            total_pages: 0,
+                            has_next: false,
+                            has_prev: false
+                        },
+                        filters: {
+                            search: search || null,
+                            class_division_id: class_division_id || null,
+                            class_level_id: class_level_id || null,
+                            academic_year_id: academic_year_id || null,
+                            status: status || 'active',
+                            unlinked_only: unlinked_only === 'true'
+                        }
+                    }
+                });
+            }
+
+            const { count: totalCount, error: countError } = await countQuery;
+            if (countError) {
+                logger.error('Error counting students:', countError);
+                throw countError;
+            }
+
+            // Data query with pagination (base fields only)
+            const offset = (page - 1) * limit;
+            let dataQuery = applyStudentFilters(
+                adminSupabase
+                    .from('students_master')
+                    .select(`
                         id,
-                        roll_number,
+                        full_name,
+                        admission_number,
+                        date_of_birth,
+                        admission_date,
                         status,
-                        class_division:class_division_id (
-                            id,
-                            division,
-                            class_level:class_level_id (
-                                id,
-                                name,
-                                sequence_number
-                            ),
-                            academic_year:academic_year_id (
-                                id,
-                                year_name
-                            ),
-                            teacher:teacher_id (
-                                id,
-                                full_name
-                            )
-                        )
-                    ),
-                    parent_student_mappings (
+                        created_at
+                    `)
+            );
+
+            const { data: pageStudents, error: dataError } = await dataQuery
+                .order('created_at', { ascending: false })
+                .range(offset, offset + limit - 1);
+
+            if (dataError) {
+                logger.error('Error fetching students:', dataError);
+                throw dataError;
+            }
+
+            const pageStudentIds = pageStudents.map(s => s.id);
+
+            // Batch fetch academic records for paginated students
+            const { data: pageAcademicRecords, error: pageAcademicError } = await adminSupabase
+                .from('student_academic_records')
+                .select(`
+                    student_id,
+                    id,
+                    roll_number,
+                    status,
+                    class_division:class_division_id (
                         id,
-                        relationship,
-                        is_primary_guardian,
-                        parent:parent_id (
+                        division,
+                        class_level:class_level_id (
                             id,
-                            full_name,
-                            phone_number,
-                            email
+                            name,
+                            sequence_number
+                        ),
+                        academic_year:academic_year_id (
+                            id,
+                            year_name
+                        ),
+                        teacher:teacher_id (
+                            id,
+                            full_name
                         )
                     )
-                `);
+                `)
+                .in('student_id', pageStudentIds)
+                .eq('status', 'ongoing');
 
-            // Apply filters
-            if (search) {
-                query = query.or(`full_name.ilike.%${search}%,admission_number.ilike.%${search}%`);
+            if (pageAcademicError) {
+                logger.error('Error fetching academic records:', pageAcademicError);
             }
 
-            if (status) {
-                query = query.eq('status', status);
+            // Batch fetch parent mappings for paginated students
+            const { data: pageParentMappings, error: pageMappingError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    student_id,
+                    relationship,
+                    is_primary_guardian,
+                    parent:parent_id (
+                        id,
+                        full_name,
+                        phone_number,
+                        email
+                    )
+                `)
+                .in('student_id', pageStudentIds);
+
+            if (pageMappingError) {
+                logger.error('Error fetching parent mappings:', pageMappingError);
             }
 
-            // Apply student IDs filter if we have academic year or class filters
-            if (academic_year_id || class_division_id || class_level_id) {
-                if (studentIds.length > 0) {
-                    query = query.in('id', studentIds);
-                } else {
-                    // If we have filters but no matching records, return empty result
-                    return res.json({
-                        status: 'success',
-                        data: {
-                            students: [],
-                            count: 0,
-                            total_count: 0,
-                            pagination: {
-                                page: parseInt(page),
-                                limit: parseInt(limit),
-                                total: 0,
-                                total_pages: 0,
-                                has_next: false,
-                                has_prev: false
-                            },
-                            filters: {
-                                search: search || null,
-                                class_division_id: class_division_id || null,
-                                class_level_id: class_level_id || null,
-                                academic_year_id: academic_year_id || null,
-                                status: status || 'active',
-                                unlinked_only: unlinked_only === 'true'
-                            }
-                        }
-                    });
-                }
-            }
+            // Build maps
+            const academicByStudent = {};
+            (pageAcademicRecords || []).forEach(record => {
+                if (!academicByStudent[record.student_id]) academicByStudent[record.student_id] = [];
+                academicByStudent[record.student_id].push(record);
+            });
 
-            // Get students with filters
-            const { data: allStudents, error } = await query;
+            const mappingsByStudent = {};
+            (pageParentMappings || []).forEach(mapping => {
+                if (!mappingsByStudent[mapping.student_id]) mappingsByStudent[mapping.student_id] = [];
+                mappingsByStudent[mapping.student_id].push(mapping);
+            });
 
-            if (error) {
-                logger.error('Error fetching students:', error);
-                throw error;
-            }
-
-            // Filter by unlinked only if requested
-            let filteredStudents = allStudents;
+            // Apply unlinked_only filter on the paginated page
+            let paginatedStudents = pageStudents;
             if (unlinked_only === 'true') {
-                filteredStudents = allStudents.filter(student =>
-                    !student.parent_student_mappings || student.parent_student_mappings.length === 0
+                paginatedStudents = pageStudents.filter(student =>
+                    !mappingsByStudent[student.id] || mappingsByStudent[student.id].length === 0
                 );
             }
-
-            // Apply pagination
-            const totalCount = filteredStudents.length;
-            const offset = (page - 1) * limit;
-            const paginatedStudents = filteredStudents.slice(offset, offset + limit);
 
             // Get available filters for response
             const { data: academicYears } = await adminSupabase
@@ -255,17 +308,17 @@ router.get('/',
                         date_of_birth: student.date_of_birth,
                         admission_date: student.admission_date,
                         status: student.status,
-                        student_academic_records: student.student_academic_records,
-                        parent_student_mappings: student.parent_student_mappings
+                        student_academic_records: academicByStudent[student.id] || [],
+                        parent_student_mappings: mappingsByStudent[student.id] || []
                     })),
                     count: paginatedStudents.length,
-                    total_count: totalCount,
+                    total_count: totalCount || 0,
                     pagination: {
                         page: parseInt(page),
                         limit: parseInt(limit),
-                        total: totalCount,
-                        total_pages: Math.ceil(totalCount / limit),
-                        has_next: page < Math.ceil(totalCount / limit),
+                        total: totalCount || 0,
+                        total_pages: Math.ceil((totalCount || 0) / limit),
+                        has_next: offset + limit < (totalCount || 0),
                         has_prev: page > 1
                     },
                     filters: {

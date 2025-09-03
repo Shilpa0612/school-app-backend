@@ -1,5 +1,4 @@
 import express from 'express';
-import { body, validationResult } from 'express-validator';
 import multer from 'multer';
 import { adminSupabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
@@ -49,9 +48,7 @@ router.get('/',
             const offset = (page - 1) * limit;
 
             // OPTIMIZATION 1: Use database-level pagination instead of fetching all records
-            let query = adminSupabase
-                .from('students_master')
-                .select(`
+            const selectColumns = `
                     id,
                     full_name,
                     admission_number,
@@ -59,27 +56,42 @@ router.get('/',
                     admission_date,
                     status,
                     created_at
-                `, { count: 'exact' });
+        `;
+
+            // Helper to apply common filters to any query builder
+            const applyFilters = (qb) => {
+                if (status) {
+                    qb = qb.eq('status', status);
+                }
+                if (search) {
+                    // Case-insensitive OR on name or admission number
+                    qb = qb.or(`full_name.ilike.%${search}%,admission_number.ilike.%${search}%`);
+                }
+                return qb;
+            };
+
+            // Build count query (head request with exact count)
+            let countQuery = applyFilters(
+                adminSupabase
+                    .from('students_master')
+                    .select('id', { count: 'exact', head: true })
+            );
 
             // OPTIMIZATION 2: Apply filters at database level
-            if (status) {
-                query = query.eq('status', status);
-            }
-
-            if (search) {
-                // OPTIMIZATION 3: Use case-insensitive search with optimized indexes
-                query = query.or(`full_name.ilike.%${search}%,admission_number.ilike.%${search}%`);
-            }
-
-            // Get total count first
-            const { count, error: countError } = await query.count();
+            const { count, error: countError } = await countQuery;
             if (countError) {
                 logger.error('Error getting students count:', countError);
                 throw countError;
             }
 
             // Apply pagination
-            const { data: students, error } = await query
+            let dataQuery = applyFilters(
+                adminSupabase
+                    .from('students_master')
+                    .select(selectColumns)
+            );
+
+            const { data: students, error } = await dataQuery
                 .order('created_at', { ascending: false })
                 .range(offset, offset + limit - 1);
 
@@ -90,7 +102,7 @@ router.get('/',
 
             // OPTIMIZATION 4: Batch fetch related data only for returned students
             const studentIds = students.map(s => s.id);
-            
+
             // Fetch academic records in batch
             const { data: academicRecords, error: academicError } = await adminSupabase
                 .from('student_academic_records')
@@ -98,16 +110,16 @@ router.get('/',
                     student_id,
                     roll_number,
                     status,
-                    class_division:class_division_id(
+    class_division: class_division_id(
                         id,
                         division,
-                        level:class_level_id(
+        level: class_level_id(
                             id,
                             name,
                             sequence_number
                         ),
-                        teacher:teacher_id(id, full_name),
-                        academic_year:academic_year_id(id, year_name)
+        teacher: teacher_id(id, full_name),
+        academic_year: academic_year_id(id, year_name)
                     )
                 `)
                 .in('student_id', studentIds)
@@ -125,7 +137,7 @@ router.get('/',
                     relationship,
                     is_primary_guardian,
                     access_level,
-                    parent:parent_id(
+    parent: parent_id(
                         id,
                         full_name,
                         phone_number,
@@ -195,9 +207,9 @@ router.get('/',
                     .select(`
                         id,
                         division,
-                        level:class_level_id(id, name),
-                        teacher:teacher_id(id, full_name),
-                        academic_year:academic_year_id(id, year_name)
+    level: class_level_id(id, name),
+        teacher: teacher_id(id, full_name),
+            academic_year: academic_year_id(id, year_name)
                     `)
                     .order('level.sequence_number')
                     .order('division')
@@ -267,11 +279,11 @@ router.get('/class/:class_division_id',
                 .select(`
                     id,
                     division,
-                    level:class_level_id (
+    level: class_level_id(
                         name,
                         sequence_number
                     ),
-                    teacher:teacher_id (
+        teacher: teacher_id(
                         id,
                         full_name
                     )
@@ -304,7 +316,7 @@ router.get('/class/:class_division_id',
                     date_of_birth,
                     status,
                     profile_photo_path,
-                    student_academic_records!inner (
+    student_academic_records!inner(
                         id,
                         roll_number,
                         status,
@@ -382,30 +394,30 @@ router.get('/:student_id',
                     admission_date,
                     status,
                     profile_photo_path,
-                    student_academic_records (
+    student_academic_records(
                         id,
                         roll_number,
                         status,
-                        class_division:class_division_id (
+        class_division: class_division_id(
                             id,
                             division,
-                            level:class_level_id (
+            level: class_level_id(
                                 id,
                                 name,
                                 sequence_number
                             ),
-                            teacher:teacher_id (
+            teacher: teacher_id(
                                 id,
                                 full_name
                             )
                         )
                     ),
-                    parent_mappings:parent_student_mappings (
+    parent_mappings: parent_student_mappings(
                         id,
                         relationship,
                         is_primary_guardian,
                         access_level,
-                        parent:parent_id (
+        parent: parent_id(
                             id,
                             full_name,
                             phone_number
@@ -453,8 +465,8 @@ async function checkStudentAccess(userId, userRole, studentId) {
             const { data: student, error } = await adminSupabase
                 .from('students_master')
                 .select(`
-                    student_academic_records!inner (
-                        class_division:class_division_id (
+student_academic_records!inner(
+    class_division: class_division_id(
                             teacher_id
                         )
                     )
