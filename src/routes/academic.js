@@ -483,20 +483,101 @@ router.get('/my-teacher-id',
                     }
                 }
             } else {
-                // Use new many-to-many assignments
-                classesWithDetails = newAssignments.map(assignment => ({
-                    assignment_id: assignment.id,
-                    class_division_id: assignment.class_division.id,
-                    division: assignment.class_division.division,
-                    class_name: `${assignment.class_division.class_level?.name || 'Unknown'} ${assignment.class_division.division}`,
-                    class_level: assignment.class_division.class_level?.name || 'Unknown',
-                    sequence_number: assignment.class_division.class_level?.sequence_number || 0,
-                    academic_year: assignment.class_division.academic_year?.year_name || 'Unknown',
-                    assignment_type: assignment.assignment_type,
-                    subject: assignment.subject, // Include the subject taught
-                    is_primary: assignment.is_primary,
-                    assigned_date: assignment.assigned_date
-                }));
+                // If no assignments found by teacher_id, try user_id (some records may store user_id)
+                let effectiveAssignments = newAssignments || [];
+                if (!effectiveAssignments || effectiveAssignments.length === 0) {
+                    const { data: userIdAssignments, error: userIdAssignmentError } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select(`
+                            id,
+                            assignment_type,
+                            subject,
+                            is_primary,
+                            assigned_date,
+                            class_division:class_division_id (
+                                id,
+                                division,
+                                academic_year_id,
+                                class_level_id,
+                                academic_year:academic_year_id (
+                                    year_name
+                                ),
+                                class_level:class_level_id (
+                                    name,
+                                    sequence_number
+                                )
+                            )
+                        `)
+                        .eq('user_id', req.user.id)
+                        .eq('is_active', true)
+                        .order('is_primary', { ascending: false })
+                        .order('assigned_date', { ascending: true });
+
+                    if (!userIdAssignmentError && userIdAssignments && userIdAssignments.length > 0) {
+                        effectiveAssignments = userIdAssignments;
+                    }
+                }
+
+                if (!effectiveAssignments || effectiveAssignments.length === 0) {
+                    // Final fallback: use legacy class_divisions.teacher_id mapping even if junction table exists but has no rows
+                    logger.info('No junction assignments found; using legacy class_divisions for teacher:', req.user.id);
+                    usingLegacyData = true;
+
+                    const { data: assignedClasses, error: classError } = await adminSupabase
+                        .from('class_divisions')
+                        .select(`
+                        id,
+                        division,
+                        academic_year_id,
+                        class_level_id
+                    `)
+                        .eq('teacher_id', req.user.id);
+
+                    if (!classError && assignedClasses && assignedClasses.length > 0) {
+                        for (const classDiv of assignedClasses) {
+                            const { data: academicYear } = await adminSupabase
+                                .from('academic_years')
+                                .select('year_name')
+                                .eq('id', classDiv.academic_year_id)
+                                .single();
+
+                            const { data: classLevel } = await adminSupabase
+                                .from('class_levels')
+                                .select('name, sequence_number')
+                                .eq('id', classDiv.class_level_id)
+                                .single();
+
+                            classesWithDetails.push({
+                                assignment_id: `legacy-${classDiv.id}`,
+                                class_division_id: classDiv.id,
+                                division: classDiv.division,
+                                class_name: `${classLevel?.name || 'Unknown'} ${classDiv.division}`,
+                                class_level: classLevel?.name || 'Unknown',
+                                sequence_number: classLevel?.sequence_number || 0,
+                                academic_year: academicYear?.year_name || 'Unknown',
+                                assignment_type: 'class_teacher',
+                                subject: null,
+                                is_primary: true,
+                                assigned_date: null
+                            });
+                        }
+                    }
+                } else {
+                    // Use many-to-many assignments (teacher_id or user_id based)
+                    classesWithDetails = effectiveAssignments.map(assignment => ({
+                        assignment_id: assignment.id,
+                        class_division_id: assignment.class_division.id,
+                        division: assignment.class_division.division,
+                        class_name: `${assignment.class_division.class_level?.name || 'Unknown'} ${assignment.class_division.division}`,
+                        class_level: assignment.class_division.class_level?.name || 'Unknown',
+                        sequence_number: assignment.class_division.class_level?.sequence_number || 0,
+                        academic_year: assignment.class_division.academic_year?.year_name || 'Unknown',
+                        assignment_type: assignment.assignment_type,
+                        subject: assignment.subject,
+                        is_primary: assignment.is_primary,
+                        assigned_date: assignment.assigned_date
+                    }));
+                }
             }
 
             // Get student counts for each class division
@@ -1839,6 +1920,41 @@ router.get('/years',
     }
 );
 
+// Get academic year by ID
+router.get('/years/:id',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { id } = req.params;
+
+            const { data, error } = await adminSupabase
+                .from('academic_years')
+                .select('*')
+                .eq('id', id)
+                .single();
+
+            if (error) {
+                // Provide a clearer not-found message than the generic handler
+                if (error.code === 'PGRST116') {
+                    return res.status(404).json({
+                        status: 'error',
+                        message: 'Academic year not found',
+                        details: `No academic year found with ID: ${id}`
+                    });
+                }
+                throw error;
+            }
+
+            res.json({
+                status: 'success',
+                data: { academic_year: data }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Get active academic year
 router.get('/years/active',
     authenticate,
@@ -1873,7 +1989,7 @@ router.put('/years/:id',
         body('year_name').optional().matches(/^\d{4}-\d{4}$/).withMessage('Year name must be in format YYYY-YYYY'),
         body('start_date').optional().isISO8601().toDate(),
         body('end_date').optional().isISO8601().toDate(),
-        body('is_active').optional().isBoolean()
+        body('is_active').optional().isBoolean().toBoolean()
     ],
     async (req, res, next) => {
         try {
@@ -1883,7 +1999,11 @@ router.put('/years/:id',
             }
 
             const { id } = req.params;
-            const { year_name, start_date, end_date, is_active } = req.body;
+            const { year_name, start_date, end_date } = req.body;
+            // Ensure boolean coercion regardless of client sending string/boolean
+            const is_active = (typeof req.body.is_active !== 'undefined')
+                ? (typeof req.body.is_active === 'string' ? req.body.is_active === 'true' : Boolean(req.body.is_active))
+                : undefined;
 
             // If setting as active, deactivate other years first
             if (is_active) {

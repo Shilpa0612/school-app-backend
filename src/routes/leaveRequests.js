@@ -299,6 +299,141 @@ router.get('/',
     }
 );
 
+// Get leave requests for classes where the authenticated teacher is the class teacher (active academic year by default)
+router.get('/teacher/class',
+    authenticate,
+    authorize(['teacher']),
+    async (req, res, next) => {
+        try {
+            const { from_date, to_date } = req.query;
+
+            // 1) Resolve active academic year
+            const { data: activeYear } = await adminSupabase
+                .from('academic_years')
+                .select('id, year_name')
+                .eq('is_active', true)
+                .single();
+
+            // 2) Find class divisions where this teacher is class teacher in active year
+            // Prefer junction table; fallback to legacy field
+            let classDivisionIds = [];
+
+            // Junction table lookup
+            const { data: classTeacherAssignments } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('class_division_id, assignment_type, is_primary, class_division:class_division_id(academic_year_id)')
+                .eq('is_active', true)
+                .eq('assignment_type', 'class_teacher')
+                .eq('teacher_id', req.user.id);
+
+            if (classTeacherAssignments && classTeacherAssignments.length > 0) {
+                classDivisionIds = classTeacherAssignments
+                    .filter(a => !activeYear || a.class_division?.academic_year_id === activeYear.id)
+                    .map(a => a.class_division_id);
+            }
+
+            // If none found by teacher_id, try user_id column (data variance)
+            if (classDivisionIds.length === 0) {
+                const { data: userAssignments } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('class_division_id, assignment_type, is_primary, class_division:class_division_id(academic_year_id)')
+                    .eq('is_active', true)
+                    .eq('assignment_type', 'class_teacher')
+                    .eq('user_id', req.user.id);
+
+                if (userAssignments && userAssignments.length > 0) {
+                    classDivisionIds = userAssignments
+                        .filter(a => !activeYear || a.class_division?.academic_year_id === activeYear.id)
+                        .map(a => a.class_division_id);
+                }
+            }
+
+            // Legacy mapping fallback (class_divisions.teacher_id)
+            if (classDivisionIds.length === 0) {
+                const { data: legacyDivs } = await adminSupabase
+                    .from('class_divisions')
+                    .select('id, academic_year_id')
+                    .eq('teacher_id', req.user.id);
+
+                if (legacyDivs && legacyDivs.length > 0) {
+                    classDivisionIds = legacyDivs
+                        .filter(cd => !activeYear || cd.academic_year_id === activeYear.id)
+                        .map(cd => cd.id);
+                }
+            }
+
+            if (classDivisionIds.length === 0) {
+                return res.json({ status: 'success', data: { leave_requests: [], filters: { academic_year: activeYear?.year_name || null } } });
+            }
+
+            // 3) Get students in those divisions (ongoing in active year)
+            const { data: classStudents, error: classStudentsError } = await adminSupabase
+                .from('student_academic_records')
+                .select('student_id')
+                .in('class_division_id', classDivisionIds)
+                .eq('status', 'ongoing');
+
+            if (classStudentsError) throw classStudentsError;
+
+            const studentIds = (classStudents || []).map(r => r.student_id);
+            if (studentIds.length === 0) {
+                return res.json({ status: 'success', data: { leave_requests: [], filters: { academic_year: activeYear?.year_name || null } } });
+            }
+
+            // 4) Build leave_requests query with student filter and optional date overlap
+            let leaveQuery = adminSupabase
+                .from('leave_requests')
+                .select(`
+                    *,
+                    student:student_id (
+                        id,
+                        full_name,
+                        admission_number,
+                        student_academic_records (
+                            class_division:class_division_id (
+                                id,
+                                division,
+                                level:class_level_id (
+                                    id,
+                                    name,
+                                    sequence_number
+                                )
+                            ),
+                            roll_number
+                        )
+                    )
+                `)
+                .in('student_id', studentIds)
+                .order('created_at', { ascending: false });
+
+            if (from_date && to_date) {
+                leaveQuery = leaveQuery.lte('start_date', to_date).gte('end_date', from_date);
+            } else if (from_date) {
+                leaveQuery = leaveQuery.gte('end_date', from_date);
+            } else if (to_date) {
+                leaveQuery = leaveQuery.lte('start_date', to_date);
+            }
+
+            const { data, error } = await leaveQuery;
+            if (error) throw error;
+
+            res.json({
+                status: 'success',
+                data: {
+                    leave_requests: data,
+                    filters: {
+                        academic_year: activeYear?.year_name || null,
+                        from_date: from_date || null,
+                        to_date: to_date || null
+                    }
+                }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Update leave request status
 router.put('/:id/status',
     authenticate,
