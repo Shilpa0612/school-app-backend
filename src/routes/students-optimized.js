@@ -298,12 +298,30 @@ router.get('/class/:class_division_id',
                 });
             }
 
-            // Check teacher authorization
-            if (req.user.role === 'teacher' && classDivision.teacher?.id !== req.user.id) {
-                return res.status(403).json({
-                    status: 'error',
-                    message: 'Not authorized to access this class division'
-                });
+            // Check teacher authorization (allow class teacher OR subject teacher via junction table)
+            if (req.user.role === 'teacher') {
+                let isAssigned = false;
+
+                if (classDivision.teacher?.id === req.user.id) {
+                    isAssigned = true;
+                } else {
+                    const { data: mmAssign } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id')
+                        .eq('class_division_id', class_division_id)
+                        .eq('teacher_id', req.user.id)
+                        .eq('is_active', true)
+                        .limit(1)
+                        .maybeSingle();
+                    isAssigned = !!mmAssign;
+                }
+
+                if (!isAssigned) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'Not authorized to access this class division'
+                    });
+                }
             }
 
             // OPTIMIZATION 2: Use database-level pagination with optimized query

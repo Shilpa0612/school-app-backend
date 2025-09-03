@@ -417,10 +417,26 @@ router.get('/teacher/class',
             const { data, error } = await leaveQuery;
             if (error) throw error;
 
+            // Enrich with class and division names for convenience
+            const enhanced = (data || []).map(req => {
+                const academicRecord = req?.student?.student_academic_records?.[0];
+                const classDivision = academicRecord?.class_division;
+                const classLevelName = classDivision?.level?.name || null;
+                const divisionName = classDivision?.division || null;
+                const className = classLevelName && divisionName ? `${classLevelName} ${divisionName}` : (classLevelName || null);
+                return {
+                    ...req,
+                    class_level_name: classLevelName,
+                    division_name: divisionName,
+                    class_name: className,
+                    class_division_id: classDivision?.id || null
+                };
+            });
+
             res.json({
                 status: 'success',
                 data: {
-                    leave_requests: data,
+                    leave_requests: enhanced,
                     filters: {
                         academic_year: activeYear?.year_name || null,
                         from_date: from_date || null,

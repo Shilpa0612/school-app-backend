@@ -511,12 +511,32 @@ router.get('/class/:class_division_id',
                 });
             }
 
-            // Check if teacher is authorized to access this class
-            if (req.user.role === 'teacher' && classDivision.teacher?.id !== req.user.id) {
-                return res.status(403).json({
-                    status: 'error',
-                    message: 'Not authorized to access this class division'
-                });
+            // Check if teacher is authorized to access this class (class teacher OR subject teacher)
+            if (req.user.role === 'teacher') {
+                let isAssigned = false;
+
+                // Legacy: class teacher via class_divisions.teacher_id
+                if (classDivision.teacher?.id === req.user.id) {
+                    isAssigned = true;
+                } else {
+                    // Many-to-many: subject teacher via class_teacher_assignments
+                    const { data: mmAssign } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('id')
+                        .eq('class_division_id', class_division_id)
+                        .eq('teacher_id', req.user.id)
+                        .eq('is_active', true)
+                        .limit(1)
+                        .maybeSingle();
+                    isAssigned = !!mmAssign;
+                }
+
+                if (!isAssigned) {
+                    return res.status(403).json({
+                        status: 'error',
+                        message: 'Not authorized to access this class division'
+                    });
+                }
             }
 
             // Get students in this class division
