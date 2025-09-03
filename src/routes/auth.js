@@ -2,7 +2,7 @@ import bcrypt from 'bcryptjs';
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
-import { adminSupabase, monitoredSupabase } from '../config/supabase.js';
+import { adminSupabase, monitoredSupabase, queryOptimizer } from '../config/supabase.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -40,7 +40,7 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
         const initial_password = req.body.initial_password || null;
 
         // Check if parent already exists
-        const { data: existingParent } = await supabase
+        const { data: existingParent } = await adminSupabase
             .from('users')
             .select('id')
             .eq('phone_number', phone_number)
@@ -206,7 +206,7 @@ router.post('/register', registerValidation, async (req, res, next) => {
         const { phone_number, password, role, full_name } = req.body;
 
         // Check if user already exists
-        const { data: existingUser } = await supabase
+        const { data: existingUser } = await adminSupabase
             .from('users')
             .select('*')
             .eq('phone_number', phone_number)
@@ -220,7 +220,7 @@ router.post('/register', registerValidation, async (req, res, next) => {
                 const hashedPassword = await bcrypt.hash(password, salt);
 
                 // Update user with password and mark as registered
-                const { data: updatedUser, error: updateError } = await supabase
+                const { data: updatedUser, error: updateError } = await adminSupabase
                     .from('users')
                     .update({
                         password_hash: hashedPassword,
@@ -273,7 +273,7 @@ router.post('/register', registerValidation, async (req, res, next) => {
         const hashedPassword = await bcrypt.hash(password, salt);
 
         // Create user in Supabase
-        const { data: newUser, error } = await supabase
+        const { data: newUser, error } = await adminSupabase
             .from('users')
             .insert([
                 {
