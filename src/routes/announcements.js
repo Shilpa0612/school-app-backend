@@ -1348,18 +1348,23 @@ router.get('/teacher/announcements',
                     )
                 `)
                 .eq('status', 'approved')
-                .eq('is_published', true)
-                .or(`target_roles.cs.{teacher},target_roles.eq.{}`);
+                .eq('is_published', true);
 
-            // Apply subject filtering if requested
-            if (subject_filter === 'true' && teacherSubjects.length > 0) {
-                query = query.or(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
-            }
+            // Combine all visibility conditions into a single OR group to avoid AND-ing multiple ORs
+            const visibilityConditions = [
+                'target_roles.cs.{teacher}',
+                'target_roles.eq.{}'
+            ];
 
-            // Apply class division filtering
             if (teacherClassDivisions.length > 0) {
-                query = query.or(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
+                visibilityConditions.push(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
             }
+
+            if (subject_filter === 'true' && teacherSubjects.length > 0) {
+                visibilityConditions.push(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
+            }
+
+            query = query.or(visibilityConditions.join(','));
 
             // Apply additional filters
             if (announcement_type) {
@@ -1381,23 +1386,13 @@ router.get('/teacher/announcements',
                 query = query.contains('target_subjects', [subject_name]);
             }
 
-            // Get total count for pagination
+            // Get total count for pagination (use the same OR visibility conditions)
             let countQuery = adminSupabase
                 .from('announcements')
                 .select('*', { count: 'exact', head: true })
                 .eq('status', 'approved')
                 .eq('is_published', true)
-                .or(`target_roles.cs.{teacher},target_roles.eq.{}`);
-
-            // Apply subject filtering if requested
-            if (subject_filter === 'true' && teacherSubjects.length > 0) {
-                countQuery = countQuery.or(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
-            }
-
-            // Apply class division filtering
-            if (teacherClassDivisions.length > 0) {
-                countQuery = countQuery.or(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
-            }
+                .or(visibilityConditions.join(','));
 
             // Apply additional filters
             if (announcement_type) {
@@ -1436,8 +1431,8 @@ router.get('/teacher/announcements',
                     const isSubjectMatch = teacherSubjects.some(subject =>
                         announcement.target_subjects?.includes(subject)
                     );
-                    const isClassTeacher = classTeacherDivisions?.some(ctd =>
-                        announcement.target_classes?.includes(ctd.id)
+                    const isClassTeacher = announcement.target_classes?.some(
+                        (classId) => teacherClassDivisions.includes(classId)
                     );
                     const isSubjectTeacher = teacherAssignments?.some(ta =>
                         announcement.target_subjects?.includes(ta.subject)

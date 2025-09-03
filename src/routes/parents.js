@@ -425,6 +425,7 @@ router.delete('/:parent_id',
     async (req, res, next) => {
         try {
             const { parent_id } = req.params;
+            const { force } = req.query;
 
             // Check if parent exists
             const { data: existingParent, error: fetchError } = await adminSupabase
@@ -452,14 +453,31 @@ router.delete('/:parent_id',
                 throw mappingsError;
             }
 
+            let removedMappingsCount = 0;
             if (mappings && mappings.length > 0) {
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Cannot delete parent with linked students. Please unlink all students first.',
-                    data: {
-                        linked_students_count: mappings.length
+                if (force === 'true') {
+                    // Force-delete: unlink all students before deleting the parent
+                    const { data: deletedMappings, error: deleteMappingsError } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .delete()
+                        .eq('parent_id', parent_id)
+                        .select('id');
+
+                    if (deleteMappingsError) {
+                        logger.error('Error unlinking students for force delete:', deleteMappingsError);
+                        throw deleteMappingsError;
                     }
-                });
+
+                    removedMappingsCount = (deletedMappings || []).length;
+                } else {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: 'Cannot delete parent with linked students. Please unlink all students first or pass ?force=true to unlink automatically.',
+                        data: {
+                            linked_students_count: mappings.length
+                        }
+                    });
+                }
             }
 
             // Delete parent
@@ -475,7 +493,11 @@ router.delete('/:parent_id',
 
             res.json({
                 status: 'success',
-                message: 'Parent deleted successfully'
+                message: 'Parent deleted successfully',
+                data: {
+                    removed_mappings_count: removedMappingsCount,
+                    forced: force === 'true'
+                }
             });
 
         } catch (error) {

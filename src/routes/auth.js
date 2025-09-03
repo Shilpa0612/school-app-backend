@@ -331,9 +331,8 @@ router.post('/login', async (req, res, next) => {
         // OPTIMIZATION: Only select essential fields for login with query optimization
         const { data: user, error: userError } = await monitoredSupabase
             .from('users')
-            .select('id, phone_number, password_hash, role, full_name, email, preferred_language')
+            .select('id, phone_number, password_hash, role, full_name, email, preferred_language, is_registered, initial_password')
             .eq('phone_number', phone_number)
-            .eq('is_registered', true) // Only allow registered users
             .single();
 
         if (userError || !user) {
@@ -343,13 +342,58 @@ router.post('/login', async (req, res, next) => {
             });
         }
 
-        // OPTIMIZATION: Verify password first before any database operations
-        const isValidPassword = await bcrypt.compare(password, user.password_hash);
-        if (!isValidPassword) {
-            return res.status(401).json({
-                status: 'error',
-                message: 'Invalid phone number or password'
-            });
+        // Handle registered vs unregistered users
+        if (user.is_registered) {
+            // Verify password for registered users
+            const isValidPassword = await bcrypt.compare(password, user.password_hash);
+            if (!isValidPassword) {
+                return res.status(401).json({
+                    status: 'error',
+                    message: 'Invalid phone number or password'
+                });
+            }
+        } else {
+            // Auto-complete registration for parents created by admin/principal
+            if (user.role === 'parent') {
+                // If an initial_password exists, require it to match for first login
+                if (user.initial_password && password === user.initial_password) {
+                    const salt = await bcrypt.genSalt(10);
+                    const hashedPassword = await bcrypt.hash(password, salt);
+
+                    const { data: updatedUser, error: updateError } = await adminSupabase
+                        .from('users')
+                        .update({
+                            password_hash: hashedPassword,
+                            is_registered: true,
+                            initial_password: null
+                        })
+                        .eq('id', user.id)
+                        .select('id, phone_number, role, full_name, email, preferred_language, is_registered')
+                        .single();
+
+                    if (updateError) {
+                        console.error('Failed to auto-complete parent registration on login:', updateError);
+                        return res.status(500).json({
+                            status: 'error',
+                            message: 'Internal server error'
+                        });
+                    }
+
+                    // Overwrite user reference with updated values for token and response
+                    Object.assign(user, updatedUser);
+                } else {
+                    return res.status(401).json({
+                        status: 'error',
+                        message: 'Invalid phone number or password'
+                    });
+                }
+            } else {
+                // Non-parent users must be registered before login
+                return res.status(401).json({
+                    status: 'error',
+                    message: 'Invalid phone number or password'
+                });
+            }
         }
 
         // OPTIMIZATION: Generate JWT token immediately after password verification
