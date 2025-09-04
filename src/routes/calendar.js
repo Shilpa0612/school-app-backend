@@ -286,11 +286,12 @@ router.get('/events',
             const {
                 start_date,
                 end_date,
-                class_division_id,
-                event_type,
                 event_category,
-                status,
-                use_ist = 'true'
+                event_type,
+                class_division_id,
+                use_ist = 'true',
+                debug = 'false',
+                show_all = 'false'
             } = req.query;
 
             console.log('Calendar events request:', {
@@ -699,9 +700,22 @@ router.get('/events/parent',
 
             // Post-process to filter by status if using IST functions
             let filteredEvents = data || [];
-            if (use_ist === 'true') {
-                filteredEvents = filteredEvents.filter(event => event.status === 'approved');
+            if (use_ist === 'true' && show_all === 'true') {
+                filteredEvents = data || [];
+            } else if (use_ist === 'true') {
+                // Teachers should see approved events and their own pending events
+                filteredEvents = filteredEvents.filter(event => {
+                    if (!event) return false;
+                    const typeNorm = (event.event_type || '').toString().trim().toLowerCase();
+                    if (typeNorm === 'school_wide') return true;
+                    const statusNorm = (event.status || '').toString().trim().toLowerCase();
+                    const isApproved = statusNorm === 'approved' || !!event.approved_by || !!event.approved_at;
+                    if (isApproved) return true;
+                    return statusNorm === 'pending' && event.created_by === req.user.id;
+                });
             }
+            if (debugInfo) debugInfo.after_status_filter_count = filteredEvents.length;
+            if (debugInfo) debugInfo.show_all = show_all === 'true';
 
             // Group events by student and add student information
             const eventsByStudent = [];
@@ -810,7 +824,9 @@ router.get('/events/teacher',
                 event_category,
                 event_type,
                 class_division_id,
-                use_ist = 'true'
+                use_ist = 'true',
+                debug = 'false',
+                show_all = 'false'
             } = req.query;
 
             // Verify user is a teacher
@@ -844,19 +860,30 @@ router.get('/events/teacher',
             const assignedClasses = teacherAssignments || [];
             const classDivisionIds = assignedClasses?.map(assignment => assignment.class_division_id) || [];
 
+            const debugInfo = debug === 'true' ? {
+                teacher_id: req.user.id,
+                use_ist: use_ist === 'true',
+                start_date: start_date || null,
+                end_date: end_date || null,
+                event_category: event_category || null,
+                event_type: event_type || null,
+                class_division_id: class_division_id || null,
+                assigned_class_division_ids: classDivisionIds
+            } : null;
+
             // If teacher has no assigned classes, only show school-wide events
             if (classDivisionIds.length === 0) {
                 let query;
 
                 if (use_ist === 'true') {
-                    query = supabase.rpc('get_events_with_ist', {
+                    query = adminSupabase.rpc('get_events_with_ist', {
                         p_start_date: start_date,
                         p_end_date: end_date,
                         p_event_type: 'school_wide',
                         p_event_category: event_category
                     });
                 } else {
-                    query = supabase
+                    query = adminSupabase
                         .from('calendar_events')
                         .select(`
                             *,
@@ -885,10 +912,11 @@ router.get('/events/teacher',
                 }
 
                 let { data, error } = await query;
+                if (debugInfo) debugInfo.rpc_or_query_count_initial = Array.isArray(data) ? data.length : (data ? 1 : 0);
 
                 // Fallback: if IST RPC errors or returns no data, try standard query path
-                if (use_ist === 'true' && (error || !data || data.length === 0)) {
-                    query = supabase
+                if (use_ist === 'true' && (!data || data.length === 0)) {
+                    query = adminSupabase
                         .from('calendar_events')
                         .select(`
                             *,
@@ -914,14 +942,22 @@ router.get('/events/teacher',
 
                 // Post-process to filter by status if using IST functions
                 let filteredEvents = data || [];
-                if (use_ist === 'true') {
+                if (use_ist === 'true' && show_all === 'true') {
+                    filteredEvents = data || [];
+                } else if (use_ist === 'true') {
                     // Teachers should see approved events and their own pending events
                     filteredEvents = filteredEvents.filter(event => {
                         if (!event) return false;
-                        if (event.status === 'approved') return true;
-                        return event.status === 'pending' && event.created_by === req.user.id;
+                        const typeNorm = (event.event_type || '').toString().trim().toLowerCase();
+                        if (typeNorm === 'school_wide') return true;
+                        const statusNorm = (event.status || '').toString().trim().toLowerCase();
+                        const isApproved = statusNorm === 'approved' || !!event.approved_by || !!event.approved_at;
+                        if (isApproved) return true;
+                        return statusNorm === 'pending' && event.created_by === req.user.id;
                     });
                 }
+                if (debugInfo) debugInfo.after_status_filter_count = filteredEvents.length;
+                if (debugInfo) debugInfo.show_all = show_all === 'true';
 
                 // Add class division name to events
                 const processedEvents = filteredEvents.map(event => {
@@ -953,18 +989,8 @@ router.get('/events/teacher',
             let query;
 
             if (use_ist === 'true') {
-                // Use the custom function for IST timezone with teacher-specific filtering
-                query = supabase.rpc('get_teacher_events_with_ist', {
-                    p_start_date: start_date,
-                    p_end_date: end_date,
-                    p_event_category: event_category,
-                    p_event_type: event_type,
-                    p_class_division_id: class_division_id,
-                    p_class_division_ids: classDivisionIds
-                });
-            } else {
-                // Use regular query with teacher-specific filtering
-                query = supabase
+                // Use admin query with teacher-specific filtering (avoid RPC)
+                query = adminSupabase
                     .from('calendar_events')
                     .select(`
                         *,
@@ -982,8 +1008,60 @@ router.get('/events/teacher',
                 if (classDivisionIds.length > 0) {
                     // Single class events
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
-                    // Multi-class events - overlap with any of the teacher's classes
+                    // Multi-class events - overlap with any of the teacher's classes (both columns)
                     conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
+                    conditions.push(`class_divisions.ov.{${classDivisionIds.join(',')}}`);
+                }
+                query = query.or(conditions.join(','));
+
+                // Apply filters
+                if (start_date) {
+                    query = query.gte('event_date', start_date);
+                }
+                if (end_date) {
+                    query = query.lte('event_date', end_date);
+                }
+                if (event_category) {
+                    query = query.eq('event_category', event_category);
+                }
+                if (event_type) {
+                    query = query.eq('event_type', event_type);
+                }
+                if (class_division_id) {
+                    // Verify teacher is assigned to this specific class
+                    if (!classDivisionIds.includes(class_division_id)) {
+                        return res.status(403).json({
+                            status: 'error',
+                            message: 'You are not assigned to this class'
+                        });
+                    }
+                    query = query.eq('class_division_id', class_division_id);
+                }
+
+                query = query.order('event_date', { ascending: true });
+            } else {
+                // Use regular query with teacher-specific filtering
+                query = adminSupabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by (id, full_name, role),
+                        class:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `);
+
+                // Build the OR condition for teacher's assigned classes + school-wide events
+                const conditions = ['event_type.eq.school_wide'];
+                if (classDivisionIds.length > 0) {
+                    // Single class events
+                    conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
+                    // Multi-class events - overlap with any of the teacher's classes (both columns)
+                    conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
+                    conditions.push(`class_divisions.ov.{${classDivisionIds.join(',')}}`);
                 }
                 query = query.or(conditions.join(','));
 
@@ -1015,10 +1093,42 @@ router.get('/events/teacher',
             }
 
             let { data, error } = await query;
+            if (debugInfo) debugInfo.rpc_or_query_count_initial = Array.isArray(data) ? data.length : (data ? 1 : 0);
+
+            // Ensure school-wide events are always included for IST path
+            if (use_ist === 'true') {
+                try {
+                    let swQuery = adminSupabase
+                        .from('calendar_events')
+                        .select(`
+                            *,
+                            creator:created_by (id, full_name, role),
+                            class:class_division_id (
+                                id,
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name)
+                            )
+                        `)
+                        .eq('event_type', 'school_wide');
+                    if (start_date) swQuery = swQuery.gte('event_date', start_date);
+                    if (end_date) swQuery = swQuery.lte('event_date', end_date);
+                    if (event_category) swQuery = swQuery.eq('event_category', event_category);
+                    swQuery = swQuery.order('event_date', { ascending: true });
+                    const swRes = await swQuery;
+                    if (debugInfo) debugInfo.school_wide_merge_count = Array.isArray(swRes.data) ? swRes.data.length : 0;
+                    const existingIds = new Set((data || []).map(ev => ev.id));
+                    const extra = (swRes.data || []).filter(ev => !existingIds.has(ev.id));
+                    data = [...(data || []), ...extra];
+                    if (debugInfo) debugInfo.after_school_wide_merge_count = data.length;
+                    // clear error so fallback won't override merged data
+                    error = null;
+                } catch (_) { }
+            }
 
             // Fallback: if IST RPC errors or returns no data, try standard query with OR conditions
-            if (use_ist === 'true' && (error || !data || data.length === 0)) {
-                query = supabase
+            if (use_ist === 'true' && (!data || data.length === 0)) {
+                query = adminSupabase
                     .from('calendar_events')
                     .select(`
                         *,
@@ -1035,6 +1145,7 @@ router.get('/events/teacher',
                 if (classDivisionIds.length > 0) {
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
                     conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
+                    conditions.push(`class_divisions.ov.{${classDivisionIds.join(',')}}`);
                 }
                 query = query.or(conditions.join(','));
 
@@ -1056,24 +1167,37 @@ router.get('/events/teacher',
                 const fallback = await query;
                 data = fallback.data || [];
                 error = fallback.error;
+                if (debugInfo) debugInfo.fallback_count = data.length;
             }
 
             // Post-process to filter by status if using IST functions
             let filteredEvents = data || [];
-            if (use_ist === 'true') {
+            if (use_ist === 'true' && show_all === 'true') {
+                filteredEvents = data || [];
+            } else if (use_ist === 'true') {
                 // Teachers should see approved events and their own pending events
                 filteredEvents = filteredEvents.filter(event => {
                     if (!event) return false;
-                    if (event.status === 'approved') return true;
-                    return event.status === 'pending' && event.created_by === req.user.id;
+                    const typeNorm = (event.event_type || '').toString().trim().toLowerCase();
+                    if (typeNorm === 'school_wide') return true;
+                    const statusNorm = (event.status || '').toString().trim().toLowerCase();
+                    const isApproved = statusNorm === 'approved' || !!event.approved_by || !!event.approved_at;
+                    if (isApproved) return true;
+                    return statusNorm === 'pending' && event.created_by === req.user.id;
                 });
             }
+            if (debugInfo) debugInfo.after_status_filter_count = filteredEvents.length;
+            if (debugInfo) debugInfo.show_all = show_all === 'true';
+
+            // Choose base events for mapping (bypass filters when show_all=true)
+            const baseEvents = (use_ist === 'true' && show_all === 'true') ? (data || []) : filteredEvents;
+            if (debugInfo) debugInfo.base_events_count = Array.isArray(baseEvents) ? baseEvents.length : 0;
 
             // Add class division name(s) to events
             let classIdToName = {};
             try {
                 let allClassIds = new Set();
-                for (const ev of filteredEvents) {
+                for (const ev of baseEvents) {
                     if (ev && ev.class_divisions) {
                         let ids = [];
                         if (typeof ev.class_divisions === 'string') {
@@ -1102,7 +1226,7 @@ router.get('/events/teacher',
                 }
             } catch (_) { }
 
-            const processedEvents = filteredEvents.map(event => {
+            const processedEvents = baseEvents.map(event => {
                 let classDivisionName = null;
                 let classDivisionNames = null;
                 let eventClassDivisions = [];
@@ -1134,7 +1258,7 @@ router.get('/events/teacher',
                 };
             });
 
-            res.json({
+            const responsePayload = {
                 status: 'success',
                 data: {
                     events: processedEvents,
@@ -1146,7 +1270,13 @@ router.get('/events/teacher',
                         class_info: assignment.class_divisions
                     }))
                 }
-            });
+            };
+            if (debugInfo) {
+                console.log('Teacher events debug:', debugInfo);
+                res.json(responsePayload);
+            } else {
+                res.json(responsePayload);
+            }
         } catch (error) {
             next(error);
         }
