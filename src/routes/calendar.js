@@ -915,7 +915,12 @@ router.get('/events/teacher',
                 // Post-process to filter by status if using IST functions
                 let filteredEvents = data || [];
                 if (use_ist === 'true') {
-                    filteredEvents = filteredEvents.filter(event => event.status === 'approved');
+                    // Teachers should see approved events and their own pending events
+                    filteredEvents = filteredEvents.filter(event => {
+                        if (!event) return false;
+                        if (event.status === 'approved') return true;
+                        return event.status === 'pending' && event.created_by === req.user.id;
+                    });
                 }
 
                 // Add class division name to events
@@ -977,8 +982,8 @@ router.get('/events/teacher',
                 if (classDivisionIds.length > 0) {
                     // Single class events
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
-                    // Multi-class events - check if any of the classes match teacher's assignments
-                    conditions.push(`class_division_ids.cs.{${classDivisionIds.join(',')}}`);
+                    // Multi-class events - overlap with any of the teacher's classes
+                    conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
                 }
                 query = query.or(conditions.join(','));
 
@@ -1029,7 +1034,7 @@ router.get('/events/teacher',
                 const conditions = ['event_type.eq.school_wide'];
                 if (classDivisionIds.length > 0) {
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
-                    conditions.push(`class_division_ids.cs.{${classDivisionIds.join(',')}}`);
+                    conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
                 }
                 query = query.or(conditions.join(','));
 
@@ -1056,7 +1061,12 @@ router.get('/events/teacher',
             // Post-process to filter by status if using IST functions
             let filteredEvents = data || [];
             if (use_ist === 'true') {
-                filteredEvents = filteredEvents.filter(event => event.status === 'approved');
+                // Teachers should see approved events and their own pending events
+                filteredEvents = filteredEvents.filter(event => {
+                    if (!event) return false;
+                    if (event.status === 'approved') return true;
+                    return event.status === 'pending' && event.created_by === req.user.id;
+                });
             }
 
             // Add class division name(s) to events

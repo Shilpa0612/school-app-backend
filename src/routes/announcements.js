@@ -358,9 +358,38 @@ router.get('/:id',
                 }
             }
 
+            // Enrich with class division names for target_classes
+            let targetClassNames = [];
+            let targetClassesDetailed = [];
+            try {
+                const targetClassIds = Array.isArray(announcement.target_classes) ? announcement.target_classes : [];
+                if (targetClassIds.length > 0) {
+                    const { data: classesLookup } = await adminSupabase
+                        .from('class_divisions')
+                        .select('id, division, class_level:class_level_id (name)')
+                        .in('id', targetClassIds);
+
+                    if (Array.isArray(classesLookup)) {
+                        targetClassesDetailed = classesLookup
+                            .filter(cd => cd && cd.id && cd.class_level && cd.class_level.name && cd.division)
+                            .map(cd => ({
+                                id: cd.id,
+                                name: `${cd.class_level.name} ${cd.division}`
+                            }));
+                        targetClassNames = targetClassesDetailed.map(c => c.name);
+                    }
+                }
+            } catch (_) { }
+
             res.json({
                 status: 'success',
-                data: { announcement }
+                data: {
+                    announcement: {
+                        ...announcement,
+                        target_class_names: targetClassNames,
+                        target_classes_detailed: targetClassesDetailed
+                    }
+                }
             });
 
         } catch (error) {
