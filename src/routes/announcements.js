@@ -1305,7 +1305,8 @@ router.get('/teacher/announcements',
                 publish_at_from,
                 publish_at_to,
                 class_division_id,
-                subject_name
+                subject_name,
+                class_only = 'false'
             } = req.query;
 
             // Validate and parse parameters
@@ -1379,21 +1380,63 @@ router.get('/teacher/announcements',
                 .eq('status', 'approved')
                 .eq('is_published', true);
 
-            // Combine all visibility conditions into a single OR group to avoid AND-ing multiple ORs
-            const visibilityConditions = [
-                'target_roles.cs.{teacher}',
-                'target_roles.eq.{}'
-            ];
-
-            if (teacherClassDivisions.length > 0) {
-                visibilityConditions.push(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
+            // Visibility conditions
+            let visibilityConditions;
+            if (class_only === 'true') {
+                // Restrict strictly to announcements targeted to teacher's classes
+                visibilityConditions = [];
+                if (teacherClassDivisions.length > 0) {
+                    visibilityConditions.push(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
+                    query = query.or(visibilityConditions.join(','));
+                } else {
+                    // No class assignments → no class-only announcements
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            announcements: [],
+                            teacher_info: {
+                                id: teacherId,
+                                subjects: teacherSubjects,
+                                class_divisions: teacherClassDivisions,
+                                total_subjects: teacherSubjects.length,
+                                total_class_divisions: teacherClassDivisions.length
+                            },
+                            pagination: {
+                                page: pageNum,
+                                limit: limitNum,
+                                total: 0,
+                                total_pages: 0,
+                                has_next: false,
+                                has_prev: pageNum > 1
+                            },
+                            filters: {
+                                subject_filter,
+                                announcement_type,
+                                priority,
+                                unread_only,
+                                publish_at_from,
+                                publish_at_to,
+                                class_division_id,
+                                subject_name,
+                                class_only
+                            }
+                        }
+                    });
+                }
+            } else {
+                // Default: teachers see teacher-wide, empty roles, class/subject targeted
+                visibilityConditions = [
+                    'target_roles.cs.{teacher}',
+                    'target_roles.eq.{}'
+                ];
+                if (teacherClassDivisions.length > 0) {
+                    visibilityConditions.push(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
+                }
+                if (subject_filter === 'true' && teacherSubjects.length > 0) {
+                    visibilityConditions.push(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
+                }
+                query = query.or(visibilityConditions.join(','));
             }
-
-            if (subject_filter === 'true' && teacherSubjects.length > 0) {
-                visibilityConditions.push(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
-            }
-
-            query = query.or(visibilityConditions.join(','));
 
             // Apply additional filters
             if (announcement_type) {
@@ -1517,7 +1560,8 @@ router.get('/teacher/announcements',
                         publish_at_from,
                         publish_at_to,
                         class_division_id,
-                        subject_name
+                        subject_name,
+                        class_only
                     }
                 }
             });
