@@ -1955,6 +1955,32 @@ router.get('/years/:id',
     }
 );
 
+// Ensure this fixed route is registered BEFORE the param route to avoid '/years/active' being captured by '/years/:id'
+router.get('/years/active',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { data, error } = await adminSupabase
+                .from('academic_years')
+                .select('*')
+                .eq('is_active', true)
+                .single();
+
+            if (error) {
+                logger.error('Error fetching active academic year:', error);
+                throw error;
+            }
+
+            res.json({
+                status: 'success',
+                data: { academic_year: data }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Get active academic year
 router.get('/years/active',
     authenticate,
