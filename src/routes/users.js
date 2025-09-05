@@ -2617,7 +2617,7 @@ router.get('/principal/chats',
 
 router.get('/division/:class_division_id/parents',
     authenticate,
-    authorize(['teacher']),
+    authorize(['teacher', 'admin', 'principal']),
     async (req, res, next) => {
         try {
             const { class_division_id } = req.params;
@@ -2638,7 +2638,8 @@ router.get('/division/:class_division_id/parents',
             }
 
             // Verify teacher has access to this division (either as class teacher or subject teacher)
-            let hasAccess = false;
+            // Admin and Principal always have access
+            let hasAccess = (req.user.role === 'admin' || req.user.role === 'principal');
 
             console.log('Checking teacher access for division:', {
                 teacher_id: teacherId,
@@ -2646,12 +2647,18 @@ router.get('/division/:class_division_id/parents',
                 step: 'starting access check'
             });
 
-            // Debug: Check all assignments for this teacher
-            const { data: allTeacherAssignments, error: allAssignmentsError } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select('*')
-                .eq('teacher_id', teacherId)
-                .eq('is_active', true);
+            // Debug: Check all assignments for this teacher (skip if admin/principal)
+            let allTeacherAssignments = null;
+            let allAssignmentsError = null;
+            if (!hasAccess) {
+                const result = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('*')
+                    .eq('teacher_id', teacherId)
+                    .eq('is_active', true);
+                allTeacherAssignments = result.data;
+                allAssignmentsError = result.error;
+            }
 
             console.log('All teacher assignments found:', {
                 teacher_id: teacherId,
