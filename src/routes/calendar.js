@@ -291,7 +291,8 @@ router.get('/events',
                 class_division_id,
                 use_ist = 'true',
                 debug = 'false',
-                show_all = 'false'
+                show_all = 'false',
+                status
             } = req.query;
 
             console.log('Calendar events request:', {
@@ -569,8 +570,20 @@ router.get('/events/parent',
                 end_date,
                 event_category,
                 student_id, // New filter for specific student
-                use_ist = 'true'
+                use_ist = 'true',
+                debug = 'false',
+                show_all = 'false'
             } = req.query;
+
+            const debugInfo = debug === 'true' ? {
+                parent_id: req.user.id,
+                use_ist: use_ist === 'true',
+                show_all: show_all === 'true',
+                start_date: start_date || null,
+                end_date: end_date || null,
+                event_category: event_category || null,
+                student_id: student_id || null
+            } : null;
 
             // Verify user is a parent
             if (req.user.role !== 'parent') {
@@ -581,7 +594,7 @@ router.get('/events/parent',
             }
 
             // First, get all student IDs for this parent with student details
-            const { data: parentMappings, error: mappingsError } = await supabase
+            const { data: parentMappings, error: mappingsError } = await adminSupabase
                 .from('parent_student_mappings')
                 .select(`
                     student_id,
@@ -614,7 +627,7 @@ router.get('/events/parent',
             let classDivisionIds = [];
 
             if (studentIds.length > 0) {
-                const { data: childClassesData, error: childClassesError } = await supabase
+                const { data: childClassesData, error: childClassesError } = await adminSupabase
                     .from('student_academic_records')
                     .select(`
                         student_id,
@@ -634,6 +647,7 @@ router.get('/events/parent',
 
                 childClasses = childClassesData || [];
                 classDivisionIds = childClasses?.map(record => record.class_division_id) || [];
+                if (debugInfo) debugInfo.class_division_ids = classDivisionIds;
             }
 
             let query;
@@ -672,7 +686,7 @@ router.get('/events/parent',
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
 
                     // Multi-class events - check if any of the classes match parent's children
-                    conditions.push(`class_division_ids.cs.{${classDivisionIds.join(',')}}`);
+                    conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
 
                     query = query.or(conditions.join(','));
                 } else {
@@ -694,7 +708,99 @@ router.get('/events/parent',
                 query = query.order('event_date', { ascending: true });
             }
 
-            const { data, error } = await query;
+            let { data, error } = await query;
+
+            if (debugInfo) debugInfo.rpc_or_query_count_initial = Array.isArray(data) ? data.length : (data ? 1 : 0);
+
+            // Ensure relevant class-specific events are included for IST path by merging from standard query
+            if (use_ist === 'true' && Array.isArray(classDivisionIds) && classDivisionIds.length > 0) {
+                // Query single-class events by class_division_id
+                let singleClassQuery = adminSupabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by (id, full_name, role),
+                        approver:approved_by (id, full_name, role),
+                        class:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `)
+                    .eq('event_type', 'class_specific')
+                    .in('class_division_id', classDivisionIds);
+                if (start_date) singleClassQuery = singleClassQuery.gte('event_date', start_date);
+                if (end_date) singleClassQuery = singleClassQuery.lte('event_date', end_date);
+                if (event_category) singleClassQuery = singleClassQuery.eq('event_category', event_category);
+                singleClassQuery = singleClassQuery.order('event_date', { ascending: true });
+
+                // Query multi-class events and filter client-side for overlap
+                let multiClassQuery = adminSupabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by (id, full_name, role),
+                        approver:approved_by (id, full_name, role),
+                        class:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `)
+                    .eq('event_type', 'class_specific')
+                    .eq('is_multi_class', true);
+                if (start_date) multiClassQuery = multiClassQuery.gte('event_date', start_date);
+                if (end_date) multiClassQuery = multiClassQuery.lte('event_date', end_date);
+                if (event_category) multiClassQuery = multiClassQuery.eq('event_category', event_category);
+                multiClassQuery = multiClassQuery.order('event_date', { ascending: true });
+
+                const singleRes = await singleClassQuery;
+                const multiRes = await multiClassQuery;
+
+                const childIdSet = new Set(classDivisionIds);
+                const multiFiltered = (multiRes.data || []).filter(ev => {
+                    let ids = [];
+                    if (Array.isArray(ev.class_division_ids)) {
+                        ids = ev.class_division_ids;
+                    } else if (ev.class_divisions) {
+                        if (typeof ev.class_divisions === 'string') {
+                            try { ids = JSON.parse(ev.class_divisions); } catch (_) { ids = []; }
+                        } else if (Array.isArray(ev.class_divisions)) {
+                            ids = ev.class_divisions;
+                        }
+                    }
+                    return ids.some(id => childIdSet.has(id));
+                });
+
+                if (debugInfo) debugInfo.class_specific_single_class_count = Array.isArray(singleRes.data) ? singleRes.data.length : 0;
+                if (debugInfo) debugInfo.class_specific_multi_candidates = Array.isArray(multiRes.data) ? multiRes.data.length : 0;
+                if (debugInfo) debugInfo.class_specific_multi_filtered = multiFiltered.length;
+
+                // Enrich/merge: prefer admin records for class-specific fields
+                const byId = new Map();
+                (data || []).forEach(ev => { if (ev && ev.id) byId.set(ev.id, ev); });
+                const toMerge = [
+                    ...((singleRes.data || [])),
+                    ...multiFiltered
+                ];
+                let mergedNew = 0;
+                for (const ev of toMerge) {
+                    if (!ev || !ev.id) continue;
+                    if (byId.has(ev.id)) {
+                        const existing = byId.get(ev.id);
+                        byId.set(ev.id, { ...existing, ...ev });
+                    } else {
+                        byId.set(ev.id, ev);
+                        mergedNew++;
+                    }
+                }
+                if (debugInfo) debugInfo.class_specific_merge_count = mergedNew;
+                data = Array.from(byId.values());
+                if (debugInfo) debugInfo.after_class_specific_merge_count = data.length;
+                error = null;
+            }
 
             if (error) throw error;
 
@@ -703,19 +809,32 @@ router.get('/events/parent',
             if (use_ist === 'true' && show_all === 'true') {
                 filteredEvents = data || [];
             } else if (use_ist === 'true') {
-                // Teachers should see approved events and their own pending events
+                // Parents only see approved (school-wide always passes)
                 filteredEvents = filteredEvents.filter(event => {
                     if (!event) return false;
                     const typeNorm = (event.event_type || '').toString().trim().toLowerCase();
                     if (typeNorm === 'school_wide') return true;
                     const statusNorm = (event.status || '').toString().trim().toLowerCase();
                     const isApproved = statusNorm === 'approved' || !!event.approved_by || !!event.approved_at;
-                    if (isApproved) return true;
-                    return statusNorm === 'pending' && event.created_by === req.user.id;
+                    return isApproved;
                 });
             }
+            // Separate school-wide vs class-specific
+            const schoolWideEvents = (filteredEvents || []).filter(event => {
+                const typeNorm = (event?.event_type || '').toString().trim().toLowerCase();
+                return typeNorm === 'school_wide';
+            }).map(event => ({
+                ...event,
+                class_division_name: 'All Classes'
+            }));
+            const nonSchoolWideEvents = (filteredEvents || []).filter(event => {
+                const typeNorm = (event?.event_type || '').toString().trim().toLowerCase();
+                return typeNorm !== 'school_wide';
+            });
             if (debugInfo) debugInfo.after_status_filter_count = filteredEvents.length;
             if (debugInfo) debugInfo.show_all = show_all === 'true';
+            if (debugInfo) debugInfo.school_wide_count = schoolWideEvents.length;
+            if (debugInfo) debugInfo.class_specific_count = nonSchoolWideEvents.length;
 
             // Group events by student and add student information
             const eventsByStudent = [];
@@ -725,8 +844,8 @@ router.get('/events/parent',
                 const studentRecord = childClasses.find(record => record.student_id === mapping.student_id);
 
                 // Find events relevant to this student's class
-                const studentEvents = filteredEvents.filter(event => {
-                    if (event.event_type === 'school_wide') return true;
+                const studentEvents = nonSchoolWideEvents.filter(event => {
+                    // only class-specific events relevant to this student's class
                     if (event.event_type === 'class_specific') {
                         if (event.class_division_id && studentRecord?.class_division_id === event.class_division_id) return true;
                         if (event.class_division_ids && event.class_division_ids.includes(studentRecord?.class_division_id)) return true;
@@ -783,17 +902,21 @@ router.get('/events/parent',
             eventsByStudent.sort((a, b) => a.student_name.localeCompare(b.student_name));
 
             // Calculate summary statistics
-            const totalEvents = eventsByStudent.reduce((sum, student) => sum + student.total_events, 0);
+            const classSpecificEventsTotal = eventsByStudent.reduce((sum, student) => sum + student.total_events, 0);
+            const totalEvents = classSpecificEventsTotal + schoolWideEvents.length;
             const studentsWithEvents = eventsByStudent.filter(student => student.total_events > 0).length;
             const studentsWithoutEvents = eventsByStudent.filter(student => student.total_events === 0).length;
 
             res.json({
                 status: 'success',
                 data: {
+                    school_wide_events: schoolWideEvents,
                     events_by_student: eventsByStudent,
                     summary: {
                         total_students: eventsByStudent.length,
                         total_events: totalEvents,
+                        school_wide_events: schoolWideEvents.length,
+                        class_specific_events: classSpecificEventsTotal,
                         students_with_events: studentsWithEvents,
                         students_without_events: studentsWithoutEvents,
                         filtered_by_student: !!student_id
@@ -805,7 +928,8 @@ router.get('/events/parent',
                         student_id: student_id || null,
                         use_ist: use_ist === 'true'
                     }
-                }
+                },
+                ...(debugInfo ? { debug: debugInfo } : {})
             });
         } catch (error) {
             next(error);
