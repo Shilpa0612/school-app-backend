@@ -1920,6 +1920,41 @@ router.get('/years',
     }
 );
 
+// Get active academic year (must be placed BEFORE the param route below)
+router.get('/years/active',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            const { data, error } = await adminSupabase
+                .from('academic_years')
+                .select('*')
+                .eq('is_active', true)
+                .single();
+
+            // If no active year, return a clear, friendly response instead of an error
+            if (error && error.code === 'PGRST116') {
+                return res.json({
+                    status: 'success',
+                    message: 'No active academic year set',
+                    data: { academic_year: null }
+                });
+            }
+
+            if (error) {
+                logger.error('Error fetching active academic year:', error);
+                throw error;
+            }
+
+            res.json({
+                status: 'success',
+                data: { academic_year: data }
+            });
+        } catch (error) {
+            next(error);
+        }
+    }
+);
+
 // Get academic year by ID
 router.get('/years/:id',
     authenticate,
@@ -1955,57 +1990,9 @@ router.get('/years/:id',
     }
 );
 
-// Ensure this fixed route is registered BEFORE the param route to avoid '/years/active' being captured by '/years/:id'
-router.get('/years/active',
-    authenticate,
-    async (req, res, next) => {
-        try {
-            const { data, error } = await adminSupabase
-                .from('academic_years')
-                .select('*')
-                .eq('is_active', true)
-                .single();
+// (active route defined above)
 
-            if (error) {
-                logger.error('Error fetching active academic year:', error);
-                throw error;
-            }
-
-            res.json({
-                status: 'success',
-                data: { academic_year: data }
-            });
-        } catch (error) {
-            next(error);
-        }
-    }
-);
-
-// Get active academic year
-router.get('/years/active',
-    authenticate,
-    async (req, res, next) => {
-        try {
-            const { data, error } = await adminSupabase
-                .from('academic_years')
-                .select('*')
-                .eq('is_active', true)
-                .single();
-
-            if (error) {
-                logger.error('Error fetching active academic year:', error);
-                throw error;
-            }
-
-            res.json({
-                status: 'success',
-                data: { academic_year: data }
-            });
-        } catch (error) {
-            next(error);
-        }
-    }
-);
+// (Removed duplicate '/years/active' route below to avoid conflicts)
 
 // Update academic year
 router.put('/years/:id',
@@ -3174,33 +3161,46 @@ router.delete('/class-levels/:id',
                 });
             }
 
-            // Check if any class divisions under this level have students
-            const { data: classDivisionsWithStudents, error: studentsError } = await adminSupabase
+            // Check if any class divisions under this level have students (via student_academic_records)
+            const { data: divisionsForLevel, error: divisionsForLevelError } = await adminSupabase
                 .from('class_divisions')
-                .select(`
-                    id,
-                    division,
-                    students!inner(id)
-                `)
+                .select('id, division')
                 .eq('class_level_id', classLevelId);
 
-            if (studentsError) {
-                logger.error('Error checking students in class divisions:', studentsError);
-                throw studentsError;
+            if (divisionsForLevelError) {
+                logger.error('Error fetching class divisions for level when checking students:', divisionsForLevelError);
+                throw divisionsForLevelError;
             }
 
-            if (classDivisionsWithStudents && classDivisionsWithStudents.length > 0) {
-                const divisionsWithStudents = classDivisionsWithStudents.map(cd => cd.division);
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Cannot delete class level because it has class divisions with enrolled students',
-                    data: {
-                        class_level_id: classLevelId,
-                        class_level_name: classLevel.name,
-                        divisions_with_students: divisionsWithStudents,
-                        total_divisions_with_students: divisionsWithStudents.length
-                    }
-                });
+            if (divisionsForLevel && divisionsForLevel.length > 0) {
+                const classDivisionIdsForLevel = divisionsForLevel.map(d => d.id);
+                const { data: sarForDivisions, error: sarError } = await adminSupabase
+                    .from('student_academic_records')
+                    .select('class_division_id')
+                    .in('class_division_id', classDivisionIdsForLevel)
+                    .eq('status', 'ongoing');
+
+                if (sarError) {
+                    logger.error('Error checking students in class divisions:', sarError);
+                    throw sarError;
+                }
+
+                if (sarForDivisions && sarForDivisions.length > 0) {
+                    const divisionIdsWithStudents = new Set(sarForDivisions.map(r => r.class_division_id));
+                    const divisionsWithStudents = divisionsForLevel
+                        .filter(d => divisionIdsWithStudents.has(d.id))
+                        .map(d => d.division);
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Cannot delete class level because one or more class divisions have enrolled students',
+                        data: {
+                            class_level_id: classLevelId,
+                            class_level_name: classLevel.name,
+                            divisions_with_students: divisionsWithStudents,
+                            total_divisions_with_students: divisionsWithStudents.length
+                        }
+                    });
+                }
             }
 
             // Check if there are any class divisions under this level (even without students)
@@ -3283,29 +3283,31 @@ router.delete('/class-divisions/:id',
                 });
             }
 
-            // Check if this class division has any enrolled students
-            const { data: students, error: studentsError } = await adminSupabase
-                .from('students')
-                .select('id, first_name, last_name')
-                .eq('class_division_id', classDivisionId);
+            // Check if this class division has any enrolled students (via student_academic_records)
+            const { data: enrolledRecords, error: enrolledError } = await adminSupabase
+                .from('student_academic_records')
+                .select(`
+                    student_id,
+                    student:student_id (id, first_name, last_name)
+                `)
+                .eq('class_division_id', classDivisionId)
+                .eq('status', 'ongoing');
 
-            if (studentsError) {
-                logger.error('Error checking students in class division:', studentsError);
-                throw studentsError;
+            if (enrolledError) {
+                logger.error('Error checking enrolled students in class division:', enrolledError);
+                throw enrolledError;
             }
 
-            if (students && students.length > 0) {
-                return res.status(400).json({
+            if (enrolledRecords && enrolledRecords.length > 0) {
+                const students = enrolledRecords.map(r => r.student).filter(Boolean);
+                return res.status(500).json({
                     status: 'error',
                     message: 'Cannot delete class division because it has enrolled students',
                     data: {
                         class_division_id: classDivisionId,
                         class_name: `${classDivision.class_levels.name} ${classDivision.division}`,
                         enrolled_students_count: students.length,
-                        students: students.map(s => ({
-                            id: s.id,
-                            name: `${s.first_name} ${s.last_name}`
-                        }))
+                        students: students.map(s => ({ id: s.id, name: `${s.first_name} ${s.last_name}` }))
                     }
                 });
             }
