@@ -428,10 +428,25 @@ router.get('/',
                 console.log('🔍 DEBUG - No results found');
             }
 
+            // Enrich attachments with accessible URLs/endpoints
+            const homeworkWithUrls = (data || []).map(hw => ({
+                ...hw,
+                attachments: (hw.attachments || []).map(att => {
+                    const { data: { publicUrl } } = adminSupabase.storage
+                        .from('homework-attachments')
+                        .getPublicUrl(att.storage_path);
+                    return {
+                        ...att,
+                        download_url: publicUrl,
+                        download_endpoint: `/api/homework/${hw.id}/attachments/${att.id}`
+                    };
+                })
+            }));
+
             res.json({
                 status: 'success',
                 data: {
-                    homework: data,
+                    homework: homeworkWithUrls,
                     pagination: {
                         page,
                         limit,
@@ -475,9 +490,23 @@ router.get('/:id',
 
             if (error) throw error;
 
+            // Enrich attachments with accessible URLs/endpoints
+            const attachmentsWithUrls = (data.attachments || []).map(att => {
+                const { data: { publicUrl } } = adminSupabase.storage
+                    .from('homework-attachments')
+                    .getPublicUrl(att.storage_path);
+                return {
+                    ...att,
+                    download_url: publicUrl,
+                    download_endpoint: `/api/homework/${id}/attachments/${att.id}`
+                };
+            });
+
+            const homeworkWithUrls = { ...data, attachments: attachmentsWithUrls };
+
             res.json({
                 status: 'success',
-                data: { homework: data }
+                data: { homework: homeworkWithUrls }
             });
         } catch (error) {
             next(error);
