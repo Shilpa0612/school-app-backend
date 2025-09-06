@@ -293,7 +293,7 @@ router.get('/',
 // GET SINGLE ANNOUNCEMENT
 // ============================================================================
 
-router.get('/:id',
+router.get('/:id([0-9a-fA-F-]{36})',
     authenticate,
     async (req, res, next) => {
         try {
@@ -820,9 +820,57 @@ router.get('/my-announcements',
                 `)
                 .eq('status', 'approved')
                 .eq('is_published', true)
-                .or(`target_roles.cs.{${userRole}},target_roles.eq.{}`)
                 .order('priority', { ascending: false })
                 .order('created_at', { ascending: false });
+
+            // Role-based class filtering (applied at SQL level for correct pagination)
+            let allowedClassIds = [];
+            if (userRole === 'parent') {
+                const { data: childrenClasses } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        student_academic_records (
+                            class_division_id
+                        )
+                    `)
+                    .eq('parent_id', userId);
+                allowedClassIds = (childrenClasses || [])
+                    .flatMap(mapping => mapping.student_academic_records || [])
+                    .map(rec => rec.class_division_id)
+                    .filter(Boolean);
+            } else if (userRole === 'teacher') {
+                const [{ data: teacherAssignments }, { data: classTeacherDivisions }] = await Promise.all([
+                    adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('class_division_id')
+                        .eq('teacher_id', userId)
+                        .eq('is_active', true),
+                    adminSupabase
+                        .from('class_divisions')
+                        .select('id')
+                        .eq('teacher_id', userId)
+                ]);
+
+                allowedClassIds = [
+                    ...((teacherAssignments || []).map(t => t.class_division_id) || []),
+                    ...((classTeacherDivisions || []).map(c => c.id) || [])
+                ].filter(Boolean);
+            }
+
+            // Build combined OR with role and class conditions to avoid overriding .or
+            const roleClause = `target_roles.cs.{${userRole}}`;
+            const emptyRoleClause = 'target_roles.eq.{}';
+            const classClause = (allowedClassIds.length > 0)
+                ? `or(target_classes.ov.{${allowedClassIds.join(',')}},target_classes.eq.{})`
+                : 'target_classes.eq.{}';
+
+            if (userRole === 'teacher') {
+                // Teachers: only class-targeted (overlap) or school-wide
+                query = query.or(`${classClause}`);
+            } else {
+                // Parents must match role (or empty) AND class (or school-wide)
+                query = query.or(`and(${roleClause},${classClause}),and(${emptyRoleClause},${classClause})`);
+            }
 
             // Apply additional filters
             if (announcement_type) {
@@ -855,13 +903,35 @@ router.get('/my-announcements',
                 query = query.lt('publish_at', published_before);
             }
 
-            // Get total count
-            const { count: totalCount, error: countError } = await adminSupabase
+            // Get total count (apply the same role filters for correctness)
+            let countQueryBuilder = adminSupabase
                 .from('announcements')
                 .select('*', { count: 'exact', head: true })
                 .eq('status', 'approved')
-                .eq('is_published', true)
-                .or(`target_roles.cs.{${userRole}},target_roles.eq.{}`);
+                .eq('is_published', true);
+
+            const countClassClause = (allowedClassIds.length > 0)
+                ? `or(target_classes.ov.{${allowedClassIds.join(',')}},target_classes.eq.{})`
+                : 'target_classes.eq.{}';
+            if (userRole === 'teacher') {
+                // Teachers: only class-targeted (overlap) or school-wide
+                countQueryBuilder = countQueryBuilder.or(`${countClassClause}`);
+            } else {
+                countQueryBuilder = countQueryBuilder.or(`and(${roleClause},${countClassClause}),and(${emptyRoleClause},${countClassClause})`);
+            }
+
+            // Apply the same extra filters to count query
+            if (announcement_type) countQueryBuilder = countQueryBuilder.eq('announcement_type', announcement_type);
+            if (priority) countQueryBuilder = countQueryBuilder.eq('priority', priority);
+            if (is_featured !== undefined) countQueryBuilder = countQueryBuilder.eq('is_featured', is_featured === 'true');
+            if (start_date) countQueryBuilder = countQueryBuilder.gte('created_at', start_date);
+            if (end_date) countQueryBuilder = countQueryBuilder.lte('created_at', end_date);
+            if (created_after) countQueryBuilder = countQueryBuilder.gt('created_at', created_after);
+            if (created_before) countQueryBuilder = countQueryBuilder.lt('created_at', created_before);
+            if (published_after) countQueryBuilder = countQueryBuilder.gt('publish_at', published_after);
+            if (published_before) countQueryBuilder = countQueryBuilder.lt('publish_at', published_before);
+
+            const { count: totalCount, error: countError } = await countQueryBuilder;
 
             if (countError) {
                 logger.error('Error getting targeted announcement count:', countError);
@@ -1805,17 +1875,16 @@ router.get('/parent/children',
 
             // Build the OR condition for announcements relevant to parent's children
             if (classDivisionIds.length > 0) {
-                // Include school-wide announcements, class-specific announcements, and role-based announcements
+                // Include only school-wide announcements and class-specific announcements for the child's classes
                 const conditions = [
-                    'target_roles.cs.{parent}',
-                    'target_roles.eq.{}',
-                    `target_classes.ov.{${classDivisionIds.join(',')}}`
+                    `target_classes.ov.{${classDivisionIds.join(',')}}`,
+                    'target_classes.eq.{}'
                 ];
 
                 query = query.or(conditions.join(','));
             } else {
-                // If no children, only show school-wide and role-based announcements
-                query = query.or('target_roles.cs.{parent},target_roles.eq.{}');
+                // If no children, only show school-wide announcements
+                query = query.eq('target_classes', '{}');
             }
 
             // Get total count with same filters
@@ -1833,13 +1902,12 @@ router.get('/parent/children',
 
             if (classDivisionIds.length > 0) {
                 const conditions = [
-                    'target_roles.cs.{parent}',
-                    'target_roles.eq.{}',
-                    `target_classes.ov.{${classDivisionIds.join(',')}}`
+                    `target_classes.ov.{${classDivisionIds.join(',')}}`,
+                    'target_classes.eq.{}'
                 ];
                 countQuery = countQuery.or(conditions.join(','));
             } else {
-                countQuery = countQuery.or('target_roles.cs.{parent},target_roles.eq.{}');
+                countQuery = countQuery.eq('target_classes', '{}');
             }
 
             const { count: totalCount, error: countError } = await countQuery;
