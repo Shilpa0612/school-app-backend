@@ -2416,10 +2416,101 @@ router.get('/principal/chats',
                 query = query.eq('thread_type', chat_type);
             }
 
-            // Get total count for pagination
-            const { count: totalCount, error: countError } = await adminSupabase
-                .from('chat_threads')
-                .select('*', { count: 'exact', head: true });
+            // If class_division_id is provided, pre-compute relevant user IDs (teachers, parents, students)
+            let relevantUserIds = null;
+            if (class_division_id) {
+                relevantUserIds = new Set();
+
+                // 1) Teachers for this division (assignments and legacy class teacher)
+                const [assignmentsRes, legacyTeacherRes] = await Promise.all([
+                    adminSupabase
+                        .from('class_teacher_assignments')
+                        .select('teacher_id')
+                        .eq('class_division_id', class_division_id)
+                        .eq('is_active', true),
+                    adminSupabase
+                        .from('class_divisions')
+                        .select('teacher_id')
+                        .eq('id', class_division_id)
+                        .single()
+                ]);
+                (assignmentsRes.data || []).forEach(a => a.teacher_id && relevantUserIds.add(a.teacher_id));
+                if (legacyTeacherRes.data?.teacher_id) relevantUserIds.add(legacyTeacherRes.data.teacher_id);
+
+                // 2) Students in this division
+                const { data: sar } = await adminSupabase
+                    .from('student_academic_records')
+                    .select('student_id')
+                    .eq('class_division_id', class_division_id)
+                    .eq('status', 'ongoing');
+                const studentIds = (sar || []).map(r => r.student_id);
+
+                // 3) Parents of those students
+                if (studentIds.length > 0) {
+                    const { data: parentMaps } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .select('parent_id')
+                        .in('student_id', studentIds);
+                    (parentMaps || []).forEach(m => m.parent_id && relevantUserIds.add(m.parent_id));
+                }
+
+                // 4) Convert to array for querying
+                relevantUserIds = Array.from(relevantUserIds);
+
+                // If none found, short-circuit to empty result
+                if (relevantUserIds.length === 0) {
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            threads: [],
+                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, page: parseInt(page), limit: parseInt(limit) },
+                            pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                            summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                        }
+                    });
+                }
+
+                // Restrict threads to those that include at least one relevant user
+                // by first fetching thread_ids from chat_participants
+                const { data: participantThreads, error: participantErr } = await adminSupabase
+                    .from('chat_participants')
+                    .select('thread_id')
+                    .in('user_id', relevantUserIds);
+
+                if (participantErr) {
+                    console.error('Error fetching participant threads for division filter:', participantErr);
+                    return res.status(500).json({ status: 'error', message: 'Failed to apply class filter' });
+                }
+
+                const filteredThreadIds = Array.from(new Set((participantThreads || []).map(pt => pt.thread_id)));
+
+                if (filteredThreadIds.length === 0) {
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            threads: [],
+                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, page: parseInt(page), limit: parseInt(limit) },
+                            pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                            summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                        }
+                    });
+                }
+
+                query = query.in('id', filteredThreadIds);
+
+                // Attach for count filtering below
+                req._filteredThreadIds = filteredThreadIds;
+            }
+
+            // Get total count for pagination (apply filters if any)
+            let countBase = adminSupabase.from('chat_threads').select('*', { count: 'exact', head: true });
+            if (chat_type !== 'all') countBase = countBase.eq('thread_type', chat_type);
+            if (start_date) countBase = countBase.gte('created_at', new Date(start_date).toISOString());
+            if (end_date) countBase = countBase.lte('created_at', new Date(end_date).toISOString());
+            if (class_division_id && Array.isArray(req._filteredThreadIds) && req._filteredThreadIds.length > 0) {
+                countBase = countBase.in('id', req._filteredThreadIds);
+            }
+            const { count: totalCount, error: countError } = await countBase;
 
             if (countError) {
                 console.error('Error getting total count:', countError);
@@ -2465,12 +2556,78 @@ router.get('/principal/chats',
                         }
 
                         // Get participant details with roles
-                        const participants = thread.participants.map(p => ({
+                        const baseParticipants = thread.participants.map(p => ({
                             user_id: p.user_id,
                             role: p.role,
                             last_read_at: p.last_read_at,
                             user: p.user,
                             is_principal: p.user_id === principalId
+                        }));
+
+                        // Enrich participant metadata for parent/teacher relative to class_division_id (if provided)
+                        const participants = await Promise.all((baseParticipants || []).map(async (p) => {
+                            const enriched = { ...p };
+                            if (class_division_id) {
+                                try {
+                                    if (p.user?.role === 'parent') {
+                                        // Find this parent's children in the given division
+                                        const { data: childMaps } = await adminSupabase
+                                            .from('parent_student_mappings')
+                                            .select('student_id')
+                                            .eq('parent_id', p.user.id);
+                                        const studentIds = (childMaps || []).map(m => m.student_id);
+                                        let childrenInDivision = [];
+                                        if (studentIds.length > 0) {
+                                            const { data: records } = await adminSupabase
+                                                .from('student_academic_records')
+                                                .select(`
+                                                    student_id,
+                                                    roll_number,
+                                                    class_division_id,
+                                                    students:students_master (id, full_name)
+                                                `)
+                                                .in('student_id', studentIds)
+                                                .eq('class_division_id', class_division_id)
+                                                .eq('status', 'ongoing');
+                                            childrenInDivision = (records || []).map(r => ({
+                                                id: r.students?.id || r.student_id,
+                                                full_name: r.students?.full_name || null,
+                                                roll_number: r.roll_number
+                                            }));
+                                        }
+                                        enriched.parent_of_in_division = childrenInDivision;
+                                    } else if (p.user?.role === 'teacher') {
+                                        // Determine teacher role in this division (class teacher / subject teacher subjects)
+                                        const [{ data: ta }] = await Promise.all([
+                                            adminSupabase
+                                                .from('class_teacher_assignments')
+                                                .select('assignment_type, subject')
+                                                .eq('teacher_id', p.user.id)
+                                                .eq('class_division_id', class_division_id)
+                                                .eq('is_active', true)
+                                        ]);
+
+                                        // Legacy check for class teacher
+                                        const { data: legacyClass } = await adminSupabase
+                                            .from('class_divisions')
+                                            .select('teacher_id')
+                                            .eq('id', class_division_id)
+                                            .single();
+
+                                        const isClassTeacher = (ta || []).some(a => a.assignment_type === 'class_teacher') || (legacyClass?.teacher_id === p.user.id);
+                                        const subjects = Array.from(new Set((ta || [])
+                                            .map(a => a.subject)
+                                            .filter(Boolean)));
+                                        enriched.teacher_role_in_division = {
+                                            is_class_teacher: isClassTeacher,
+                                            subjects
+                                        };
+                                    }
+                                } catch (metaErr) {
+                                    // Non-fatal; leave unenriched if error
+                                }
+                            }
+                            return enriched;
                         }));
 
                         // Categorize participants

@@ -1060,45 +1060,27 @@ router.post('/messages', authenticate, async (req, res) => {
             });
         }
 
-        // Create message in messages table (main storage)
-        const { data: message, error } = await adminSupabase
-            .from('messages')
-            .insert({
-                sender_id: req.user.id,
-                content,
-                type: 'individual', // Chat messages are individual conversations
-                status: 'approved', // Real-time messages are auto-approved
-                thread_id: thread_id, // Store thread reference
-                message_type: message_type
-            })
-            .select(`
-                *,
-                sender:users!messages_sender_id_fkey(full_name, role)
-            `)
-            .single();
-
-        if (error) {
-            logger.error('Error creating message:', error);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to create message'
-            });
-        }
-
-        // Also create a reference in chat_messages for real-time functionality
-        const { error: chatMessageError } = await adminSupabase
+        // Create message directly in chat_messages (authoritative storage for chat)
+        const { data: chatMessage, error: chatInsertError } = await adminSupabase
             .from('chat_messages')
             .insert({
                 thread_id,
                 sender_id: req.user.id,
                 content,
-                message_type,
-                message_id: message.id // Reference to main message
-            });
+                message_type
+            })
+            .select(`
+                *,
+                sender:users!chat_messages_sender_id_fkey(full_name, role)
+            `)
+            .single();
 
-        if (chatMessageError) {
-            logger.error('Error creating chat message reference:', chatMessageError);
-            // Don't fail the request, just log the error
+        if (chatInsertError) {
+            logger.error('Error creating chat message:', chatInsertError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to create message'
+            });
         }
 
         // Update thread's updated_at timestamp
@@ -1109,7 +1091,7 @@ router.post('/messages', authenticate, async (req, res) => {
 
         res.status(201).json({
             status: 'success',
-            data: message
+            data: chatMessage
         });
 
     } catch (error) {
