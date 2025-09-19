@@ -19,7 +19,7 @@ router.post('/',
             .notEmpty().withMessage('Phone number is required')
             .matches(/^[0-9]{10}$/).withMessage('Phone number must be exactly 10 digits'),
         body('email')
-            .optional()
+            .optional({ nullable: true, checkFalsy: true })
             .isEmail().withMessage('Email must be a valid email address')
             .normalizeEmail(),
         body('initial_password')
@@ -350,7 +350,7 @@ router.put('/:parent_id',
     authorize(['admin', 'principal']),
     [
         body('full_name').optional().notEmpty().trim().withMessage('Full name cannot be empty'),
-        body('email').optional().isEmail().withMessage('Invalid email format'),
+        body('email').optional({ nullable: true, checkFalsy: true }).isEmail().withMessage('Invalid email format'),
         body('initial_password').optional().isLength({ min: 6 }).withMessage('Initial password must be at least 6 characters')
     ],
     async (req, res, next) => {
