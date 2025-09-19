@@ -641,9 +641,9 @@ router.get('/my-teacher-id',
                     using_legacy_data: usingLegacyData,
                     assignment_summary: {
                         primary_teacher_for: primaryClasses.length,
-                        subject_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'subject_teacher').length,
-                        assistant_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'assistant_teacher').length,
-                        substitute_teacher_for: secondaryClasses.filter(c => c.assignment_type === 'substitute_teacher').length
+                        subject_teacher_for: classesWithStudentCounts.filter(c => c.assignment_type === 'subject_teacher').length,
+                        assistant_teacher_for: classesWithStudentCounts.filter(c => c.assignment_type === 'assistant_teacher').length,
+                        substitute_teacher_for: classesWithStudentCounts.filter(c => c.assignment_type === 'substitute_teacher').length
                     },
                     subjects_taught: classesWithStudentCounts
                         .filter(c => c.assignment_type === 'subject_teacher' && c.subject)
@@ -2121,7 +2121,7 @@ router.post('/class-levels',
     authorize(['admin', 'principal']),
     [
         body('name').notEmpty().withMessage('Class level name is required'),
-        body('sequence_number').isInt({ min: 1 }).withMessage('Valid sequence number is required')
+        body('sequence_number').optional().isInt({ min: 1 }).withMessage('Sequence number must be a positive integer if provided')
     ],
     async (req, res, next) => {
         try {
@@ -2132,10 +2132,16 @@ router.post('/class-levels',
 
             const { name, sequence_number } = req.body;
 
+            // Prepare data for insertion
+            const insertData = { name };
+            if (sequence_number !== undefined && sequence_number !== null) {
+                insertData.sequence_number = sequence_number;
+            }
+
             // Use adminSupabase for admin operations
             const { data, error } = await adminSupabase
                 .from('class_levels')
-                .insert([{ name, sequence_number }])
+                .insert([insertData])
                 .select()
                 .single();
 
