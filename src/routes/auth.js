@@ -190,6 +190,297 @@ router.post('/create-parent', createParentValidation, async (req, res, next) => 
     }
 });
 
+// Bulk create parents with student linking - OPTIMIZED
+router.post('/bulk-create-parents',
+    [
+        body('parents').isArray({ min: 1, max: 200 }).withMessage('Parents must be an array (max 200 parents)'),
+        body('parents.*.full_name').notEmpty().withMessage('Full name is required'),
+        body('parents.*.phone_number').isMobilePhone().withMessage('Valid phone number is required'),
+        body('parents.*.email').optional().isEmail().withMessage('Valid email is required'),
+        body('parents.*.students').optional().isArray().withMessage('Students must be an array'),
+        body('parents.*.students.*.student_id').optional().isUUID().withMessage('Valid student ID required'),
+        body('parents.*.students.*.admission_number').optional().notEmpty().withMessage('Admission number required if student_id not provided'),
+        body('parents.*.students.*.relationship').optional().isIn(['father', 'mother', 'guardian']).withMessage('Valid relationship required'),
+        body('parents.*.students.*.is_primary_guardian').optional().isBoolean().withMessage('Primary guardian must be boolean'),
+        body('parents.*.students.*.access_level').optional().isIn(['full', 'restricted', 'readonly']).withMessage('Valid access level required')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { parents } = req.body;
+
+            // OPTIMIZATION 1: Check for duplicate phone numbers in batch
+            const phoneNumbers = parents.map(p => p.phone_number);
+            const phoneSet = new Set();
+            const duplicates = [];
+
+            phoneNumbers.forEach(phone => {
+                if (phoneSet.has(phone)) {
+                    duplicates.push(phone);
+                } else {
+                    phoneSet.add(phone);
+                }
+            });
+
+            if (duplicates.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Duplicate phone numbers in batch: ${duplicates.join(', ')}`
+                });
+            }
+
+            // OPTIMIZATION 2: Collect and validate student data if provided
+            const allStudentIds = new Set();
+            const allAdmissionNumbers = new Set();
+            const parentStudentMappings = [];
+            const primaryGuardianConflicts = new Map();
+
+            for (let i = 0; i < parents.length; i++) {
+                const parent = parents[i];
+                if (parent.students && parent.students.length > 0) {
+                    for (const student of parent.students) {
+                        // Collect student identifiers
+                        if (student.student_id) {
+                            allStudentIds.add(student.student_id);
+                        }
+                        if (student.admission_number) {
+                            allAdmissionNumbers.add(student.admission_number);
+                        }
+
+                        // Set defaults for student linking
+                        const studentLink = {
+                            parentIndex: i,
+                            student_id: student.student_id || null,
+                            admission_number: student.admission_number || null,
+                            relationship: student.relationship || 'guardian',
+                            is_primary_guardian: student.is_primary_guardian || false,
+                            access_level: student.access_level || 'full'
+                        };
+                        parentStudentMappings.push(studentLink);
+
+                        // Track primary guardian conflicts
+                        if (studentLink.is_primary_guardian) {
+                            const studentKey = student.student_id || student.admission_number;
+                            if (primaryGuardianConflicts.has(studentKey)) {
+                                primaryGuardianConflicts.set(studentKey, primaryGuardianConflicts.get(studentKey) + 1);
+                            } else {
+                                primaryGuardianConflicts.set(studentKey, 1);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check for primary guardian conflicts
+            const conflictingStudents = [];
+            for (const [studentKey, count] of primaryGuardianConflicts) {
+                if (count > 1) {
+                    conflictingStudents.push(studentKey);
+                }
+            }
+
+            if (conflictingStudents.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Multiple primary guardians specified for students: ${conflictingStudents.join(', ')}`
+                });
+            }
+
+            // OPTIMIZATION 3: Parallel validation queries
+            const validationPromises = [
+                // Check existing parents
+                adminSupabase
+                    .from('users')
+                    .select('phone_number')
+                    .in('phone_number', phoneNumbers)
+                    .eq('role', 'parent')
+            ];
+
+            // Add student validation if students are provided
+            if (allStudentIds.size > 0) {
+                validationPromises.push(
+                    adminSupabase
+                        .from('students_master')
+                        .select('id, admission_number')
+                        .in('id', Array.from(allStudentIds))
+                );
+            }
+
+            if (allAdmissionNumbers.size > 0) {
+                validationPromises.push(
+                    adminSupabase
+                        .from('students_master')
+                        .select('id, admission_number')
+                        .in('admission_number', Array.from(allAdmissionNumbers))
+                );
+            }
+
+            const validationResults = await Promise.all(validationPromises);
+            const [existingParentsResult, ...studentResults] = validationResults;
+
+            // Check existing parents
+            if (existingParentsResult.data && existingParentsResult.data.length > 0) {
+                const existingNumbers = existingParentsResult.data.map(p => p.phone_number);
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Parents with these phone numbers already exist: ${existingNumbers.join(', ')}`
+                });
+            }
+
+            // Validate and map students
+            const studentMap = new Map(); // Maps admission_number/id -> student record
+            if (studentResults.length > 0) {
+                studentResults.forEach(result => {
+                    if (result.data) {
+                        result.data.forEach(student => {
+                            studentMap.set(student.id, student);
+                            studentMap.set(student.admission_number, student);
+                        });
+                    }
+                });
+
+                // Check if all referenced students exist
+                const missingStudents = [];
+                parentStudentMappings.forEach(mapping => {
+                    const studentKey = mapping.student_id || mapping.admission_number;
+                    if (!studentMap.has(studentKey)) {
+                        missingStudents.push(studentKey);
+                    }
+                });
+
+                if (missingStudents.length > 0) {
+                    return res.status(400).json({
+                        status: 'error',
+                        message: `Students not found: ${missingStudents.join(', ')}`
+                    });
+                }
+            }
+
+            // OPTIMIZATION 4: Prepare parent data efficiently
+            const parentsData = parents.map(parent => ({
+                phone_number: parent.phone_number,
+                full_name: parent.full_name,
+                email: parent.email || null,
+                role: 'parent',
+                is_registered: false,
+                password_hash: null,
+                initial_password: parent.initial_password || null,
+                initial_password_set_at: parent.initial_password ? new Date().toISOString() : null
+            }));
+
+            // OPTIMIZATION 5: Bulk insert parents
+            const { data: createdParents, error: parentError } = await adminSupabase
+                .from('users')
+                .insert(parentsData)
+                .select('id, phone_number, full_name, email');
+
+            if (parentError) {
+                logger.error('Error creating bulk parents:', parentError);
+                throw parentError;
+            }
+
+            // OPTIMIZATION 6: Create parent-student mappings if students provided
+            let createdMappings = [];
+            if (parentStudentMappings.length > 0) {
+                // Prepare mapping data
+                const mappingsData = parentStudentMappings.map(mapping => {
+                    const parentId = createdParents[mapping.parentIndex].id;
+                    const studentKey = mapping.student_id || mapping.admission_number;
+                    const studentRecord = studentMap.get(studentKey);
+
+                    return {
+                        parent_id: parentId,
+                        student_id: studentRecord.id,
+                        relationship: mapping.relationship,
+                        is_primary_guardian: mapping.is_primary_guardian,
+                        access_level: mapping.access_level
+                    };
+                });
+
+                // Check for existing primary guardians
+                const studentsWithPrimaryGuardians = mappingsData
+                    .filter(m => m.is_primary_guardian)
+                    .map(m => m.student_id);
+
+                if (studentsWithPrimaryGuardians.length > 0) {
+                    const { data: existingPrimary } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .select('student_id')
+                        .in('student_id', studentsWithPrimaryGuardians)
+                        .eq('is_primary_guardian', true);
+
+                    if (existingPrimary && existingPrimary.length > 0) {
+                        const existingStudentIds = existingPrimary.map(p => p.student_id);
+                        // Rollback created parents
+                        await adminSupabase
+                            .from('users')
+                            .delete()
+                            .in('id', createdParents.map(p => p.id));
+
+                        return res.status(400).json({
+                            status: 'error',
+                            message: `Students already have primary guardians: ${existingStudentIds.join(', ')}`
+                        });
+                    }
+                }
+
+                // Insert mappings
+                const { data: mappings, error: mappingError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .insert(mappingsData)
+                    .select('id, parent_id, student_id, relationship, is_primary_guardian');
+
+                if (mappingError) {
+                    logger.error('Error creating parent-student mappings:', mappingError);
+                    // Rollback created parents
+                    await adminSupabase
+                        .from('users')
+                        .delete()
+                        .in('id', createdParents.map(p => p.id));
+                    throw mappingError;
+                }
+
+                createdMappings = mappings;
+            }
+
+            // OPTIMIZATION 7: Return comprehensive response
+            const responseData = {
+                created_count: createdParents.length,
+                parents: createdParents,
+                summary: {
+                    phone_numbers: createdParents.map(p => p.phone_number),
+                    with_initial_password: createdParents.filter(p => p.initial_password).length
+                }
+            };
+
+            if (createdMappings.length > 0) {
+                responseData.student_links = {
+                    total_links: createdMappings.length,
+                    primary_guardians: createdMappings.filter(m => m.is_primary_guardian).length,
+                    mappings: createdMappings
+                };
+                responseData.note = 'Parents created and linked to students successfully. Parents can now register using their phone numbers.';
+            } else {
+                responseData.note = 'Parents created successfully. Use /api/academic/bulk-link-parents to link them to students.';
+            }
+
+            res.status(201).json({
+                status: 'success',
+                message: `Successfully created ${createdParents.length} parent accounts${createdMappings.length > 0 ? ` with ${createdMappings.length} student links` : ''}`,
+                data: responseData
+            });
+
+        } catch (error) {
+            logger.error('Bulk parent creation error:', error);
+            next(error);
+        }
+    }
+);
+
 // Register route (enhanced for parent self-registration)
 router.post('/register', registerValidation, async (req, res, next) => {
     try {

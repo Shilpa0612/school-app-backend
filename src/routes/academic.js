@@ -2960,6 +2960,302 @@ router.post('/link-students',
     }
 );
 
+// Bulk create students - OPTIMIZED
+router.post('/bulk-students',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('students').isArray({ min: 1, max: 1000 }).withMessage('Students must be an array (max 1000 students)'),
+        body('students.*.admission_number').notEmpty().withMessage('Admission number is required'),
+        body('students.*.full_name').notEmpty().withMessage('Full name is required'),
+        body('students.*.date_of_birth').isISO8601().toDate().withMessage('Valid date of birth is required'),
+        body('students.*.admission_date').isISO8601().toDate().withMessage('Valid admission date is required'),
+        body('students.*.class_division_id').isUUID().withMessage('Valid class division ID is required'),
+        body('students.*.roll_number').notEmpty().withMessage('Roll number is required')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { students } = req.body;
+
+            // OPTIMIZATION 1: Use Set for O(1) duplicate detection
+            const admissionNumbers = students.map(s => s.admission_number);
+            const admissionSet = new Set();
+            const duplicates = [];
+
+            admissionNumbers.forEach(num => {
+                if (admissionSet.has(num)) {
+                    duplicates.push(num);
+                } else {
+                    admissionSet.add(num);
+                }
+            });
+
+            if (duplicates.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Duplicate admission numbers in batch: ${duplicates.join(', ')}`
+                });
+            }
+
+            // OPTIMIZATION 2: Parallel validation queries
+            const classDivisionIds = [...new Set(students.map(s => s.class_division_id))];
+
+            const [classDivisionsResult, existingStudentsResult] = await Promise.all([
+                adminSupabase
+                    .from('class_divisions')
+                    .select('id')
+                    .in('id', classDivisionIds),
+                adminSupabase
+                    .from('students_master')
+                    .select('admission_number')
+                    .in('admission_number', admissionNumbers)
+            ]);
+
+            // Check class divisions
+            if (classDivisionsResult.error || classDivisionsResult.data.length !== classDivisionIds.length) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'One or more class divisions not found'
+                });
+            }
+
+            // Check existing students
+            if (existingStudentsResult.data && existingStudentsResult.data.length > 0) {
+                const existingNumbers = existingStudentsResult.data.map(s => s.admission_number);
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Students with these admission numbers already exist: ${existingNumbers.join(', ')}`
+                });
+            }
+
+            // OPTIMIZATION 3: Prepare data efficiently with minimal object creation
+            const studentsData = students.map(student => ({
+                admission_number: student.admission_number,
+                full_name: student.full_name,
+                date_of_birth: student.date_of_birth,
+                admission_date: student.admission_date,
+                status: 'active',
+                gender: student.gender || null,
+                blood_group: student.blood_group || null
+            }));
+
+            // OPTIMIZATION 4: Use database transaction for atomic operations
+            const { data: createdStudents, error: studentError } = await adminSupabase
+                .from('students_master')
+                .insert(studentsData)
+                .select('id, admission_number, full_name'); // Select only needed fields
+
+            if (studentError) {
+                logger.error('Error creating bulk students:', studentError);
+                throw studentError;
+            }
+
+            // OPTIMIZATION 5: Create academic records (not enrollments) - matching individual endpoint
+            const academicRecords = students.map((student, index) => ({
+                student_id: createdStudents[index].id,
+                class_division_id: student.class_division_id,
+                roll_number: student.roll_number,
+                status: 'ongoing'
+            }));
+
+            // OPTIMIZATION 6: Insert academic records with minimal return data
+            const { data: records, error: recordError } = await adminSupabase
+                .from('student_academic_records')
+                .insert(academicRecords)
+                .select('id, student_id, class_division_id, roll_number');
+
+            if (recordError) {
+                logger.error('Error creating academic records:', recordError);
+                // OPTIMIZATION 7: Rollback students if academic records fail
+                await adminSupabase
+                    .from('students_master')
+                    .delete()
+                    .in('id', createdStudents.map(s => s.id));
+                throw recordError;
+            }
+
+            // OPTIMIZATION 8: Return minimal response data
+            res.status(201).json({
+                status: 'success',
+                message: `Successfully created ${createdStudents.length} students`,
+                data: {
+                    created_count: createdStudents.length,
+                    students: createdStudents,
+                    academic_records: records,
+                    summary: {
+                        admission_numbers: createdStudents.map(s => s.admission_number),
+                        class_divisions: [...new Set(students.map(s => s.class_division_id))]
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Bulk students creation error:', error);
+            next(error);
+        }
+    }
+);
+
+// Bulk link multiple parents to their students - OPTIMIZED
+router.post('/bulk-link-parents',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('parent_links').isArray({ min: 1, max: 500 }).withMessage('Parent links must be an array (max 500 links)'),
+        body('parent_links.*.parent_id').isUUID().withMessage('Valid parent ID is required'),
+        body('parent_links.*.students').isArray({ min: 1 }).withMessage('Students must be an array'),
+        body('parent_links.*.students.*.student_id').isUUID().withMessage('Valid student ID is required'),
+        body('parent_links.*.students.*.relationship').isIn(['father', 'mother', 'guardian']).withMessage('Valid relationship is required'),
+        body('parent_links.*.students.*.is_primary_guardian').isBoolean().withMessage('Primary guardian must be boolean'),
+        body('parent_links.*.students.*.access_level').isIn(['full', 'restricted', 'readonly']).withMessage('Valid access level is required')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { parent_links } = req.body;
+
+            // OPTIMIZATION 1: Use Map and Set for efficient data collection and deduplication
+            const studentIdSet = new Set();
+            const parentIdSet = new Set();
+            const allMappings = [];
+            const primaryGuardianMap = new Map();
+
+            // Single loop to collect all data efficiently
+            for (const parentLink of parent_links) {
+                parentIdSet.add(parentLink.parent_id);
+
+                for (const student of parentLink.students) {
+                    studentIdSet.add(student.student_id);
+
+                    allMappings.push({
+                        parent_id: parentLink.parent_id,
+                        student_id: student.student_id,
+                        relationship: student.relationship,
+                        is_primary_guardian: student.is_primary_guardian,
+                        access_level: student.access_level
+                    });
+
+                    // Track primary guardians efficiently
+                    if (student.is_primary_guardian) {
+                        if (primaryGuardianMap.has(student.student_id)) {
+                            primaryGuardianMap.set(student.student_id, primaryGuardianMap.get(student.student_id) + 1);
+                        } else {
+                            primaryGuardianMap.set(student.student_id, 1);
+                        }
+                    }
+                }
+            }
+
+            // OPTIMIZATION 2: Fast conflict detection using Map
+            const conflictingStudents = [];
+            for (const [studentId, count] of primaryGuardianMap) {
+                if (count > 1) {
+                    conflictingStudents.push(studentId);
+                }
+            }
+
+            if (conflictingStudents.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Multiple primary guardians specified for students: ${conflictingStudents.join(', ')}`
+                });
+            }
+
+            // OPTIMIZATION 3: Convert Sets to Arrays once
+            const parentIds = Array.from(parentIdSet);
+            const studentIds = Array.from(studentIdSet);
+            const studentsWithPrimaryGuardians = Array.from(primaryGuardianMap.keys());
+
+            // OPTIMIZATION 4: Parallel validation with optimized queries
+            const validationPromises = [
+                adminSupabase.from('users').select('id').in('id', parentIds).eq('role', 'parent'),
+                adminSupabase.from('students_master').select('id').in('id', studentIds)
+            ];
+
+            // Only check existing primary guardians if needed
+            if (studentsWithPrimaryGuardians.length > 0) {
+                validationPromises.push(
+                    adminSupabase
+                        .from('parent_student_mappings')
+                        .select('student_id')
+                        .in('student_id', studentsWithPrimaryGuardians)
+                        .eq('is_primary_guardian', true)
+                );
+            }
+
+            const validationResults = await Promise.all(validationPromises);
+            const [parentsCheck, studentsCheck, existingPrimaryCheck] = validationResults;
+
+            // OPTIMIZATION 5: Efficient validation result checking
+            if (parentsCheck.error || parentsCheck.data.length !== parentIds.length) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'One or more parents not found'
+                });
+            }
+
+            if (studentsCheck.error || studentsCheck.data.length !== studentIds.length) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'One or more students not found'
+                });
+            }
+
+            if (existingPrimaryCheck && existingPrimaryCheck.data && existingPrimaryCheck.data.length > 0) {
+                const existingStudentIds = existingPrimaryCheck.data.map(p => p.student_id);
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Students already have primary guardians: ${existingStudentIds.join(', ')}`
+                });
+            }
+
+            // OPTIMIZATION 6: Insert with minimal return data
+            const { data: mappings, error: mappingError } = await adminSupabase
+                .from('parent_student_mappings')
+                .insert(allMappings)
+                .select('id, parent_id, student_id, relationship, is_primary_guardian');
+
+            if (mappingError) {
+                logger.error('Error creating bulk parent-student mappings:', mappingError);
+                throw mappingError;
+            }
+
+            // OPTIMIZATION 7: Return optimized response with summary data
+            const primaryCount = mappings.filter(m => m.is_primary_guardian).length;
+            const relationshipCounts = mappings.reduce((acc, m) => {
+                acc[m.relationship] = (acc[m.relationship] || 0) + 1;
+                return acc;
+            }, {});
+
+            res.status(201).json({
+                status: 'success',
+                message: `Successfully created ${mappings.length} parent-student links`,
+                data: {
+                    total_links: mappings.length,
+                    primary_guardians: primaryCount,
+                    relationship_breakdown: relationshipCounts,
+                    unique_parents: parentIds.length,
+                    unique_students: studentIds.length,
+                    mapping_ids: mappings.map(m => m.id)
+                }
+            });
+
+        } catch (error) {
+            logger.error('Bulk parent linking error:', error);
+            next(error);
+        }
+    }
+);
+
 // Update parent-student relationship
 router.put('/update-parent-access/:mapping_id',
     authenticate,

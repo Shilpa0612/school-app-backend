@@ -272,31 +272,49 @@ router.get('/debug/tables', authenticate, async (req, res) => {
 // List chat threads
 router.get('/threads', authenticate, async (req, res) => {
     try {
-        const { page = 1, limit = 20, status } = req.query; // Made status optional
+        const { page = 1, limit = 20, status } = req.query;
         const offset = (page - 1) * limit;
+        const startTime = Date.now();
 
         logger.info(`Fetching threads for user ${req.user.id} (${req.user.role}) with filters:`, {
             page, limit, status, user_id: req.user.id, user_role: req.user.role
         });
 
-        // Get threads where user is a participant
-        const { data: userParticipations, error: participationError } = await adminSupabase
+        // OPTIMIZATION 1: Single query to get all thread data with joins
+        const { data: threadData, error: threadError } = await adminSupabase
             .from('chat_participants')
-            .select('thread_id')
-            .eq('user_id', req.user.id);
+            .select(`
+                thread_id,
+                role as participant_role,
+                last_read_at,
+                chat_threads!inner(
+                    id,
+                    thread_type,
+                    title,
+                    status,
+                    created_at,
+                    updated_at,
+                    created_by
+                ),
+                chat_participants!chat_threads_id(
+                    user_id,
+                    role,
+                    last_read_at,
+                    users!inner(id, full_name, role)
+                )
+            `)
+            .eq('user_id', req.user.id)
+            .order('chat_threads(updated_at)', { ascending: false });
 
-        if (participationError) {
-            logger.error('Error fetching user participations:', participationError);
+        if (threadError) {
+            logger.error('Error fetching thread data:', threadError);
             return res.status(500).json({
                 status: 'error',
-                message: 'Failed to fetch user participations'
+                message: 'Failed to fetch thread data'
             });
         }
 
-        logger.info(`Found ${userParticipations?.length || 0} participations for user`);
-
-        if (!userParticipations || userParticipations.length === 0) {
-            logger.info('No participations found, returning empty result');
+        if (!threadData || threadData.length === 0) {
             return res.json({
                 status: 'success',
                 data: {
@@ -307,166 +325,162 @@ router.get('/threads', authenticate, async (req, res) => {
                         total: 0,
                         total_pages: 0
                     },
-                    debug_info: {
-                        user_id: req.user.id,
-                        user_role: req.user.role,
-                        participations_found: 0,
-                        message: 'No chat participations found for this user'
+                    performance: {
+                        query_time_ms: Date.now() - startTime
                     }
                 }
             });
         }
 
-        const threadIds = userParticipations.map(p => p.thread_id);
-        logger.info(`Thread IDs where user is participant:`, threadIds);
-
-        // Build query for threads
-        let query = adminSupabase
-            .from('chat_threads')
-            .select(`
-                *,
-                participants:chat_participants(
-                    user_id,
-                    role,
-                    last_read_at,
-                    user:users(full_name, role)
-                )
-            `)
-            .in('id', threadIds)
-            .order('updated_at', { ascending: false });
-
-        // Apply status filter only if provided
+        // Apply status filter if provided
+        let filteredThreads = threadData;
         if (status) {
-            query = query.eq('status', status);
-            logger.info(`Applied status filter: ${status}`);
+            filteredThreads = threadData.filter(t => t.chat_threads.status === status);
         }
 
-        // Get threads with pagination
-        const { data: threads, error } = await query.range(offset, offset + limit - 1);
+        // Apply pagination
+        const paginatedThreads = filteredThreads.slice(offset, offset + limit);
 
-        if (error) {
-            logger.error('Error fetching threads:', error);
-            return res.status(500).json({
-                status: 'error',
-                message: 'Failed to fetch threads'
-            });
-        }
+        // OPTIMIZATION 2: Bulk fetch last messages for all threads
+        const threadIds = paginatedThreads.map(t => t.thread_id);
 
-        // Process threads to get only the most recent message for each
-        const processedThreads = await Promise.all((threads || []).map(async (thread) => {
-            try {
-                // Get only the most recent message for this thread
-                const { data: lastMessage, error: messageError } = await adminSupabase
-                    .from('chat_messages')
-                    .select(`
+        let lastMessagesQuery = '';
+        let lastMessagesParams = [];
+
+        if (threadIds.length > 0) {
+            // Create a single query to get last message for each thread
+            lastMessagesQuery = `
+                WITH ranked_messages AS (
+                    SELECT 
+                        thread_id,
                         content,
                         created_at,
-                        sender:users!chat_messages_sender_id_fkey(full_name)
-                    `)
-                    .eq('thread_id', thread.id)
-                    .order('created_at', { ascending: false })
-                    .limit(1)
-                    .single();
+                        sender_id,
+                        ROW_NUMBER() OVER (PARTITION BY thread_id ORDER BY created_at DESC) as rn
+                    FROM chat_messages 
+                    WHERE thread_id = ANY($1)
+                )
+                SELECT 
+                    rm.thread_id,
+                    rm.content,
+                    rm.created_at,
+                    u.full_name as sender_name
+                FROM ranked_messages rm
+                LEFT JOIN users u ON u.id = rm.sender_id
+                WHERE rm.rn = 1
+            `;
+            lastMessagesParams = [threadIds];
+        }
 
-                if (messageError && messageError.code !== 'PGRST116') {
-                    logger.warn('Error fetching last message for thread:', {
-                        thread_id: thread.id,
-                        error: messageError.message
-                    });
-                }
+        // OPTIMIZATION 3: Bulk fetch unread counts for all threads
+        let unreadCountsQuery = '';
+        let unreadCountsParams = [];
 
-                // Get unread count for current user
-                const { data: participant, error: participantError } = await adminSupabase
-                    .from('chat_participants')
-                    .select('last_read_at')
-                    .eq('thread_id', thread.id)
-                    .eq('user_id', req.user.id)
-                    .single();
+        if (threadIds.length > 0) {
+            unreadCountsQuery = `
+                WITH user_last_read AS (
+                    SELECT 
+                        thread_id,
+                        last_read_at
+                    FROM chat_participants 
+                    WHERE user_id = $1 AND thread_id = ANY($2)
+                ),
+                message_counts AS (
+                    SELECT 
+                        cm.thread_id,
+                        COUNT(*) as unread_count
+                    FROM chat_messages cm
+                    LEFT JOIN user_last_read ulr ON ulr.thread_id = cm.thread_id
+                    WHERE cm.thread_id = ANY($2)
+                    AND (ulr.last_read_at IS NULL OR cm.created_at > ulr.last_read_at)
+                    GROUP BY cm.thread_id
+                )
+                SELECT 
+                    ulr.thread_id,
+                    COALESCE(mc.unread_count, 0) as unread_count
+                FROM user_last_read ulr
+                LEFT JOIN message_counts mc ON mc.thread_id = ulr.thread_id
+            `;
+            unreadCountsParams = [req.user.id, threadIds];
+        }
 
-                if (participantError) {
-                    logger.warn('Error fetching participant info:', participantError.message);
-                }
+        // Execute bulk queries in parallel
+        const [lastMessagesResult, unreadCountsResult] = await Promise.all([
+            threadIds.length > 0 ? adminSupabase.rpc('exec_sql', {
+                sql: lastMessagesQuery,
+                params: lastMessagesParams
+            }) : Promise.resolve({ data: [] }),
+            threadIds.length > 0 ? adminSupabase.rpc('exec_sql', {
+                sql: unreadCountsQuery,
+                params: unreadCountsParams
+            }) : Promise.resolve({ data: [] })
+        ]);
 
-                let unreadCount = 0;
-                if (lastMessage && participant?.last_read_at) {
-                    // Count messages created after last read
-                    const { count: unreadMessages, error: countError } = await adminSupabase
-                        .from('chat_messages')
-                        .select('*', { count: 'exact', head: true })
-                        .eq('thread_id', thread.id)
-                        .gt('created_at', participant.last_read_at);
-
-                    if (!countError) {
-                        unreadCount = unreadMessages || 0;
-                    }
-                } else if (lastMessage && !participant?.last_read_at) {
-                    // If never read, count all messages
-                    const { count: totalMessages, error: countError } = await adminSupabase
-                        .from('chat_messages')
-                        .select('*', { count: 'exact', head: true })
-                        .eq('thread_id', thread.id);
-
-                    if (!countError) {
-                        unreadCount = totalMessages || 0;
-                    }
-                }
-
-                return {
-                    ...thread,
-                    last_message: lastMessage ? [lastMessage] : [], // Keep as array for consistency
-                    unread_count: unreadCount,
-                    participants: thread.participants || []
-                };
-            } catch (threadError) {
-                logger.error('Error processing thread:', {
-                    thread_id: thread.id,
-                    error: threadError.message
+        // Create lookup maps for O(1) access
+        const lastMessagesMap = new Map();
+        if (lastMessagesResult.data) {
+            lastMessagesResult.data.forEach(msg => {
+                lastMessagesMap.set(msg.thread_id, {
+                    content: msg.content,
+                    created_at: msg.created_at,
+                    sender: { full_name: msg.sender_name }
                 });
-                return {
-                    ...thread,
-                    last_message: [],
-                    unread_count: 0,
-                    participants: thread.participants || []
-                };
-            }
-        }));
-
-        // Get total count
-        let countQuery = adminSupabase
-            .from('chat_threads')
-            .select('*', { count: 'exact', head: true })
-            .in('id', threadIds);
-
-        if (status) {
-            countQuery = countQuery.eq('status', status);
+            });
         }
 
-        const { count, error: countError } = await countQuery;
-
-        if (countError) {
-            logger.error('Error getting thread count:', countError);
+        const unreadCountsMap = new Map();
+        if (unreadCountsResult.data) {
+            unreadCountsResult.data.forEach(count => {
+                unreadCountsMap.set(count.thread_id, count.unread_count);
+            });
         }
 
-        logger.info(`Returning ${processedThreads?.length || 0} threads out of ${count || 0} total`);
+        // OPTIMIZATION 4: Process threads with pre-fetched data
+        const processedThreads = paginatedThreads.map(thread => {
+            const threadInfo = thread.chat_threads;
+            const lastMessage = lastMessagesMap.get(thread.thread_id);
+            const unreadCount = unreadCountsMap.get(thread.thread_id) || 0;
+
+            return {
+                id: threadInfo.id,
+                thread_type: threadInfo.thread_type,
+                title: threadInfo.title,
+                created_by: threadInfo.created_by,
+                status: threadInfo.status,
+                created_at: threadInfo.created_at,
+                updated_at: threadInfo.updated_at,
+                participants: thread.chat_participants.map(p => ({
+                    user_id: p.user_id,
+                    role: p.role,
+                    last_read_at: p.last_read_at,
+                    user: {
+                        id: p.users.id,
+                        full_name: p.users.full_name,
+                        role: p.users.role
+                    }
+                })),
+                last_message: lastMessage ? [lastMessage] : [],
+                unread_count: unreadCount
+            };
+        });
+
+        const totalTime = Date.now() - startTime;
+        logger.info(`Threads fetched in ${totalTime}ms for user ${req.user.id}`);
 
         res.json({
             status: 'success',
             data: {
-                threads: processedThreads || [],
+                threads: processedThreads,
                 pagination: {
                     page: parseInt(page),
                     limit: parseInt(limit),
-                    total: count || 0,
-                    total_pages: Math.ceil((count || 0) / limit)
+                    total: filteredThreads.length,
+                    total_pages: Math.ceil(filteredThreads.length / limit)
                 },
-                debug_info: {
-                    user_id: req.user.id,
-                    user_role: req.user.role,
-                    participations_found: userParticipations.length,
-                    thread_ids_filtered: threadIds,
-                    status_filter: status || 'none',
-                    threads_returned: processedThreads?.length || 0,
-                    total_threads: count || 0
+                performance: {
+                    query_time_ms: totalTime,
+                    threads_processed: processedThreads.length,
+                    optimization: 'bulk_queries_with_joins'
                 }
             }
         });
@@ -951,6 +965,24 @@ router.get('/messages', authenticate, async (req, res) => {
             });
         }
 
+        // Get participants list with role and id
+        const { data: participants, error: participantsError } = await adminSupabase
+            .from('chat_participants')
+            .select(`
+                user_id,
+                role,
+                user:users!chat_participants_user_id_fkey(id, full_name, role)
+            `)
+            .eq('thread_id', thread_id);
+
+        if (participantsError) {
+            logger.error('Error fetching participants:', participantsError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch participants'
+            });
+        }
+
         // Get messages from chat_messages table (primary storage for chat)
         const { data: messages, error } = await adminSupabase
             .from('chat_messages')
@@ -988,9 +1020,18 @@ router.get('/messages', authenticate, async (req, res) => {
             logger.error('Error getting message count:', countError);
         }
 
+        // Format participants data
+        const formattedParticipants = participants.map(p => ({
+            id: p.user.id,
+            role: p.user.role,
+            full_name: p.user.full_name,
+            participant_role: p.role
+        }));
+
         res.json({
             status: 'success',
             data: {
+                participants: formattedParticipants,
                 messages: messages.reverse(), // Show oldest first
                 pagination: {
                     page: parseInt(page),
