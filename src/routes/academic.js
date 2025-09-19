@@ -695,7 +695,7 @@ router.get('/teachers',
             const userIds = usersData.map(user => user.id);
             const { data: staffData, error: staffError } = await adminSupabase
                 .from('staff')
-                .select('id, user_id, department, designation, is_active')
+                .select('id, user_id, department, designation, is_active, subject')
                 .in('user_id', userIds)
                 .eq('is_active', true);
 
@@ -779,12 +779,26 @@ router.get('/teachers',
             let teachers = usersData.map(user => {
                 const staffInfo = staffData?.find(staff => staff.user_id === user.id);
 
+
                 // Get subjects taught by this teacher from multiple sources
                 let teacherSubjects = [];
 
-                // First, check staff.subject field (array)
-                if (staffInfo && staffInfo.subject && Array.isArray(staffInfo.subject)) {
-                    teacherSubjects = [...teacherSubjects, ...staffInfo.subject];
+                // First, check staff.subject field (array or JSON string)
+                if (staffInfo && staffInfo.subject) {
+                    if (Array.isArray(staffInfo.subject)) {
+                        // Already an array
+                        teacherSubjects = [...teacherSubjects, ...staffInfo.subject];
+                    } else if (typeof staffInfo.subject === 'string') {
+                        try {
+                            // Parse JSON string to array
+                            const parsedSubjects = JSON.parse(staffInfo.subject);
+                            if (Array.isArray(parsedSubjects)) {
+                                teacherSubjects = [...teacherSubjects, ...parsedSubjects];
+                            }
+                        } catch (error) {
+                            logger.warn(`Failed to parse subject JSON for teacher ${user.full_name}:`, staffInfo.subject);
+                        }
+                    }
                 }
 
                 // Then, check class_teacher_assignments for additional subjects
