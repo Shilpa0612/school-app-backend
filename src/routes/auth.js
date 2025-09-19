@@ -3,6 +3,7 @@ import express from 'express';
 import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
 import { adminSupabase, monitoredSupabase, queryOptimizer } from '../config/supabase.js';
+import { authenticate } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
