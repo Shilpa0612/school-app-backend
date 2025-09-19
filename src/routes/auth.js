@@ -772,6 +772,96 @@ router.post('/login', async (req, res, next) => {
     }
 });
 
+// Update password endpoint
+router.put('/update-password', authenticate, async (req, res) => {
+    try {
+        const { current_password, new_password } = req.body;
+        const userId = req.user.id;
+
+        // Validate input
+        if (!current_password || !new_password) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Current password and new password are required'
+            });
+        }
+
+        // Validate new password strength
+        if (new_password.length < 6) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'New password must be at least 6 characters long'
+            });
+        }
+
+        // Get current user data
+        const { data: user, error: userError } = await adminSupabase
+            .from('users')
+            .select('id, password_hash, is_registered')
+            .eq('id', userId)
+            .single();
+
+        if (userError || !user) {
+            return res.status(404).json({
+                status: 'error',
+                message: 'User not found'
+            });
+        }
+
+        // Check if user is registered (has password)
+        if (!user.is_registered || !user.password_hash) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'User must be registered to change password'
+            });
+        }
+
+        // Verify current password
+        const bcrypt = await import('bcrypt');
+        const isValidCurrentPassword = await bcrypt.default.compare(current_password, user.password_hash);
+
+        if (!isValidCurrentPassword) {
+            return res.status(401).json({
+                status: 'error',
+                message: 'Current password is incorrect'
+            });
+        }
+
+        // Hash new password
+        const salt = await bcrypt.default.genSalt(10);
+        const hashedNewPassword = await bcrypt.default.hash(new_password, salt);
+
+        // Update password in database
+        const { error: updateError } = await adminSupabase
+            .from('users')
+            .update({
+                password_hash: hashedNewPassword,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', userId);
+
+        if (updateError) {
+            logger.error('Error updating password:', updateError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to update password'
+            });
+        }
+
+        res.json({
+            status: 'success',
+            message: 'Password updated successfully'
+        });
+
+    } catch (error) {
+        logger.error('Error in update password:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
 // OPTIMIZATION: Performance monitoring endpoint for scale testing
 router.get('/performance-stats', async (req, res) => {
     try {
