@@ -31,12 +31,13 @@ const safeUploadPhoto = (req, res, next) => {
     });
 };
 
-// Get all students with pagination and filters (Admin/Principal only)
+// Get all students with pagination and filters (Admin/Principal only) - OPTIMIZED
 router.get('/',
     authenticate,
     authorize(['admin', 'principal']),
     async (req, res, next) => {
         try {
+            const startTime = Date.now();
             let {
                 page = 1,
                 limit = 20,
@@ -45,273 +46,167 @@ router.get('/',
                 class_level_id,
                 academic_year_id,
                 status = 'active',
-                unlinked_only = false
+                unlinked_only = false,
+                include_filters = 'true' // New parameter to control filter fetching
             } = req.query;
 
-            // Get current academic year if not specified
-            if (!academic_year_id) {
-                const { data: currentYear } = await adminSupabase
-                    .from('academic_years')
-                    .select('id')
-                    .eq('is_active', true)
-                    .single();
-                academic_year_id = currentYear?.id;
-            }
-
-            // First get the academic records that match our filters
-            let academicRecordsQuery = adminSupabase
-                .from('student_academic_records')
+            // OPTIMIZATION 1: Use direct student query with joins instead of pre-fetching academic records
+            let studentQuery = adminSupabase
+                .from('students_master')
                 .select(`
-                    student_id,
-                    roll_number,
+                    id,
+                    full_name,
+                    admission_number,
+                    date_of_birth,
+                    admission_date,
                     status,
-                    class_division:class_division_id (
+                    created_at,
+                    student_academic_records!inner (
                         id,
-                        division,
-                        class_level:class_level_id (
+                        roll_number,
+                        status,
+                        class_division:class_division_id (
                             id,
-                            name,
-                            sequence_number
-                        ),
-                        academic_year:academic_year_id (
-                            id,
-                            year_name
-                        ),
-                        teacher:teacher_id (
-                            id,
-                            full_name
-                        ),
-                        class_teacher_assignments (
-                            id,
-                            teacher_id,
-                            assignment_type,
-                            subject,
-                            is_primary,
-                            is_active,
+                            division,
+                            class_level:class_level_id (
+                                id,
+                                name,
+                                sequence_number
+                            ),
+                            academic_year:academic_year_id (
+                                id,
+                                year_name
+                            ),
                             teacher:teacher_id (
                                 id,
                                 full_name
                             )
                         )
                     )
-                `)
-                .eq('status', 'ongoing');
+                `, { count: 'exact' });
 
-            if (academic_year_id) {
-                academicRecordsQuery = academicRecordsQuery.eq('class_division.academic_year_id', academic_year_id);
+            // OPTIMIZATION 2: Apply filters directly in the main query
+            studentQuery = studentQuery.eq('status', status);
+            studentQuery = studentQuery.eq('student_academic_records.status', 'ongoing');
+
+            if (search) {
+                studentQuery = studentQuery.or(`full_name.ilike.%${search}%,admission_number.ilike.%${search}%`);
             }
 
             if (class_division_id) {
-                academicRecordsQuery = academicRecordsQuery.eq('class_division_id', class_division_id);
+                studentQuery = studentQuery.eq('student_academic_records.class_division_id', class_division_id);
             }
 
             if (class_level_id) {
-                academicRecordsQuery = academicRecordsQuery.eq('class_division.class_level_id', class_level_id);
+                studentQuery = studentQuery.eq('student_academic_records.class_division.class_level_id', class_level_id);
             }
 
-            const { data: academicRecords, error: academicError } = await academicRecordsQuery;
-
-            if (academicError) {
-                logger.error('Error fetching academic records:', academicError);
-                throw academicError;
+            if (academic_year_id) {
+                studentQuery = studentQuery.eq('student_academic_records.class_division.academic_year_id', academic_year_id);
             }
 
-            // Get the student IDs that match our filters
-            const studentIds = academicRecords ? academicRecords.map(record => record.student_id) : [];
-
-            // Build database-level count and data queries
-            const applyStudentFilters = (qb) => {
-                if (status) qb = qb.eq('status', status);
-                if (search) qb = qb.or(`full_name.ilike.%${search}%,admission_number.ilike.%${search}%`);
-                if (academic_year_id || class_division_id || class_level_id) {
-                    if (studentIds.length > 0) {
-                        qb = qb.in('id', studentIds);
-                    } else {
-                        // If filters provided but no matches in academic records, short-circuit with empty response
-                        return null;
-                    }
-                }
-                return qb;
-            };
-
-            // Count query
-            let countQuery = applyStudentFilters(
-                adminSupabase
-                    .from('students_master')
-                    .select('id', { count: 'exact', head: true })
-            );
-
-            if (countQuery === null) {
-                return res.json({
-                    status: 'success',
-                    data: {
-                        students: [],
-                        count: 0,
-                        total_count: 0,
-                        pagination: {
-                            page: parseInt(page),
-                            limit: parseInt(limit),
-                            total: 0,
-                            total_pages: 0,
-                            has_next: false,
-                            has_prev: false
-                        },
-                        filters: {
-                            search: search || null,
-                            class_division_id: class_division_id || null,
-                            class_level_id: class_level_id || null,
-                            academic_year_id: academic_year_id || null,
-                            status: status || 'active',
-                            unlinked_only: unlinked_only === 'true'
-                        }
-                    }
-                });
-            }
-
-            const { count: totalCount, error: countError } = await countQuery;
-            if (countError) {
-                logger.error('Error counting students:', countError);
-                throw countError;
-            }
-
-            // Data query with pagination (base fields only)
+            // OPTIMIZATION 3: Get count and paginated data in one query
             const offset = (page - 1) * limit;
-            let dataQuery = applyStudentFilters(
-                adminSupabase
-                    .from('students_master')
-                    .select(`
-                        id,
-                        full_name,
-                        admission_number,
-                        date_of_birth,
-                        admission_date,
-                        status,
-                        created_at
-                    `)
-            );
-
-            const { data: pageStudents, error: dataError } = await dataQuery
+            const { data: students, count: totalCount, error: studentsError } = await studentQuery
                 .order('created_at', { ascending: false })
                 .range(offset, offset + limit - 1);
 
-            if (dataError) {
-                logger.error('Error fetching students:', dataError);
-                throw dataError;
+            if (studentsError) {
+                logger.error('Error fetching students:', studentsError);
+                throw studentsError;
             }
 
-            const pageStudentIds = pageStudents.map(s => s.id);
+            const pageStudentIds = (students || []).map(s => s.id);
 
-            // Batch fetch academic records for paginated students
-            const { data: pageAcademicRecords, error: pageAcademicError } = await adminSupabase
-                .from('student_academic_records')
-                .select(`
-                    student_id,
-                    id,
-                    roll_number,
-                    status,
-                    class_division:class_division_id (
-                        id,
-                        division,
-                        class_level:class_level_id (
+            // OPTIMIZATION 4: Only fetch parent mappings if needed
+            let parentMappings = [];
+            if (unlinked_only === 'true' || include_filters === 'true') {
+                const { data: pageParentMappings, error: pageMappingError } = await adminSupabase
+                    .from('parent_student_mappings')
+                    .select(`
+                        student_id,
+                        relationship,
+                        is_primary_guardian,
+                        parent:parent_id (
                             id,
-                            name,
-                            sequence_number
-                        ),
-                        academic_year:academic_year_id (
-                            id,
-                            year_name
-                        ),
-                        teacher:teacher_id (
-                            id,
-                            full_name
+                            full_name,
+                            phone_number,
+                            email
                         )
-                    )
-                `)
-                .in('student_id', pageStudentIds)
-                .eq('status', 'ongoing');
+                    `)
+                    .in('student_id', pageStudentIds);
 
-            if (pageAcademicError) {
-                logger.error('Error fetching academic records:', pageAcademicError);
+                if (pageMappingError) {
+                    logger.error('Error fetching parent mappings:', pageMappingError);
+                } else {
+                    parentMappings = pageParentMappings || [];
+                }
             }
 
-            // Batch fetch parent mappings for paginated students
-            const { data: pageParentMappings, error: pageMappingError } = await adminSupabase
-                .from('parent_student_mappings')
-                .select(`
-                    student_id,
-                    relationship,
-                    is_primary_guardian,
-                    parent:parent_id (
-                        id,
-                        full_name,
-                        phone_number,
-                        email
-                    )
-                `)
-                .in('student_id', pageStudentIds);
-
-            if (pageMappingError) {
-                logger.error('Error fetching parent mappings:', pageMappingError);
-            }
-
-            // Build maps
-            const academicByStudent = {};
-            (pageAcademicRecords || []).forEach(record => {
-                if (!academicByStudent[record.student_id]) academicByStudent[record.student_id] = [];
-                academicByStudent[record.student_id].push(record);
-            });
-
+            // Build parent mapping lookup
             const mappingsByStudent = {};
-            (pageParentMappings || []).forEach(mapping => {
+            parentMappings.forEach(mapping => {
                 if (!mappingsByStudent[mapping.student_id]) mappingsByStudent[mapping.student_id] = [];
                 mappingsByStudent[mapping.student_id].push(mapping);
             });
 
-            // Apply unlinked_only filter on the paginated page
-            let paginatedStudents = pageStudents;
+            // OPTIMIZATION 5: Apply unlinked_only filter after fetching data
+            let filteredStudents = students || [];
             if (unlinked_only === 'true') {
-                paginatedStudents = pageStudents.filter(student =>
+                filteredStudents = students.filter(student =>
                     !mappingsByStudent[student.id] || mappingsByStudent[student.id].length === 0
                 );
             }
 
-            // Get available filters for response
-            const { data: academicYears } = await adminSupabase
-                .from('academic_years')
-                .select('id, year_name')
-                .order('year_name', { ascending: false });
+            // OPTIMIZATION 6: Only fetch filter data if requested (default: true for backward compatibility)
+            let availableFilters = {};
+            if (include_filters === 'true') {
+                const [academicYearsResult, classLevelsResult, classDivisionsResult] = await Promise.all([
+                    adminSupabase
+                        .from('academic_years')
+                        .select('id, year_name')
+                        .order('year_name', { ascending: false }),
+                    adminSupabase
+                        .from('class_levels')
+                        .select('id, name, sequence_number')
+                        .order('sequence_number'),
+                    adminSupabase
+                        .from('class_divisions')
+                        .select(`
+                            id,
+                            division,
+                            level:class_level_id(id, name),
+                            teacher:teacher_id(id, full_name),
+                            academic_year:academic_year_id(id, year_name)
+                        `)
+                        .order('level.sequence_number')
+                        .order('division')
+                ]);
 
-            const { data: classLevels } = await adminSupabase
-                .from('class_levels')
-                .select('id, name, sequence_number')
-                .order('sequence_number');
+                availableFilters = {
+                    academic_years: academicYearsResult.data || [],
+                    class_levels: classLevelsResult.data || [],
+                    class_divisions: classDivisionsResult.data || []
+                };
+            }
 
-            const { data: classDivisions } = await adminSupabase
-                .from('class_divisions')
-                .select(`
-                    id,
-                    division,
-                    level:class_level_id(id, name),
-                    teacher:teacher_id(id, full_name),
-                    academic_year:academic_year_id(id, year_name)
-                `)
-                .order('level.sequence_number')
-                .order('division');
+            const endTime = Date.now();
+            const queryTime = endTime - startTime;
 
             res.json({
                 status: 'success',
                 data: {
-                    students: paginatedStudents.map(student => ({
+                    students: filteredStudents.map(student => ({
                         id: student.id,
                         full_name: student.full_name,
                         admission_number: student.admission_number,
                         date_of_birth: student.date_of_birth,
                         admission_date: student.admission_date,
                         status: student.status,
-                        student_academic_records: academicByStudent[student.id] || [],
+                        student_academic_records: student.student_academic_records || [],
                         parent_student_mappings: mappingsByStudent[student.id] || []
                     })),
-                    count: paginatedStudents.length,
+                    count: filteredStudents.length,
                     total_count: totalCount || 0,
                     pagination: {
                         page: parseInt(page),
@@ -329,10 +224,10 @@ router.get('/',
                         status: status || 'active',
                         unlinked_only: unlinked_only === 'true'
                     },
-                    available_filters: {
-                        academic_years: academicYears,
-                        class_levels: classLevels,
-                        class_divisions: classDivisions
+                    available_filters: availableFilters,
+                    performance: {
+                        query_time_ms: queryTime,
+                        optimization: 'direct_joins_optimized'
                     }
                 }
             });
