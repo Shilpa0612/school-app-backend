@@ -646,7 +646,7 @@ router.get('/my-teacher-id',
                         substitute_teacher_for: classesWithStudentCounts.filter(c => c.assignment_type === 'substitute_teacher').length
                     },
                     subjects_taught: classesWithStudentCounts
-                        .filter(c => c.assignment_type === 'subject_teacher' && c.subject)
+                        .filter(c => c.subject) // Include subjects from ALL assignment types (class_teacher, subject_teacher, etc.)
                         .map(c => c.subject)
                         .filter((subject, index, arr) => arr.indexOf(subject) === index) // Remove duplicates
                 }
@@ -704,76 +704,73 @@ router.get('/teachers',
                 // Continue without staff data if error
             }
 
-            // Get teacher assignments to check subjects if filtering by subject
+            // Get teacher assignments - ALWAYS fetch assignments for all teachers
             let teacherAssignments = [];
-            if (subject) {
-                logger.info(`Searching for teachers with subject: ${subject}`);
 
-                // First, try to get subjects from staff table
-                const { data: staffWithSubjects, error: staffSubjectsError } = await adminSupabase
-                    .from('staff')
-                    .select(`
-                        user_id,
-                        subject
-                    `)
-                    .eq('is_active', true)
-                    .not('subject', 'is', null);
+            // First, try to get subjects from staff table
+            const { data: staffWithSubjects, error: staffSubjectsError } = await adminSupabase
+                .from('staff')
+                .select(`
+                    user_id,
+                    subject
+                `)
+                .eq('is_active', true)
+                .not('subject', 'is', null);
 
-                if (!staffSubjectsError && staffWithSubjects) {
-                    logger.info(`Found ${staffWithSubjects.length} staff records with subjects`);
-                    // Flatten the subjects array for each teacher
-                    staffWithSubjects.forEach(staff => {
-                        if (staff.subject && Array.isArray(staff.subject)) {
-                            staff.subject.forEach(subjectName => {
-                                teacherAssignments.push({
-                                    teacher_id: staff.user_id,
-                                    subject: subjectName
-                                });
-                            });
-                        }
-                    });
-                } else {
-                    logger.info(`Staff subjects error: ${staffSubjectsError}`);
-                }
-
-                // Also check class_teacher_assignments table for existing subject assignments
-                const { data: classAssignments, error: classAssignmentsError } = await adminSupabase
-                    .from('class_teacher_assignments')
-                    .select(`
-                        teacher_id,
-                        subject
-                    `)
-                    .eq('is_active', true)
-                    .not('subject', 'is', null);
-
-                if (!classAssignmentsError && classAssignments) {
-                    logger.info(`Found ${classAssignments.length} class assignments with subjects`);
-                    // Add class assignments to the list
-                    classAssignments.forEach(assignment => {
-                        if (assignment.subject) {
+            if (!staffSubjectsError && staffWithSubjects) {
+                logger.info(`Found ${staffWithSubjects.length} staff records with subjects`);
+                // Flatten the subjects array for each teacher
+                staffWithSubjects.forEach(staff => {
+                    if (staff.subject && Array.isArray(staff.subject)) {
+                        staff.subject.forEach(subjectName => {
                             teacherAssignments.push({
-                                teacher_id: assignment.teacher_id,
-                                subject: assignment.subject
+                                teacher_id: staff.user_id,
+                                subject: subjectName
                             });
-                        }
-                    });
-                } else {
-                    logger.info(`Class assignments error: ${classAssignmentsError}`);
-                }
-
-                // Check if there are any subjects in the subjects table
-                const { data: allSubjects, error: subjectsError } = await adminSupabase
-                    .from('subjects')
-                    .select('name')
-                    .eq('is_active', true);
-
-                if (!subjectsError && allSubjects) {
-                    logger.info(`Available subjects in system: ${allSubjects.map(s => s.name).join(', ')}`);
-                }
-
-                logger.info(`Total subject assignments found: ${teacherAssignments.length}`);
-                logger.info(`Subject assignments:`, teacherAssignments);
+                        });
+                    }
+                });
+            } else {
+                logger.info(`Staff subjects error: ${staffSubjectsError}`);
             }
+
+            // Also check class_teacher_assignments table for existing subject assignments
+            const { data: classAssignments, error: classAssignmentsError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    teacher_id,
+                    subject
+                `)
+                .eq('is_active', true)
+                .not('subject', 'is', null);
+
+            if (!classAssignmentsError && classAssignments) {
+                logger.info(`Found ${classAssignments.length} class assignments with subjects`);
+                // Add class assignments to the list
+                classAssignments.forEach(assignment => {
+                    if (assignment.subject) {
+                        teacherAssignments.push({
+                            teacher_id: assignment.teacher_id,
+                            subject: assignment.subject
+                        });
+                    }
+                });
+            } else {
+                logger.info(`Class assignments error: ${classAssignmentsError}`);
+            }
+
+            // Check if there are any subjects in the subjects table
+            const { data: allSubjects, error: subjectsError } = await adminSupabase
+                .from('subjects')
+                .select('name')
+                .eq('is_active', true);
+
+            if (!subjectsError && allSubjects) {
+                logger.info(`Available subjects in system: ${allSubjects.map(s => s.name).join(', ')}`);
+            }
+
+            logger.info(`Total subject assignments found: ${teacherAssignments.length}`);
+            logger.info(`Subject assignments:`, teacherAssignments);
 
             // Combine the data
             let teachers = usersData.map(user => {
@@ -802,14 +799,13 @@ router.get('/teachers',
                 }
 
                 // Then, check class_teacher_assignments for additional subjects
-                if (subject) {
-                    const classSubjects = teacherAssignments
-                        .filter(assignment => assignment.teacher_id === user.id)
-                        .map(assignment => assignment.subject)
-                        .filter(Boolean); // Remove null/undefined
+                // Always fetch from assignments, not just when filtering
+                const classSubjects = teacherAssignments
+                    .filter(assignment => assignment.teacher_id === user.id)
+                    .map(assignment => assignment.subject)
+                    .filter(Boolean); // Remove null/undefined
 
-                    teacherSubjects = [...teacherSubjects, ...classSubjects];
-                }
+                teacherSubjects = [...teacherSubjects, ...classSubjects];
 
                 // Remove duplicates and filter out empty values
                 teacherSubjects = [...new Set(teacherSubjects)].filter(subject => subject && subject.trim().length > 0);
