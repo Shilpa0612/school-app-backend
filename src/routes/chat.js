@@ -280,7 +280,8 @@ router.get('/threads', authenticate, async (req, res) => {
             page, limit, status, user_id: req.user.id, user_role: req.user.role
         });
 
-        // OPTIMIZATION 1: Get user's thread IDs first (simpler approach)
+        // SECURITY: Only get threads where user is a participant (regardless of role)
+        // This ensures principals/admins only see their own threads, not all system threads
         const { data: userParticipations, error: participationError } = await adminSupabase
             .from('chat_participants')
             .select('thread_id, role, last_read_at')
@@ -313,6 +314,27 @@ router.get('/threads', authenticate, async (req, res) => {
         }
 
         const threadIds = userParticipations.map(p => p.thread_id);
+        logger.info(`Found ${userParticipations?.length || 0} participations for user ${req.user.id} (${req.user.role}). Thread IDs:`, threadIds);
+
+        // SECURITY: Only fetch threads where user is actually a participant
+        if (threadIds.length === 0) {
+            logger.info(`No thread participations found for user ${req.user.id} (${req.user.role}) - returning empty result`);
+            return res.json({
+                status: 'success',
+                data: {
+                    threads: [],
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total: 0,
+                        total_pages: 0
+                    },
+                    performance: {
+                        query_time_ms: Date.now() - startTime
+                    }
+                }
+            });
+        }
 
         // OPTIMIZATION 2: Get threads with participants in one query
         const { data: threads, error: threadError } = await adminSupabase
@@ -428,7 +450,20 @@ router.get('/threads', authenticate, async (req, res) => {
         // OPTIMIZATION 4: Response with performance metrics
 
         const totalTime = Date.now() - startTime;
-        logger.info(`Threads fetched in ${totalTime}ms for user ${req.user.id}`);
+        logger.info(`Threads fetched in ${totalTime}ms for user ${req.user.id} (${req.user.role})`);
+        logger.info(`Returning ${processedThreads.length} threads for user ${req.user.id}:`,
+            processedThreads.map(t => ({ id: t.id, title: t.title, participants: t.participants.length })));
+
+        // SECURITY: Verify that all returned threads actually contain the user as a participant
+        const userId = req.user.id;
+        const invalidThreads = processedThreads.filter(thread =>
+            !thread.participants.some(p => p.user_id === userId)
+        );
+
+        if (invalidThreads.length > 0) {
+            logger.error(`SECURITY ISSUE: Found ${invalidThreads.length} threads where user ${userId} is not a participant:`,
+                invalidThreads.map(t => ({ id: t.id, title: t.title })));
+        }
 
         res.json({
             status: 'success',
