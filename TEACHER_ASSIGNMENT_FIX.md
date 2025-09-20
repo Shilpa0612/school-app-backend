@@ -24,11 +24,15 @@ This endpoint now properly handles subject-specific teacher assignments with rep
 ### Logic Flow:
 
 1. **Validates** class division and teacher exist
-2. **Checks for existing assignment** for the same subject in the class
-3. **If existing assignment found:**
-   - **Updates** the assignment to the new teacher
+2. **Checks for existing assignments** for the same subject in the class
+3. **If multiple existing assignments found (3-5 teachers):**
+   - **Deactivates all existing assignments** for the subject
+   - **Creates new assignment** for the new teacher
+   - **Action:** "replaced_multiple" (with count of replaced teachers)
+4. **If single existing assignment found:**
+   - **Updates** the assignment to the new teacher (if different)
    - **Action:** "reassigned" (if different teacher) or "updated" (if same teacher)
-4. **If no existing assignment:**
+5. **If no existing assignment:**
    - **Creates** new assignment
    - **Action:** "assigned"
 
@@ -99,7 +103,26 @@ Authorization: Bearer <your-token>
       "subject": "Mathematics"
     },
     "action": "reassigned",
+    "replaced_count": 1,
     "message": "Teacher New Teacher successfully reassigned to teach Mathematics for this class"
+  }
+}
+```
+
+### Multiple Teachers Replacement:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "assignment": {
+      "id": "new-assignment-uuid",
+      "teacher_id": "new-teacher-uuid",
+      "subject": "Mathematics"
+    },
+    "action": "replaced_multiple",
+    "replaced_count": 5,
+    "message": "Teacher New Teacher successfully assigned to teach Mathematics for this class (replaced 5 existing teachers)"
   }
 }
 ```
