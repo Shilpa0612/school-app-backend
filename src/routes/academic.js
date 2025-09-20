@@ -1368,6 +1368,19 @@ router.post('/class-divisions/:id/assign-teacher',
                 });
             }
 
+            // If this is a primary class teacher assignment, also update the legacy teacher_id field
+            if (assignment_type === 'class_teacher' && is_primary) {
+                const { error: updateClassDivisionError } = await adminSupabase
+                    .from('class_divisions')
+                    .update({ teacher_id: teacher_id })
+                    .eq('id', class_division_id);
+
+                if (updateClassDivisionError) {
+                    logger.warn('Warning: Failed to update legacy teacher_id field:', updateClassDivisionError);
+                    // Don't fail the whole operation, just log the warning
+                }
+            }
+
             res.status(201).json({
                 status: 'success',
                 data: {
@@ -1759,6 +1772,19 @@ router.put('/class-divisions/:class_division_id/assignments/:assignment_id/reass
                 throw updateError;
             }
 
+            // If this is a primary class teacher assignment, also update the legacy teacher_id field
+            if (updatedAssignment.assignment_type === 'class_teacher' && updatedAssignment.is_primary) {
+                const { error: updateClassDivisionError } = await adminSupabase
+                    .from('class_divisions')
+                    .update({ teacher_id: updatedAssignment.teacher_id })
+                    .eq('id', class_division_id);
+
+                if (updateClassDivisionError) {
+                    logger.warn('Warning: Failed to update legacy teacher_id field:', updateClassDivisionError);
+                    // Don't fail the whole operation, just log the warning
+                }
+            }
+
             const wasTeacherChanged = existingAssignment.teacher_id !== teacher_id;
             const wasSubjectChanged = subject && existingAssignment.subject !== subject;
 
@@ -1790,6 +1816,83 @@ router.put('/class-divisions/:class_division_id/assignments/:assignment_id/reass
 
         } catch (error) {
             logger.error('Error in assignment reassign endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Delete specific assignment by assignment ID
+router.delete('/class-divisions/:class_division_id/assignments/:assignment_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { class_division_id, assignment_id } = req.params;
+
+            // Verify the assignment exists and belongs to this class
+            const { data: existingAssignment, error: fetchError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    subject,
+                    assignment_type,
+                    class_division_id,
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    )
+                `)
+                .eq('id', assignment_id)
+                .eq('class_division_id', class_division_id)
+                .single();
+
+            if (fetchError || !existingAssignment) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Assignment not found'
+                });
+            }
+
+            // If this is a primary class teacher, clear the legacy teacher_id field first
+            if (existingAssignment.assignment_type === 'class_teacher' && existingAssignment.is_primary) {
+                const { error: clearLegacyError } = await adminSupabase
+                    .from('class_divisions')
+                    .update({ teacher_id: null })
+                    .eq('id', class_division_id);
+
+                if (clearLegacyError) {
+                    logger.warn('Warning: Failed to clear legacy teacher_id field:', clearLegacyError);
+                    // Don't fail the whole operation, just log the warning
+                }
+            }
+
+            // Delete the assignment
+            const { error: deleteError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .delete()
+                .eq('id', assignment_id);
+
+            if (deleteError) {
+                logger.error('Error deleting assignment:', deleteError);
+                throw deleteError;
+            }
+
+            res.status(200).json({
+                status: 'success',
+                data: {
+                    deleted_assignment: {
+                        id: existingAssignment.id,
+                        teacher_name: existingAssignment.teacher?.full_name,
+                        subject: existingAssignment.subject,
+                        assignment_type: existingAssignment.assignment_type
+                    },
+                    message: `Assignment deleted successfully: ${existingAssignment.teacher?.full_name} - ${existingAssignment.subject}`
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in assignment deletion endpoint:', error);
             next(error);
         }
     }
