@@ -1451,51 +1451,98 @@ router.put('/class-divisions/:id/teacher-assignment/:teacher_id',
             if (existingAssignments && existingAssignments.length > 0) {
                 // Handle multiple existing assignments for the same subject
                 replacedCount = existingAssignments.length;
-                
+
                 // Check if the new teacher is already assigned to this subject
-                const isAlreadyAssigned = existingAssignments.some(a => a.teacher_id === teacher_id);
-                
-                if (isAlreadyAssigned && existingAssignments.length === 1) {
-                    // Same teacher, just update the assignment details
-                    const { data: updatedAssignment, error: updateError } = await adminSupabase
-                        .from('class_teacher_assignments')
-                        .update({
-                            assignment_type,
-                            is_primary,
-                            assigned_by: req.user.id,
-                            assigned_date: new Date().toISOString()
-                        })
-                        .eq('id', existingAssignments[0].id)
-                        .select(`
-                            *,
-                            teacher:teacher_id (
-                                id,
-                                full_name,
-                                phone_number,
-                                email
-                            )
-                        `)
-                        .single();
+                const existingAssignment = existingAssignments.find(a => a.teacher_id === teacher_id);
 
-                    if (updateError) {
-                        logger.error('Error updating teacher assignment:', updateError);
-                        throw updateError;
+                if (existingAssignment) {
+                    // Same teacher already assigned to this subject
+                    if (existingAssignments.length === 1) {
+                        // Only this teacher assigned, just update the assignment details
+                        const { data: updatedAssignment, error: updateError } = await adminSupabase
+                            .from('class_teacher_assignments')
+                            .update({
+                                assignment_type,
+                                is_primary,
+                                assigned_by: req.user.id,
+                                assigned_date: new Date().toISOString()
+                            })
+                            .eq('id', existingAssignment.id)
+                            .select(`
+                                *,
+                                teacher:teacher_id (
+                                    id,
+                                    full_name,
+                                    phone_number,
+                                    email
+                                )
+                            `)
+                            .single();
+
+                        if (updateError) {
+                            logger.error('Error updating teacher assignment:', updateError);
+                            throw updateError;
+                        }
+
+                        assignment = updatedAssignment;
+                        action = 'updated';
+                    } else {
+                        // Multiple teachers assigned, keep this teacher and deactivate others
+                        const otherAssignments = existingAssignments.filter(a => a.teacher_id !== teacher_id);
+
+                        // Delete other teachers' assignments for this subject
+                        const { error: deleteError } = await adminSupabase
+                            .from('class_teacher_assignments')
+                            .delete()
+                            .in('id', otherAssignments.map(a => a.id));
+
+                        if (deleteError) {
+                            logger.error('Error deleting other assignments:', deleteError);
+                            throw deleteError;
+                        }
+
+                        // Update the existing assignment for this teacher
+                        const { data: updatedAssignment, error: updateError } = await adminSupabase
+                            .from('class_teacher_assignments')
+                            .update({
+                                assignment_type,
+                                is_primary,
+                                assigned_by: req.user.id,
+                                assigned_date: new Date().toISOString()
+                            })
+                            .eq('id', existingAssignment.id)
+                            .select(`
+                                *,
+                                teacher:teacher_id (
+                                    id,
+                                    full_name,
+                                    phone_number,
+                                    email
+                                )
+                            `)
+                            .single();
+
+                        if (updateError) {
+                            logger.error('Error updating teacher assignment:', updateError);
+                            throw updateError;
+                        }
+
+                        assignment = updatedAssignment;
+                        action = 'replaced_multiple';
+                        replacedCount = otherAssignments.length; // Count only the ones we deleted
                     }
-
-                    assignment = updatedAssignment;
-                    action = 'updated';
                 } else {
-                    // Deactivate all existing assignments for this subject
-                    const { error: deactivateError } = await adminSupabase
+                    // Different teacher, delete all existing assignments and create new one
+                    const { error: deleteError } = await adminSupabase
                         .from('class_teacher_assignments')
-                        .update({ is_active: false })
+                        .delete()
                         .eq('class_division_id', class_division_id)
                         .eq('subject', subject)
                         .eq('is_active', true);
 
-                    if (deactivateError) {
-                        logger.error('Error deactivating existing assignments:', deactivateError);
-                        throw deactivateError;
+                    if (deleteError) {
+                        logger.error('Error deleting existing assignments:', deleteError);
+                        throw deleteError;
                     }
 
                     // Create new assignment for the new teacher
@@ -1565,7 +1612,7 @@ router.put('/class-divisions/:id/teacher-assignment/:teacher_id',
             // Generate appropriate message based on action
             let message;
             if (action === 'replaced_multiple') {
-                message = `Teacher ${teacher.full_name} successfully assigned to teach ${subject} for this class (replaced ${replacedCount} existing teachers)`;
+                message = `Teacher ${teacher.full_name} is now the only teacher for ${subject} in this class (deleted ${replacedCount} other teachers)`;
             } else if (action === 'reassigned') {
                 message = `Teacher ${teacher.full_name} successfully reassigned to teach ${subject} for this class`;
             } else if (action === 'updated') {
@@ -1586,6 +1633,163 @@ router.put('/class-divisions/:id/teacher-assignment/:teacher_id',
 
         } catch (error) {
             logger.error('Error in teacher assignment endpoint:', error);
+            next(error);
+        }
+    }
+);
+
+// Update assignment to different teacher (using assignment ID)
+router.put('/class-divisions/:class_division_id/assignments/:assignment_id/reassign',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('teacher_id').isUUID().withMessage('Valid teacher ID is required'),
+        body('subject').optional().isString().trim().notEmpty().withMessage('Subject must be a non-empty string'),
+        body('assignment_type').optional().isIn(['class_teacher', 'subject_teacher', 'assistant_teacher', 'substitute_teacher']).withMessage('Valid assignment type required'),
+        body('is_primary').optional().isBoolean().withMessage('is_primary must be boolean')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { class_division_id, assignment_id } = req.params;
+            const { teacher_id, subject, assignment_type, is_primary } = req.body;
+
+            // Verify the assignment exists and belongs to this class
+            const { data: existingAssignment, error: fetchError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    subject,
+                    assignment_type,
+                    is_primary,
+                    class_division_id,
+                    teacher:teacher_id (
+                        id,
+                        full_name
+                    )
+                `)
+                .eq('id', assignment_id)
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true)
+                .single();
+
+            if (fetchError || !existingAssignment) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Assignment not found'
+                });
+            }
+
+            // Verify new teacher exists and has teacher role
+            const { data: newTeacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !newTeacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found or invalid role'
+                });
+            }
+
+            // Check if the new teacher already has an assignment for this subject in this class
+            // (only if we're changing the teacher)
+            if (existingAssignment.teacher_id !== teacher_id) {
+                const { data: conflictingAssignment, error: conflictError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .select('id')
+                    .eq('class_division_id', class_division_id)
+                    .eq('teacher_id', teacher_id)
+                    .eq('assignment_type', assignment_type || existingAssignment.assignment_type)
+                    .eq('subject', subject || existingAssignment.subject)
+                    .eq('is_active', true)
+                    .maybeSingle();
+
+                if (conflictingAssignment) {
+                    // Delete the conflicting assignment to avoid constraint violation
+                    const { error: deleteError } = await adminSupabase
+                        .from('class_teacher_assignments')
+                        .delete()
+                        .eq('id', conflictingAssignment.id);
+
+                    if (deleteError) {
+                        logger.error('Error deleting conflicting assignment:', deleteError);
+                        throw deleteError;
+                    }
+                }
+            }
+
+            // Update the assignment
+            const updateData = {
+                teacher_id,
+                assigned_by: req.user.id,
+                assigned_date: new Date().toISOString()
+            };
+
+            // Only update fields that were provided
+            if (subject !== undefined) updateData.subject = subject;
+            if (assignment_type !== undefined) updateData.assignment_type = assignment_type;
+            if (is_primary !== undefined) updateData.is_primary = is_primary;
+
+            const { data: updatedAssignment, error: updateError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .update(updateData)
+                .eq('id', assignment_id)
+                .select(`
+                    *,
+                    teacher:teacher_id (
+                        id,
+                        full_name,
+                        phone_number,
+                        email
+                    )
+                `)
+                .single();
+
+            if (updateError) {
+                logger.error('Error updating assignment:', updateError);
+                throw updateError;
+            }
+
+            const wasTeacherChanged = existingAssignment.teacher_id !== teacher_id;
+            const wasSubjectChanged = subject && existingAssignment.subject !== subject;
+
+            let action = 'updated';
+            let message = `Assignment updated successfully`;
+
+            if (wasTeacherChanged && wasSubjectChanged) {
+                action = 'reassigned_with_subject_change';
+                message = `Assignment reassigned from ${existingAssignment.teacher.full_name} to ${newTeacher.full_name} and subject changed to ${subject}`;
+            } else if (wasTeacherChanged) {
+                action = 'reassigned';
+                message = `Assignment reassigned from ${existingAssignment.teacher.full_name} to ${newTeacher.full_name}`;
+            } else if (wasSubjectChanged) {
+                action = 'subject_updated';
+                message = `Subject updated to ${subject} for ${newTeacher.full_name}`;
+            } else {
+                message = `Assignment details updated for ${newTeacher.full_name}`;
+            }
+
+            res.status(200).json({
+                status: 'success',
+                data: {
+                    assignment: updatedAssignment,
+                    action,
+                    previous_teacher: wasTeacherChanged ? existingAssignment.teacher.full_name : null,
+                    message
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in assignment reassign endpoint:', error);
             next(error);
         }
     }

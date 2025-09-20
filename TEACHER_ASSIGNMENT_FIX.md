@@ -26,7 +26,7 @@ This endpoint now properly handles subject-specific teacher assignments with rep
 1. **Validates** class division and teacher exist
 2. **Checks for existing assignments** for the same subject in the class
 3. **If multiple existing assignments found (3-5 teachers):**
-   - **Deactivates all existing assignments** for the subject
+   - **Deletes all existing assignments** for the subject
    - **Creates new assignment** for the new teacher
    - **Action:** "replaced_multiple" (with count of replaced teachers)
 4. **If single existing assignment found:**
@@ -122,7 +122,7 @@ Authorization: Bearer <your-token>
     },
     "action": "replaced_multiple",
     "replaced_count": 5,
-    "message": "Teacher New Teacher successfully assigned to teach Mathematics for this class (replaced 5 existing teachers)"
+    "message": "Teacher New Teacher is now the only teacher for Mathematics in this class (deleted 5 other teachers)"
   }
 }
 ```
