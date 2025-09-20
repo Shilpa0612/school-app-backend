@@ -1,0 +1,139 @@
+{
+    "students": [
+        {
+            "admission_number": "233",
+            "full_name": "Aditya Anil Turerao",
+            "date_of_birth": "2009-01-01",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "1",
+            "gender": "male"
+        },
+        {
+            "admission_number": "234",
+            "full_name": "Atharva Nilesh Kumbhalkar",
+            "date_of_birth": "2010-12-06",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "2",
+            "gender": "male"
+        },
+        {
+            "admission_number": "235",
+            "full_name": "Devesh Santosh Wagh",
+            "date_of_birth": "2010-07-31",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "3",
+            "gender": "male"
+        },
+        {
+            "admission_number": "236",
+            "full_name": "Harshal Omprakash Kumawat",
+            "date_of_birth": "2011-03-16",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "4",
+            "gender": "male"
+        },
+        {
+            "admission_number": "237",
+            "full_name": "Ishan Milind Wankhade",
+            "date_of_birth": "2010-09-26",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "5",
+            "gender": "male"
+        },
+        {
+            "admission_number": "238",
+            "full_name": "Kirtee Dipa Dipak Borhade",
+            "date_of_birth": "2009-11-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "6",
+            "gender": "female"
+        },
+        {
+            "admission_number": "239",
+            "full_name": "Madhavi Vishwas Allhat",
+            "date_of_birth": "2008-08-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "7",
+            "gender": "female"
+        },
+        {
+            "admission_number": "240",
+            "full_name": "Praniti Krushna Thombre",
+            "date_of_birth": "2010-04-07",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "8",
+            "gender": "female"
+        },
+        {
+            "admission_number": "241",
+            "full_name": "Prathamesh Vishwambhar Tirukhe",
+            "date_of_birth": "2010-07-04",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "9",
+            "gender": "male"
+        },
+        {
+            "admission_number": "242",
+            "full_name": "Sagar Machindra Chavan",
+            "date_of_birth": "2010-02-03",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "10",
+            "gender": "male"
+        },
+        {
+            "admission_number": "243",
+            "full_name": "Sanskriti Dattu Wagh",
+            "date_of_birth": "2010-07-01",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "11",
+            "gender": "female"
+        },
+        {
+            "admission_number": "244",
+            "full_name": "Shrijeet Shaji Panicker",
+            "date_of_birth": "2009-01-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "12",
+            "gender": "male"
+        },
+        {
+            "admission_number": "245",
+            "full_name": "Sneha Dhanesh Kumar",
+            "date_of_birth": "2009-05-12",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "13",
+            "gender": "female"
+        },
+        {
+            "admission_number": "246",
+            "full_name": "Suraj Parmeshwar Kakde",
+            "date_of_birth": "2008-06-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "14",
+            "gender": "male"
+        },
+        {
+            "admission_number": "247",
+            "full_name": "Vishal Samadhan Pimpale",
+            "date_of_birth": "2009-04-16",
+            "admission_date": "2025-01-01",
+            "class_division_id": "9dee9c80-eedd-4e2c-bbed-9b6c7e9edf33",
+            "roll_number": "15",
+            "gender": "male"
+        }
+    ]
+}

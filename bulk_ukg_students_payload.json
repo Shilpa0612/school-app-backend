@@ -1,0 +1,104 @@
+{
+    "students": [
+        
+        {
+            "admission_number": "287",
+            "full_name": "Amaya Amardeep Verma",
+            "date_of_birth": "2019-10-19",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "1",
+            "gender": "female"
+        },
+        {
+            "admission_number": "288",
+            "full_name": "Arnav manoj khandelwal",
+            "date_of_birth": "2020-10-31",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "2",
+            "gender": "male"
+        },
+        {
+            "admission_number": "289",
+            "full_name": "Kartik Subhash Yadav",
+            "date_of_birth": "2019-08-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "3",
+            "gender": "male"
+        },
+        {
+            "admission_number": "290",
+            "full_name": "Samarth Rajesh Sharma",
+            "date_of_birth": "2020-03-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "4",
+            "gender": "male"
+        },
+        {
+            "admission_number": "291",
+            "full_name": "Samarth Shivaji Gavate",
+            "date_of_birth": "2020-01-19",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "5",
+            "gender": "male"
+        },
+        {
+            "admission_number": "292",
+            "full_name": "Shambho Navnath Naikwade",
+            "date_of_birth": "2019-01-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "6",
+            "gender": "male"
+        },
+        {
+            "admission_number": "293",
+            "full_name": "Shravani Raju Raut",
+            "date_of_birth": "2019-08-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "7",
+            "gender": "female"
+        },
+        {
+            "admission_number": "294",
+            "full_name": "Yogeshwar Nitin Bhakt",
+            "date_of_birth": "2019-11-28",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "8",
+            "gender": "male"
+        },
+        {
+            "admission_number": "295",
+            "full_name": "Sharvni Yogesh Nanwate",
+            "date_of_birth": "2020-07-26",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "9",
+            "gender": "female"
+        },
+        {
+            "admission_number": "296",
+            "full_name": "Siya Madhukar Ghule",
+            "date_of_birth": "2020-04-03",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "10",
+            "gender": "female"
+        },
+        {
+            "admission_number": "297",
+            "full_name": "Shreyansh Ramesh Hawale",
+            "date_of_birth": "2020-05-19",
+            "admission_date": "2025-01-01",
+            "class_division_id": "8425282b-5dd9-45d9-b582-86b876c3abaf",
+            "roll_number": "11",
+            "gender": "male"
+        }
+    ]
+}

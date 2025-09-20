@@ -1,0 +1,424 @@
+{
+  "parents": [
+    {
+      "full_name": "Prakash Subhash Sawant",
+      "phone_number": "9423124040",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "125",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Sunil Laxman Thote",
+      "phone_number": "7057131027",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "126",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Kiran Murlidar Harne",
+      "phone_number": "9819398130",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "127",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Rais Abdul Pathan",
+      "phone_number": "9527686605",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "128",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Ashok Bhanudas Gaikwad",
+      "phone_number": "9423274291",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "129",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Sushil Sapkal",
+      "phone_number": "9420222848",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "130",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Gulab Abbas Shaikh",
+      "phone_number": "9854549292",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "131",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Daulat Dhawle",
+      "phone_number": "9420367532",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "132",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Parmeshwar Pandurang Taral",
+      "phone_number": "9823694241",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "133",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Shaikh Sameer Tamboli",
+      "phone_number": "7083613599",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "134",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Sham Sandipan Mogarge",
+      "phone_number": "9423337937",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "135",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Dipak Keshavrao Darade",
+      "phone_number": "7720099777",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "136",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Santosh Venkati Gorpalle",
+      "phone_number": "8208084908",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "137",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Pradeep B Mohite",
+      "phone_number": "9890089086",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "138",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Dinkar Shankarrao Sakat",
+      "phone_number": "9422168455",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "139",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Sanjay Dnyandeo Rote",
+      "phone_number": "9405066013",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "140",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Milind Rameshrao Wankhede",
+      "phone_number": "9511275562",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "141",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Sunil Subhash Soni",
+      "phone_number": "9922939991",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "142",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Dnyandev Baban Jadhav",
+      "phone_number": "9595549990",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "143",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Subhash Bhandage",
+      "phone_number": "9420396652",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "144",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Bhagwan Prakash Pawar",
+      "phone_number": "9673808384",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "145",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Nitin prakash khandelwal",
+      "phone_number": "9158545420",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "146",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Rameshwar Shivaji Dabhade",
+      "phone_number": "9595962555",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "147",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Pradip Ramkisan Tekale",
+      "phone_number": "9604021073",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "148",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Jalindar Devidas Chavan",
+      "phone_number": "9503546663",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "149",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Shaji Panicker",
+      "phone_number": "8788613231",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "150",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Dattu Santukrao Wagh",
+      "phone_number": "9730000026",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "151",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Karan Tambe",
+      "phone_number": "7526977034",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "152",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Manish Ashok Singh",
+      "phone_number": "7058280058",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "153",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    },
+    {
+      "full_name": "Krushna Thombre",
+      "phone_number": "9881583606",
+      "email": null,
+      "initial_password": "Temp@1234",
+      "students": [
+        {
+          "admission_number": "154",
+          "relationship": "father",
+          "is_primary_guardian": true,
+          "access_level": "full"
+        }
+      ]
+    }
+  ]
+}

@@ -1409,6 +1409,240 @@ router.post('/staff/with-user', authenticate, async (req, res) => {
     }
 });
 
+// Bulk create staff members with user accounts
+router.post('/staff/bulk-with-user', authenticate, async (req, res) => {
+    try {
+        // Check permissions
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Only admins and principals can create staff in bulk'
+            });
+        }
+
+        const { staff_members } = req.body;
+
+        if (!Array.isArray(staff_members) || staff_members.length === 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'staff_members must be a non-empty array'
+            });
+        }
+
+        if (staff_members.length > 50) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Maximum 50 staff members can be created at once'
+            });
+        }
+
+        // Validate required fields for each staff member
+        const validationErrors = [];
+        staff_members.forEach((staff, index) => {
+            if (!staff.full_name) {
+                validationErrors.push(`Staff ${index + 1}: full_name is required`);
+            }
+            if (!staff.phone_number) {
+                validationErrors.push(`Staff ${index + 1}: phone_number is required`);
+            }
+        });
+
+        if (validationErrors.length > 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Validation errors',
+                errors: validationErrors
+            });
+        }
+
+        // Check for duplicate phone numbers in the batch
+        const phoneNumbers = staff_members.map(s => s.phone_number);
+        const phoneSet = new Set();
+        const duplicates = [];
+
+        phoneNumbers.forEach(phone => {
+            if (phoneSet.has(phone)) {
+                duplicates.push(phone);
+            } else {
+                phoneSet.add(phone);
+            }
+        });
+
+        if (duplicates.length > 0) {
+            return res.status(400).json({
+                status: 'error',
+                message: `Duplicate phone numbers in batch: ${duplicates.join(', ')}`
+            });
+        }
+
+        // Check for existing users and staff
+        const { data: existingUsers, error: userCheckError } = await adminSupabase
+            .from('users')
+            .select('phone_number')
+            .in('phone_number', phoneNumbers);
+
+        if (userCheckError) {
+            logger.error('Error checking existing users:', userCheckError);
+            throw userCheckError;
+        }
+
+        const { data: existingStaff, error: staffCheckError } = await adminSupabase
+            .from('staff')
+            .select('phone_number')
+            .in('phone_number', phoneNumbers);
+
+        if (staffCheckError) {
+            logger.error('Error checking existing staff:', staffCheckError);
+            throw staffCheckError;
+        }
+
+        const existingUserPhones = existingUsers ? existingUsers.map(u => u.phone_number) : [];
+        const existingStaffPhones = existingStaff ? existingStaff.map(s => s.phone_number) : [];
+        const allExistingPhones = [...new Set([...existingUserPhones, ...existingStaffPhones])];
+
+        const newStaff = staff_members.filter(s => !allExistingPhones.includes(s.phone_number));
+        const duplicateStaff = staff_members.filter(s => allExistingPhones.includes(s.phone_number));
+
+        logger.info(`Processing ${staff_members.length} staff: ${newStaff.length} new, ${duplicateStaff.length} duplicates`);
+
+        const results = {
+            created: [],
+            skipped: [],
+            errors: []
+        };
+
+        // Process new staff members
+        for (const staff of newStaff) {
+            try {
+                const {
+                    full_name,
+                    phone_number,
+                    email,
+                    role = 'teacher',
+                    department = 'Teaching',
+                    designation = 'Teacher',
+                    subject_specialization,
+                    password = 'Temp@1234',
+                    user_role = 'teacher'
+                } = staff;
+
+                // Normalize and validate user role
+                const normalizedUserRole = String(user_role || 'teacher').toLowerCase();
+                const allowedUserRoles = ['admin', 'principal', 'teacher'];
+                if (!allowedUserRoles.includes(normalizedUserRole)) {
+                    throw new Error(`Invalid user_role: ${user_role}. Allowed: admin, principal, teacher`);
+                }
+
+                // Hash password
+                const bcrypt = await import('bcrypt');
+                const passwordHash = await bcrypt.default.hash(password, 10);
+
+                // Create user account
+                const { data: user, error: userError } = await adminSupabase
+                    .from('users')
+                    .insert({
+                        full_name,
+                        phone_number,
+                        email: email || null,
+                        role: normalizedUserRole,
+                        password_hash: passwordHash,
+                        is_registered: true
+                    })
+                    .select('id, full_name, phone_number, email, role')
+                    .single();
+
+                if (userError) {
+                    throw new Error(`User creation failed: ${userError.message}`);
+                }
+
+                // Create staff record
+                const { data: staffRecord, error: staffError } = await adminSupabase
+                    .from('staff')
+                    .insert({
+                        full_name,
+                        phone_number,
+                        email: email || null,
+                        role,
+                        department,
+                        designation,
+                        subject: subject_specialization ? subject_specialization.split(',').map(s => s.trim()) : [],
+                        is_active: true,
+                        created_by: req.user.id,
+                        user_id: user.id
+                    })
+                    .select()
+                    .single();
+
+                if (staffError) {
+                    // Rollback user creation
+                    await adminSupabase
+                        .from('users')
+                        .delete()
+                        .eq('id', user.id);
+                    throw new Error(`Staff creation failed: ${staffError.message}`);
+                }
+
+                results.created.push({
+                    staff: staffRecord,
+                    user: user,
+                    login_credentials: {
+                        phone_number: user.phone_number,
+                        password: password
+                    }
+                });
+
+            } catch (error) {
+                logger.error(`Error creating staff ${staff.full_name}:`, error);
+                results.errors.push({
+                    staff: staff,
+                    error: error.message
+                });
+            }
+        }
+
+        // Record skipped duplicates
+        duplicateStaff.forEach(staff => {
+            results.skipped.push({
+                full_name: staff.full_name,
+                phone_number: staff.phone_number,
+                reason: 'Phone number already exists'
+            });
+        });
+
+        res.status(201).json({
+            status: 'success',
+            message: `Bulk staff creation completed: ${results.created.length} created, ${results.skipped.length} skipped, ${results.errors.length} errors`,
+            data: {
+                created_staff: {
+                    count: results.created.length,
+                    staff: results.created
+                },
+                skipped_staff: {
+                    count: results.skipped.length,
+                    staff: results.skipped
+                },
+                errors: {
+                    count: results.errors.length,
+                    details: results.errors
+                },
+                summary: {
+                    total_processed: staff_members.length,
+                    successful: results.created.length,
+                    skipped: results.skipped.length,
+                    failed: results.errors.length
+                }
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in bulk staff creation:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error during bulk staff creation'
+        });
+    }
+});
+
 // Sync existing staff records to use same ID as user records (fix for existing data)
 router.post('/staff/sync-ids', authenticate, async (req, res, next) => {
     try {

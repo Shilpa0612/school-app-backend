@@ -20,40 +20,129 @@ router.post('/subjects',
                 return res.status(400).json({ errors: errors.array() });
             }
             const { name, code } = req.body;
-            const { data, error } = await adminSupabase
-                .from('calendar_events')
-                .insert([{
-                    title,
-                    description,
-                    event_date: utcEventDate.toISOString(),
-                    event_type: finalEventType,
-                    class_division_id: finalClassDivisionId,
-                    class_division_ids: finalClassDivisionIds,
-                    is_multi_class: finalIsMultiClass,
-                    is_single_day,
-                    start_time,
-                    end_time,
-                    event_category,
-                    timezone,
-                    status: eventStatus,
-                    created_by: req.user.id
-                }])
-                // ✅ CORRECT CODE - Use this:
-                .select(`
-    *,
-    creator:created_by (id, full_name, role),
-    approver:approved_by (id, full_name, role),
-    class:class_division_id (
-        id,
-        division,
-        academic_year:academic_year_id (year_name),
-        class_level:class_level_id (name)
-    )
-`)
+
+            // Check if subject already exists
+            const { data: existingSubject } = await adminSupabase
+                .from('subjects')
+                .select('id, name')
+                .eq('name', name)
                 .single();
+
+            if (existingSubject) {
+                return res.status(409).json({
+                    status: 'error',
+                    message: 'Subject already exists',
+                    data: { existing_subject: existingSubject }
+                });
+            }
+
+            const { data, error } = await adminSupabase
+                .from('subjects')
+                .insert([{
+                    name,
+                    code: code || null,
+                    is_active: true
+                }])
+                .select()
+                .single();
+
             if (error) throw error;
             res.status(201).json({ status: 'success', data: { subject: data } });
         } catch (error) { next(error); }
+    }
+);
+
+// Bulk create subjects
+router.post('/bulk-subjects',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('subjects').isArray({ min: 1, max: 100 }).withMessage('Subjects must be an array (max 100 subjects)'),
+        body('subjects.*.name').isString().trim().notEmpty().withMessage('Subject name is required'),
+        body('subjects.*.code').optional().isString().trim().withMessage('Subject code must be a string')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { subjects } = req.body;
+
+            // Check for duplicate names in the request
+            const subjectNames = subjects.map(s => s.name.toLowerCase());
+            const duplicateNames = subjectNames.filter((name, index) => subjectNames.indexOf(name) !== index);
+
+            if (duplicateNames.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Duplicate subject names in request: ${duplicateNames.join(', ')}`
+                });
+            }
+
+            // Check for existing subjects
+            const { data: existingSubjects, error: existingError } = await adminSupabase
+                .from('subjects')
+                .select('name')
+                .in('name', subjects.map(s => s.name));
+
+            if (existingError) {
+                logger.error('Error checking existing subjects:', existingError);
+                throw existingError;
+            }
+
+            const existingNames = existingSubjects ? existingSubjects.map(s => s.name) : [];
+            const newSubjects = subjects.filter(s => !existingNames.includes(s.name));
+            const skippedSubjects = subjects.filter(s => existingNames.includes(s.name));
+
+            let createdSubjects = [];
+            if (newSubjects.length > 0) {
+                // Prepare data for insertion
+                const subjectsData = newSubjects.map(subject => ({
+                    name: subject.name,
+                    code: subject.code || null,
+                    is_active: true
+                }));
+
+                // Insert new subjects
+                const { data: created, error: insertError } = await adminSupabase
+                    .from('subjects')
+                    .insert(subjectsData)
+                    .select();
+
+                if (insertError) {
+                    logger.error('Error creating bulk subjects:', insertError);
+                    throw insertError;
+                }
+
+                createdSubjects = created || [];
+            }
+
+            res.status(201).json({
+                status: 'success',
+                message: `Successfully processed ${subjects.length} subjects (${createdSubjects.length} created, ${skippedSubjects.length} already existed)`,
+                data: {
+                    created_subjects: {
+                        count: createdSubjects.length,
+                        subjects: createdSubjects
+                    },
+                    existing_subjects: {
+                        count: skippedSubjects.length,
+                        subjects: skippedSubjects.map(s => ({ name: s.name, code: s.code }))
+                    },
+                    summary: {
+                        total_processed: subjects.length,
+                        new_subjects: createdSubjects.map(s => s.name),
+                        existing_subjects: skippedSubjects.map(s => s.name)
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Bulk subjects creation error:', error);
+            next(error);
+        }
     }
 );
 
@@ -1294,6 +1383,150 @@ router.post('/class-divisions/:id/assign-teacher',
     }
 );
 
+// Assign or reassign teacher to class for a specific subject (replaces existing assignment for that subject)
+router.put('/class-divisions/:id/teacher-assignment/:teacher_id',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('subject').isString().trim().notEmpty().withMessage('Subject is required'),
+        body('assignment_type').optional().isIn(['class_teacher', 'subject_teacher', 'assistant_teacher', 'substitute_teacher']).withMessage('Valid assignment type required'),
+        body('is_primary').optional().isBoolean().withMessage('is_primary must be boolean')
+    ],
+    async (req, res, next) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({ errors: errors.array() });
+            }
+
+            const { id: class_division_id, teacher_id } = req.params;
+            const { subject, assignment_type = 'subject_teacher', is_primary = false } = req.body;
+
+            // Verify class division exists
+            const { data: classDivision, error: classError } = await adminSupabase
+                .from('class_divisions')
+                .select('id, division')
+                .eq('id', class_division_id)
+                .single();
+
+            if (classError || !classDivision) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class division not found'
+                });
+            }
+
+            // Verify teacher exists and has teacher role
+            const { data: teacher, error: teacherError } = await adminSupabase
+                .from('users')
+                .select('id, full_name, role')
+                .eq('id', teacher_id)
+                .eq('role', 'teacher')
+                .single();
+
+            if (teacherError || !teacher) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Teacher not found or invalid role'
+                });
+            }
+
+            // Check if there's already an assignment for this subject in this class
+            const { data: existingAssignment, error: existingError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select('id, teacher_id')
+                .eq('class_division_id', class_division_id)
+                .eq('subject', subject)
+                .eq('is_active', true)
+                .maybeSingle();
+
+            if (existingError) {
+                logger.error('Error checking existing assignment:', existingError);
+                throw existingError;
+            }
+
+            let assignment;
+            let action;
+
+            if (existingAssignment) {
+                // Update existing assignment to new teacher
+                const { data: updatedAssignment, error: updateError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .update({
+                        teacher_id,
+                        assignment_type,
+                        is_primary,
+                        assigned_by: req.user.id,
+                        assigned_date: new Date().toISOString()
+                    })
+                    .eq('id', existingAssignment.id)
+                    .select(`
+                        *,
+                        teacher:teacher_id (
+                            id,
+                            full_name,
+                            phone_number,
+                            email
+                        )
+                    `)
+                    .single();
+
+                if (updateError) {
+                    logger.error('Error updating teacher assignment:', updateError);
+                    throw updateError;
+                }
+
+                assignment = updatedAssignment;
+                action = existingAssignment.teacher_id === teacher_id ? 'updated' : 'reassigned';
+            } else {
+                // Create new assignment
+                const { data: newAssignment, error: createError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .insert([{
+                        class_division_id,
+                        teacher_id,
+                        assignment_type,
+                        subject,
+                        is_primary,
+                        assigned_by: req.user.id,
+                        is_active: true
+                    }])
+                    .select(`
+                        *,
+                        teacher:teacher_id (
+                            id,
+                            full_name,
+                            phone_number,
+                            email
+                        )
+                    `)
+                    .single();
+
+                if (createError) {
+                    logger.error('Error creating teacher assignment:', createError);
+                    throw createError;
+                }
+
+                assignment = newAssignment;
+                action = 'assigned';
+            }
+
+            res.status(200).json({
+                status: 'success',
+                data: {
+                    assignment,
+                    action,
+                    message: `Teacher ${teacher.full_name} successfully ${action} to teach ${subject} for this class`
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in teacher assignment endpoint:', error);
+            next(error);
+        }
+    }
+);
+
 // Remove teacher from class
 router.delete('/class-divisions/:id/remove-teacher/:teacher_id',
     authenticate,
@@ -2128,11 +2361,31 @@ router.post('/class-levels',
 
             const { name, sequence_number } = req.body;
 
-            // Prepare data for insertion
-            const insertData = { name };
-            if (sequence_number !== undefined && sequence_number !== null) {
-                insertData.sequence_number = sequence_number;
+            // If sequence_number is not provided, get the next available sequence number
+            let finalSequenceNumber = sequence_number;
+            if (finalSequenceNumber === undefined || finalSequenceNumber === null) {
+                // Get the highest sequence number and add 1
+                const { data: maxSequenceData, error: maxSequenceError } = await adminSupabase
+                    .from('class_levels')
+                    .select('sequence_number')
+                    .order('sequence_number', { ascending: false })
+                    .limit(1)
+                    .single();
+
+                if (maxSequenceError && maxSequenceError.code !== 'PGRST116') {
+                    // PGRST116 is "no rows returned", which is fine for empty table
+                    logger.error('Error getting max sequence number:', maxSequenceError);
+                    throw maxSequenceError;
+                }
+
+                finalSequenceNumber = maxSequenceData ? maxSequenceData.sequence_number + 1 : 1;
             }
+
+            // Prepare data for insertion
+            const insertData = {
+                name,
+                sequence_number: finalSequenceNumber
+            };
 
             // Use adminSupabase for admin operations
             const { data, error } = await adminSupabase

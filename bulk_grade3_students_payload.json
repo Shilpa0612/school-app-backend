@@ -1,0 +1,283 @@
+{
+    "students": [
+        {
+            "admission_number": "43",
+            "full_name": "Aaraddhya Aniruddha Ekhande",
+            "date_of_birth": "2017-05-11",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "1",
+            "gender": "female"
+        },
+        {
+            "admission_number": "44",
+            "full_name": "Abhimanyu Sunil Kumar",
+            "date_of_birth": "2017-01-05",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "2",
+            "gender": "male"
+        },
+        {
+            "admission_number": "45",
+            "full_name": "Ajinkya Narayan Chand",
+            "date_of_birth": "2017-10-09",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "4",
+            "gender": "male"
+        },
+        {
+            "admission_number": "46",
+            "full_name": "Dhanashri Ram Dhakne",
+            "date_of_birth": "2017-03-07",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "5",
+            "gender": "female"
+        },
+        {
+            "admission_number": "47",
+            "full_name": "Kartik Ganesh Kakde",
+            "date_of_birth": "2016-12-12",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "6",
+            "gender": "male"
+        },
+        {
+            "admission_number": "48",
+            "full_name": "Khushi Laxman Mujmule",
+            "date_of_birth": "2017-05-09",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "7",
+            "gender": "female"
+        },
+        {
+            "admission_number": "49",
+            "full_name": "Krishna Rajendra Baginwal",
+            "date_of_birth": "2017-07-15",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "8",
+            "gender": "male"
+        },
+        {
+            "admission_number": "50",
+            "full_name": "Mahi Sunil Jadhav",
+            "date_of_birth": "2016-06-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "9",
+            "gender": "female"
+        },
+        {
+            "admission_number": "51",
+            "full_name": "Manjiri Sham Mogarge",
+            "date_of_birth": "2017-01-28",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "10",
+            "gender": "female"
+        },
+        {
+            "admission_number": "52",
+            "full_name": "Manswi Yogesh Pungle",
+            "date_of_birth": "2016-12-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "11",
+            "gender": "female"
+        },
+        {
+            "admission_number": "53",
+            "full_name": "Prasanna Satish Pawar",
+            "date_of_birth": "2016-05-17",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "12",
+            "gender": "male"
+        },
+        {
+            "admission_number": "54",
+            "full_name": "Rajnandini Prakash Singh",
+            "date_of_birth": "2016-12-03",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "13",
+            "gender": "female"
+        },
+        {
+            "admission_number": "55",
+            "full_name": "Roshan Murmu",
+            "date_of_birth": "2017-07-05",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "14",
+            "gender": "male"
+        },
+        {
+            "admission_number": "56",
+            "full_name": "Sai Mahendra Pawar",
+            "date_of_birth": "2014-08-14",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "15",
+            "gender": "male"
+        },
+        {
+            "admission_number": "57",
+            "full_name": "Samrat Pushparaj Dhawale",
+            "date_of_birth": "2017-12-02",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "16",
+            "gender": "male"
+        },
+        {
+            "admission_number": "58",
+            "full_name": "Samrudhi Raghunath Sahane",
+            "date_of_birth": "2015-11-08",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "17",
+            "gender": "female"
+        },
+        {
+            "admission_number": "59",
+            "full_name": "Sanskruti Vijay Thombre",
+            "date_of_birth": "2016-12-23",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "18",
+            "gender": "female"
+        },
+        {
+            "admission_number": "60",
+            "full_name": "Sara Shakil Tamboli",
+            "date_of_birth": "2015-06-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "19",
+            "gender": "female"
+        },
+        {
+            "admission_number": "61",
+            "full_name": "Sarthak Eknatha korde",
+            "date_of_birth": "2016-01-20",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "20",
+            "gender": "male"
+        },
+        {
+            "admission_number": "62",
+            "full_name": "Shravani Ganesh naikwade",
+            "date_of_birth": "2017-07-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "21",
+            "gender": "female"
+        },
+        {
+            "admission_number": "63",
+            "full_name": "Shreyan Gajanan Vyavahare",
+            "date_of_birth": "2017-11-26",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "22",
+            "gender": "male"
+        },
+        {
+            "admission_number": "64",
+            "full_name": "Shreyash Ravindra Jadhav",
+            "date_of_birth": "2017-01-04",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "23",
+            "gender": "male"
+        },
+        {
+            "admission_number": "65",
+            "full_name": "Snehal Shivaji Chavan",
+            "date_of_birth": "2017-07-04",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "24",
+            "gender": "female"
+        },
+        {
+            "admission_number": "66",
+            "full_name": "Soham Karan Tambe",
+            "date_of_birth": "2016-12-28",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "25",
+            "gender": "male"
+        },
+        {
+            "admission_number": "67",
+            "full_name": "Tanuja Ankush Ahinde",
+            "date_of_birth": "2017-03-25",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "26",
+            "gender": "female"
+        },
+        {
+            "admission_number": "68",
+            "full_name": "Vansh Vikas Patel",
+            "date_of_birth": "2017-06-16",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "27",
+            "gender": "male"
+        },
+        {
+            "admission_number": "69",
+            "full_name": "Varad Vilas Jaybhaye",
+            "date_of_birth": "2017-03-23",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "28",
+            "gender": "male"
+        },
+        {
+            "admission_number": "70",
+            "full_name": "Vidhi Vikas Shinde",
+            "date_of_birth": "2016-12-20",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "29",
+            "gender": "female"
+        },
+        {
+            "admission_number": "71",
+            "full_name": "Yashashri Ram Dhakne",
+            "date_of_birth": "2017-03-07",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "30",
+            "gender": "female"
+        },
+        {
+            "admission_number": "72",
+            "full_name": "Yuvraj Ganesh Wagh",
+            "date_of_birth": "2017-04-07",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "31",
+            "gender": "male"
+        },
+        {
+            "admission_number": "73",
+            "full_name": "Asad Akhil Shaikh",
+            "date_of_birth": "2016-11-09",
+            "admission_date": "2025-01-01",
+            "class_division_id": "c78f80f5-5a4a-428b-915d-fb076b7271b0",
+            "roll_number": "32",
+            "gender": "male"
+        }
+    ]
+}

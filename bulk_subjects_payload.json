@@ -1,0 +1,58 @@
+{
+    "note": "Comprehensive subjects list for the school system",
+    "description": "Organized and deduplicated subjects from the provided list",
+    "subjects": [
+        {
+            "name": "Mathematics",
+            "code": "MATH"
+        },
+        {
+            "name": "Science",
+            "code": "SCI"
+        },
+        {
+            "name": "Physics",
+            "code": "PHY"
+        },
+        {
+            "name": "Biology",
+            "code": "BIO"
+        },
+        {
+            "name": "English",
+            "code": "ENG"
+        },
+        {
+            "name": "Hindi",
+            "code": "HIN"
+        },
+        {
+            "name": "Marathi",
+            "code": "MAR"
+        },
+        {
+            "name": "Environmental Science",
+            "code": "EVS"
+        },
+        {
+            "name": "Social Studies",
+            "code": "SST"
+        },
+        {
+            "name": "Physical Education",
+            "code": "PET"
+        },
+        {
+            "name": "Art and Craft",
+            "code": "ART"
+        },
+        {
+            "name": "Music",
+            "code": "MUS"
+        },
+        {
+            "name": "Sports",
+            "code": "SPT"
+        }\
+    ]
+}

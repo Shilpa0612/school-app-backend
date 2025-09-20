@@ -323,13 +323,30 @@ router.post('/bulk-create-parents',
             const validationResults = await Promise.all(validationPromises);
             const [existingParentsResult, ...studentResults] = validationResults;
 
-            // Check existing parents
-            if (existingParentsResult.data && existingParentsResult.data.length > 0) {
-                const existingNumbers = existingParentsResult.data.map(p => p.phone_number);
-                return res.status(400).json({
-                    status: 'error',
-                    message: `Parents with these phone numbers already exist: ${existingNumbers.join(', ')}`
-                });
+            // Handle existing parents - separate new parents from existing ones
+            const existingParentPhones = existingParentsResult.data ?
+                existingParentsResult.data.map(p => p.phone_number) : [];
+
+            const newParents = parents.filter(p => !existingParentPhones.includes(p.phone_number));
+            const existingParents = parents.filter(p => existingParentPhones.includes(p.phone_number));
+
+            logger.info(`Found ${existingParents.length} existing parents and ${newParents.length} new parents to create`);
+
+            // Get full details of existing parents for linking
+            let existingParentDetails = [];
+            if (existingParents.length > 0) {
+                const { data: parentDetails, error: parentDetailsError } = await adminSupabase
+                    .from('users')
+                    .select('id, phone_number, full_name')
+                    .in('phone_number', existingParents.map(p => p.phone_number))
+                    .eq('role', 'parent');
+
+                if (parentDetailsError) {
+                    logger.error('Error fetching existing parent details:', parentDetailsError);
+                    throw parentDetailsError;
+                }
+
+                existingParentDetails = parentDetails || [];
             }
 
             // Validate and map students
@@ -361,49 +378,97 @@ router.post('/bulk-create-parents',
                 }
             }
 
-            // OPTIMIZATION 4: Prepare parent data efficiently
-            const parentsData = parents.map(parent => ({
-                phone_number: parent.phone_number,
-                full_name: parent.full_name,
-                email: parent.email || null,
-                role: 'parent',
-                is_registered: false,
-                password_hash: null,
-                initial_password: parent.initial_password || null,
-                initial_password_set_at: parent.initial_password ? new Date().toISOString() : null
-            }));
+            // OPTIMIZATION 4: Prepare data for new parents only
+            let createdParents = [];
+            if (newParents.length > 0) {
+                const newParentsData = newParents.map(parent => ({
+                    phone_number: parent.phone_number,
+                    full_name: parent.full_name,
+                    email: parent.email || null,
+                    role: 'parent',
+                    is_registered: false,
+                    password_hash: null,
+                    initial_password: parent.initial_password || null,
+                    initial_password_set_at: parent.initial_password ? new Date().toISOString() : null
+                }));
 
-            // OPTIMIZATION 5: Bulk insert parents
-            const { data: createdParents, error: parentError } = await adminSupabase
-                .from('users')
-                .insert(parentsData)
-                .select('id, phone_number, full_name, email');
+                // OPTIMIZATION 5: Bulk insert new parents only
+                const { data: newCreatedParents, error: parentError } = await adminSupabase
+                    .from('users')
+                    .insert(newParentsData)
+                    .select('id, phone_number, full_name, email');
 
-            if (parentError) {
-                logger.error('Error creating bulk parents:', parentError);
-                throw parentError;
+                if (parentError) {
+                    logger.error('Error creating bulk parents:', parentError);
+                    throw parentError;
+                }
+
+                createdParents = newCreatedParents || [];
             }
 
-            // OPTIMIZATION 6: Create parent-student mappings if students provided
+            // OPTIMIZATION 6: Create parent-student mappings for both new and existing parents
             let createdMappings = [];
-            if (parentStudentMappings.length > 0) {
-                // Prepare mapping data
-                const mappingsData = parentStudentMappings.map(mapping => {
-                    const parentId = createdParents[mapping.parentIndex].id;
-                    const studentKey = mapping.student_id || mapping.admission_number;
-                    const studentRecord = studentMap.get(studentKey);
+            let linkedToExistingMappings = [];
 
-                    return {
-                        parent_id: parentId,
-                        student_id: studentRecord.id,
-                        relationship: mapping.relationship,
-                        is_primary_guardian: mapping.is_primary_guardian,
-                        access_level: mapping.access_level
-                    };
+            if (parentStudentMappings.length > 0) {
+                // Separate mappings for new vs existing parents
+                const newParentMappings = [];
+                const existingParentMappings = [];
+
+                parentStudentMappings.forEach(mapping => {
+                    const parentPhone = parents[mapping.parentIndex].phone_number;
+
+                    if (existingParentPhones.includes(parentPhone)) {
+                        // This is for an existing parent
+                        const existingParent = existingParentDetails.find(p => p.phone_number === parentPhone);
+                        if (existingParent) {
+                            existingParentMappings.push({
+                                ...mapping,
+                                parent_id: existingParent.id,
+                                parent_phone: parentPhone,
+                                parent_name: existingParent.full_name
+                            });
+                        }
+                    } else {
+                        // This is for a new parent
+                        const newParentIndex = newParents.findIndex(p => p.phone_number === parentPhone);
+                        if (newParentIndex >= 0 && createdParents[newParentIndex]) {
+                            newParentMappings.push({
+                                ...mapping,
+                                parent_id: createdParents[newParentIndex].id
+                            });
+                        }
+                    }
                 });
 
+                // Prepare all mapping data
+                const allMappingsData = [
+                    ...newParentMappings.map(mapping => {
+                        const studentKey = mapping.student_id || mapping.admission_number;
+                        const studentRecord = studentMap.get(studentKey);
+                        return {
+                            parent_id: mapping.parent_id,
+                            student_id: studentRecord.id,
+                            relationship: mapping.relationship,
+                            is_primary_guardian: mapping.is_primary_guardian,
+                            access_level: mapping.access_level
+                        };
+                    }),
+                    ...existingParentMappings.map(mapping => {
+                        const studentKey = mapping.student_id || mapping.admission_number;
+                        const studentRecord = studentMap.get(studentKey);
+                        return {
+                            parent_id: mapping.parent_id,
+                            student_id: studentRecord.id,
+                            relationship: mapping.relationship,
+                            is_primary_guardian: mapping.is_primary_guardian,
+                            access_level: mapping.access_level
+                        };
+                    })
+                ];
+
                 // Check for existing primary guardians
-                const studentsWithPrimaryGuardians = mappingsData
+                const studentsWithPrimaryGuardians = allMappingsData
                     .filter(m => m.is_primary_guardian)
                     .map(m => m.student_id);
 
@@ -417,10 +482,12 @@ router.post('/bulk-create-parents',
                     if (existingPrimary && existingPrimary.length > 0) {
                         const existingStudentIds = existingPrimary.map(p => p.student_id);
                         // Rollback created parents
-                        await adminSupabase
-                            .from('users')
-                            .delete()
-                            .in('id', createdParents.map(p => p.id));
+                        if (createdParents.length > 0) {
+                            await adminSupabase
+                                .from('users')
+                                .delete()
+                                .in('id', createdParents.map(p => p.id));
+                        }
 
                         return res.status(400).json({
                             status: 'error',
@@ -429,49 +496,65 @@ router.post('/bulk-create-parents',
                     }
                 }
 
-                // Insert mappings
-                const { data: mappings, error: mappingError } = await adminSupabase
-                    .from('parent_student_mappings')
-                    .insert(mappingsData)
-                    .select('id, parent_id, student_id, relationship, is_primary_guardian');
+                // Insert all mappings (new and existing parent linkages)
+                if (allMappingsData.length > 0) {
+                    const { data: mappings, error: mappingError } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .insert(allMappingsData)
+                        .select('id, parent_id, student_id, relationship, is_primary_guardian');
 
-                if (mappingError) {
-                    logger.error('Error creating parent-student mappings:', mappingError);
-                    // Rollback created parents
-                    await adminSupabase
-                        .from('users')
-                        .delete()
-                        .in('id', createdParents.map(p => p.id));
-                    throw mappingError;
+                    if (mappingError) {
+                        logger.error('Error creating parent-student mappings:', mappingError);
+                        // Rollback created parents
+                        if (createdParents.length > 0) {
+                            await adminSupabase
+                                .from('users')
+                                .delete()
+                                .in('id', createdParents.map(p => p.id));
+                        }
+                        throw mappingError;
+                    }
+
+                    createdMappings = mappings.filter(m =>
+                        createdParents.some(p => p.id === m.parent_id)
+                    );
+                    linkedToExistingMappings = mappings.filter(m =>
+                        existingParentDetails.some(p => p.id === m.parent_id)
+                    );
                 }
-
-                createdMappings = mappings;
             }
 
-            // OPTIMIZATION 7: Return comprehensive response
+            // OPTIMIZATION 7: Return comprehensive response including existing parent linkages
             const responseData = {
-                created_count: createdParents.length,
-                parents: createdParents,
-                summary: {
-                    phone_numbers: createdParents.map(p => p.phone_number),
-                    with_initial_password: createdParents.filter(p => p.initial_password).length
+                new_parents: {
+                    created_count: createdParents.length,
+                    parents: createdParents,
+                    summary: {
+                        phone_numbers: createdParents.map(p => p.phone_number),
+                        with_initial_password: createdParents.filter(p => p.initial_password).length
+                    }
+                },
+                existing_parents: {
+                    found_count: existingParents.length,
+                    linked_children_count: linkedToExistingMappings.length,
+                    parents: existingParentDetails,
+                    phone_numbers: existingParents.map(p => p.phone_number)
+                },
+                student_links: {
+                    new_parent_links: createdMappings.length,
+                    existing_parent_links: linkedToExistingMappings.length,
+                    total_links: createdMappings.length + linkedToExistingMappings.length,
+                    new_mappings: createdMappings,
+                    existing_mappings: linkedToExistingMappings
                 }
             };
 
-            if (createdMappings.length > 0) {
-                responseData.student_links = {
-                    total_links: createdMappings.length,
-                    primary_guardians: createdMappings.filter(m => m.is_primary_guardian).length,
-                    mappings: createdMappings
-                };
-                responseData.note = 'Parents created and linked to students successfully. Parents can now register using their phone numbers.';
-            } else {
-                responseData.note = 'Parents created successfully. Use /api/academic/bulk-link-parents to link them to students.';
-            }
+            const totalProcessed = createdParents.length + existingParents.length;
+            const totalLinks = createdMappings.length + linkedToExistingMappings.length;
 
             res.status(201).json({
                 status: 'success',
-                message: `Successfully created ${createdParents.length} parent accounts${createdMappings.length > 0 ? ` with ${createdMappings.length} student links` : ''}`,
+                message: `Successfully processed ${totalProcessed} parents (${createdParents.length} new, ${existingParents.length} existing)${totalLinks > 0 ? ` with ${totalLinks} student linkages` : ''}`,
                 data: responseData
             });
 

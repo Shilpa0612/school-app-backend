@@ -1,0 +1,257 @@
+{
+    "staff_members": [
+        {
+            "full_name": "Sandesh Ingle",
+            "phone_number": "9881196073",
+            "email": "inglesandesh128@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "Coordinator",
+            "subject_specialization": "Mathematics, Physics",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Shakuntala Prasad Patil",
+            "phone_number": "9922799868",
+            "email": "shakuntalapatilajws@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "Librarian",
+            "subject_specialization": "Marathi",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Anjali Shivaji Hiwrale",
+            "phone_number": "7058832430",
+            "email": "anjalihiwrale789@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "NTT",
+            "subject_specialization": "Mathematics, Science, English",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Beena Satish Arya",
+            "phone_number": "8830289326",
+            "email": "satisharya302@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "NTT",
+            "subject_specialization": "Hindi, Marathi, English",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Diksha sandesh ingle",
+            "phone_number": "9309478094",
+            "email": "inglediksha@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "NTT",
+            "subject_specialization": "Environmental Science",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Varsha Sachin Mhaske",
+            "phone_number": "9405068400",
+            "email": "vsmhaske2544@Gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "NTT",
+            "subject_specialization": "English, Hindi, Marathi, Environmental Science",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Ganesh Madhukar Dabhade",
+            "phone_number": "9404511717",
+            "email": "ganeshdabhade1818@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PET",
+            "subject_specialization": "Physical Education",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Kiran Gavde",
+            "phone_number": "7057570407",
+            "email": "kirangavde1110@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PET",
+            "subject_specialization": "Physical Education",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Omkar Sanjay Raut",
+            "phone_number": "9158834913",
+            "email": "omraut449@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PET",
+            "subject_specialization": "Cricket, Sports",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Khushbu Rohit Sharma",
+            "phone_number": "9529016275",
+            "email": "khushbusharma0930@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PRT",
+            "subject_specialization": "English",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Neha Chandanlal Kaushalye",
+            "phone_number": "9307915550",
+            "email": "kaushalyeneha27.ajws@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PRT",
+            "subject_specialization": "Mathematics",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Rajeshri Mahesh Kodam",
+            "phone_number": "8554005134",
+            "email": "rajeshrigudur305@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PRT",
+            "subject_specialization": "Hindi",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Ritu Mehra",
+            "phone_number": "8208998826",
+            "email": "ritumehra529@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PRT",
+            "subject_specialization": "English, Mathematics, Environmental Science, Social Studies",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Rohini Sakharam Sable",
+            "phone_number": "9665009033",
+            "email": "rsable286@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PRT",
+            "subject_specialization": "Environmental Science",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Vaishali Kiran Harne",
+            "phone_number": "8010858248",
+            "email": "Vaishaliharne1982@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PRT",
+            "subject_specialization": "Marathi",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Vijayata Kamarushi",
+            "phone_number": "9405913477",
+            "email": "vijayatarao25@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "PRT",
+            "subject_specialization": "English",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Kalpak Anil Tiwari",
+            "phone_number": "9405913883",
+            "email": "tiwarikalpak@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "TGT",
+            "subject_specialization": "English, Biology, Social Studies",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Kishor Lokhande",
+            "phone_number": "9822109314",
+            "email": "kishorlokhande2121@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "TGT",
+            "subject_specialization": "Art and Craft",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Nitin Lalchand Bhakt",
+            "phone_number": "9881743999",
+            "email": "nitinbhakt099@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "TGT",
+            "subject_specialization": "Physical Education",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Pranjal Khandelwal",
+            "phone_number": "9421319018",
+            "email": "pranjal.a.khandelwal@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "TGT",
+            "subject_specialization": "Biology",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Rohit Sharma",
+            "phone_number": "9673071555",
+            "email": "rohitsharma1519@ymail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "TGT",
+            "subject_specialization": "English, Social Studies",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Sandip Sukhadeo Madankar",
+            "phone_number": "9309803752",
+            "email": "sandipmad5@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "TGT",
+            "subject_specialization": "Music",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        },
+        {
+            "full_name": "Shivaji Umaji Gavate",
+            "phone_number": "7972381699",
+            "email": "sjgavate@gmail.com",
+            "role": "teacher",
+            "department": "Teaching",
+            "designation": "TGT",
+            "subject_specialization": "Physics, Science, Mathematics",
+            "password": "Temp@1234",
+            "user_role": "teacher"
+        }
+    ]
+}

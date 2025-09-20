@@ -1,0 +1,62 @@
+{
+    "note": "Test payload to verify duplicate parent handling works correctly",
+    "description": "This includes both new parents and parents that already exist from Grade 1",
+    "parents": [
+        {
+            "full_name": "Babasaheb Tejrao Jadhav",
+            "phone_number": "7709881063",
+            "email": null,
+            "initial_password": "Temp@1234",
+            "students": [
+                {
+                    "admission_number": "22",
+                    "relationship": "father",
+                    "is_primary_guardian": true,
+                    "access_level": "full"
+                }
+            ]
+        },
+        {
+            "full_name": "Baliram Babanrao Choudhari",
+            "phone_number": "9890109143",
+            "email": null,
+            "initial_password": "Temp@1234",
+            "students": [
+                {
+                    "admission_number": "34",
+                    "relationship": "father",
+                    "is_primary_guardian": true,
+                    "access_level": "full"
+                }
+            ]
+        },
+        {
+            "full_name": "Raghunath Kautikrao Sahane",
+            "phone_number": "9158190100",
+            "email": null,
+            "initial_password": "Temp@1234",
+            "students": [
+                {
+                    "admission_number": "58",
+                    "relationship": "father",
+                    "is_primary_guardian": true,
+                    "access_level": "full"
+                }
+            ]
+        }
+    ],
+    "expected_result": {
+        "new_parents_created": 1,
+        "existing_parents_linked": 2,
+        "total_processed": 3,
+        "details": {
+            "new": [
+                "7709881063 - Babasaheb Tejrao Jadhav"
+            ],
+            "existing": [
+                "9890109143 - Baliram Choudhari",
+                "9158190100 - Raghunath Sahane"
+            ]
+        }
+    }
+}

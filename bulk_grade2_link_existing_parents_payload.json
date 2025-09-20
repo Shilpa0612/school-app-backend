@@ -1,0 +1,36 @@
+{
+    "note": "This payload links children to parents that already exist from Grade 1",
+    "instructions": "Use POST /api/academic/link-students for each parent_id",
+    "existing_parents": [
+        {
+            "parent_phone": "9890109143",
+            "parent_name": "Baliram Babanrao Choudhari",
+            "note": "This parent already exists from Grade 1. Find their parent_id and use it below.",
+            "students_to_link": [
+                {
+                    "admission_number": "34",
+                    "relationship": "father",
+                    "is_primary_guardian": true,
+                    "access_level": "full"
+                }
+            ]
+        }
+    ],
+    "api_calls_needed": [
+        {
+            "endpoint": "POST /api/academic/link-students",
+            "description": "First, find the parent_id for phone 9890109143, then use this payload:",
+            "payload": {
+                "parent_id": "REPLACE_WITH_ACTUAL_PARENT_ID",
+                "students": [
+                    {
+                        "student_id": "REPLACE_WITH_STUDENT_ID_FOR_ADMISSION_34",
+                        "relationship": "father",
+                        "is_primary_guardian": true,
+                        "access_level": "full"
+                    }
+                ]
+            }
+        }
+    ]
+}

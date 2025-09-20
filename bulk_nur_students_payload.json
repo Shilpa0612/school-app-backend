@@ -1,0 +1,166 @@
+{
+    "students": [
+        {
+            "admission_number": "267",
+            "full_name": "Viraj pradip nagre",
+            "date_of_birth": "2022-04-13",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "0",
+            "gender": "male"
+        },
+        {
+            "admission_number": "268",
+            "full_name": "Aarav Raushan Singh",
+            "date_of_birth": "2022-02-02",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "1",
+            "gender": "male"
+        },
+        {
+            "admission_number": "269",
+            "full_name": "Aayush Yogesh Chavan",
+            "date_of_birth": "2022-02-12",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "2",
+            "gender": "male"
+        },
+        {
+            "admission_number": "270",
+            "full_name": "Anirudha Amardeep Varma",
+            "date_of_birth": "2022-08-30",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "3",
+            "gender": "male"
+        },
+        {
+            "admission_number": "271",
+            "full_name": "Devansh Ganesh Kakde",
+            "date_of_birth": "2022-03-29",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "4",
+            "gender": "male"
+        },
+        {
+            "admission_number": "272",
+            "full_name": "Hindavi Sambhaji Balap",
+            "date_of_birth": "2022-06-07",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "5",
+            "gender": "female"
+        },
+        {
+            "admission_number": "273",
+            "full_name": "Manva Vyankatesh Ekhande",
+            "date_of_birth": "2021-12-02",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "6",
+            "gender": "female"
+        },
+        {
+            "admission_number": "274",
+            "full_name": "Sparsh Radheshyam Balap",
+            "date_of_birth": "2022-06-04",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "8",
+            "gender": "male"
+        },
+        {
+            "admission_number": "275",
+            "full_name": "Varleenkaur Inderpalsingh Dhiman",
+            "date_of_birth": "2021-10-03",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "9",
+            "gender": "female"
+        },
+        {
+            "admission_number": "276",
+            "full_name": "Yash Santosh Shelar",
+            "date_of_birth": "2022-04-06",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "10",
+            "gender": "male"
+        },
+        {
+            "admission_number": "277",
+            "full_name": "Yashodeep Shrikrishna Ekhande",
+            "date_of_birth": "2021-11-24",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "11",
+            "gender": "male"
+        },
+        {
+            "admission_number": "278",
+            "full_name": "Prasad Ganesh Sapkal",
+            "date_of_birth": "2020-06-25",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "12",
+            "gender": "male"
+        },
+        {
+            "admission_number": "279",
+            "full_name": "Purwa kishor Golekar",
+            "date_of_birth": "2021-12-24",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "13",
+            "gender": "female"
+        },
+        {
+            "admission_number": "280",
+            "full_name": "Raj Bharat Tadge",
+            "date_of_birth": "2020-03-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "14",
+            "gender": "male"
+        },
+        {
+            "admission_number": "281",
+            "full_name": "Savi Sunil Kumar",
+            "date_of_birth": "2022-06-06",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "15",
+            "gender": "female"
+        },
+        {
+            "admission_number": "282",
+            "full_name": "Anushri Badrinath Tirukhe",
+            "date_of_birth": "2022-11-15",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "16",
+            "gender": "female"
+        },
+        {
+            "admission_number": "283",
+            "full_name": "Harsh Rajesh Chaudhari",
+            "date_of_birth": "2022-04-18",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "19",
+            "gender": "male"
+        },
+        {
+            "admission_number": "284",
+            "full_name": "Krisha Kiran Sontakke",
+            "date_of_birth": "2022-06-04",
+            "admission_date": "2025-01-01",
+            "class_division_id": "1bc6b23f-2c35-400a-825f-a5b90fa2f2f5",
+            "roll_number": "20",
+            "gender": "female"
+        }
+    ]
+}

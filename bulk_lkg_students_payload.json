@@ -1,0 +1,175 @@
+{
+    "students": [
+        {
+            "admission_number": "248",
+            "full_name": "Aafreen Shaikh Ashfak Tamboli",
+            "date_of_birth": "2021-04-13",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "1",
+            "gender": "female"
+        },
+        {
+            "admission_number": "249",
+            "full_name": "Aarohi Ankush Gaykwad",
+            "date_of_birth": "2020-09-08",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "2",
+            "gender": "female"
+        },
+        {
+            "admission_number": "250",
+            "full_name": "Abdul Raheman Sheru Khan",
+            "date_of_birth": "2020-03-15",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "3",
+            "gender": "male"
+        },
+        {
+            "admission_number": "251",
+            "full_name": "Aryan Sushil Kumar Gupta",
+            "date_of_birth": "2021-12-30",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "4",
+            "gender": "male"
+        },
+        {
+            "admission_number": "252",
+            "full_name": "Athanga Prashant Mule",
+            "date_of_birth": "2021-03-31",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "5",
+            "gender": "male"
+        },
+        {
+            "admission_number": "253",
+            "full_name": "Ishwari Krushna Kuber",
+            "date_of_birth": "2020-07-09",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "6",
+            "gender": "female"
+        },
+        {
+            "admission_number": "254",
+            "full_name": "Krishna Dipak Verma",
+            "date_of_birth": "2020-08-12",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "7",
+            "gender": "male"
+        },
+        {
+            "admission_number": "255",
+            "full_name": "Mariya Shaikh Musa",
+            "date_of_birth": "2020-09-23",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "8",
+            "gender": "female"
+        },
+        {
+            "admission_number": "256",
+            "full_name": "Naksh Sandip Shinde",
+            "date_of_birth": "2021-07-13",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "9",
+            "gender": "male"
+        },
+        {
+            "admission_number": "257",
+            "full_name": "Niharika Sandip Shinde",
+            "date_of_birth": "2021-07-13",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "10",
+            "gender": "female"
+        },
+        {
+            "admission_number": "258",
+            "full_name": "Priyansh Amol Ekhande",
+            "date_of_birth": "2021-05-24",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "11",
+            "gender": "male"
+        },
+        {
+            "admission_number": "259",
+            "full_name": "Sanvi Sandesh Ingle",
+            "date_of_birth": "2020-12-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "12",
+            "gender": "female"
+        },
+        {
+            "admission_number": "260",
+            "full_name": "Shivanshi Ganesh Tidke",
+            "date_of_birth": "2022-03-01",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "13",
+            "gender": "female"
+        },
+        {
+            "admission_number": "261",
+            "full_name": "Shrisha Bhagwan More",
+            "date_of_birth": "2021-05-29",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "14",
+            "gender": "female"
+        },
+        {
+            "admission_number": "262",
+            "full_name": "Shrishti Akshay Rajput",
+            "date_of_birth": "2025-08-30",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "15",
+            "gender": "female"
+        },
+        {
+            "admission_number": "263",
+            "full_name": "Vansh chavan",
+            "date_of_birth": "2021-06-16",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "16",
+            "gender": "male"
+        },
+        {
+            "admission_number": "264",
+            "full_name": "Viraj Nitin Ekhande",
+            "date_of_birth": "2020-11-23",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "17",
+            "gender": "male"
+        },
+        {
+            "admission_number": "265",
+            "full_name": "Nishita Nitin Galande",
+            "date_of_birth": "2021-06-25",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "18",
+            "gender": "female"
+        },
+        {
+            "admission_number": "266",
+            "full_name": "Maheshwari Dnyaneshwar Tidke",
+            "date_of_birth": "2022-02-11",
+            "admission_date": "2025-01-01",
+            "class_division_id": "b7a57b39-aaeb-40b2-b279-3edcdb75de40",
+            "roll_number": "19",
+            "gender": "female"
+        }
+    ]
+}

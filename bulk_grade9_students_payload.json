@@ -1,0 +1,220 @@
+{
+    "students": [
+        {
+            "admission_number": "209",
+            "full_name": "Aarya Vishwambhar Tirukhe",
+            "date_of_birth": "2011-05-30",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "1",
+            "gender": "female"
+        },
+        {
+            "admission_number": "210",
+            "full_name": "Aayush Abhishek Oza",
+            "date_of_birth": "2012-02-06",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "2",
+            "gender": "male"
+        },
+        {
+            "admission_number": "211",
+            "full_name": "Aditi Raju Rathod",
+            "date_of_birth": "2011-04-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "3",
+            "gender": "female"
+        },
+        {
+            "admission_number": "212",
+            "full_name": "Amit Ravindra Borde",
+            "date_of_birth": "2011-03-07",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "4",
+            "gender": "male"
+        },
+        {
+            "admission_number": "213",
+            "full_name": "Amruta Haridas Kale",
+            "date_of_birth": "2011-08-12",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "5",
+            "gender": "female"
+        },
+        {
+            "admission_number": "214",
+            "full_name": "Aniket Machindra Chavan",
+            "date_of_birth": "2011-04-10",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "6",
+            "gender": "male"
+        },
+        {
+            "admission_number": "215",
+            "full_name": "Anushka Satish Sonwane",
+            "date_of_birth": "2011-01-26",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "7",
+            "gender": "female"
+        },
+        {
+            "admission_number": "216",
+            "full_name": "Apurva Prakash Sawant",
+            "date_of_birth": "2012-05-04",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "8",
+            "gender": "female"
+        },
+        {
+            "admission_number": "217",
+            "full_name": "Darshan Chetan Patel",
+            "date_of_birth": "2011-04-02",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "9",
+            "gender": "male"
+        },
+        {
+            "admission_number": "218",
+            "full_name": "Harshavardhan Pramodrao Deshmukh",
+            "date_of_birth": "2011-03-16",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "10",
+            "gender": "male"
+        },
+        {
+            "admission_number": "219",
+            "full_name": "Mayuri Pralhad Kawle",
+            "date_of_birth": "2011-05-05",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "11",
+            "gender": "female"
+        },
+        {
+            "admission_number": "220",
+            "full_name": "Naitik Santosh Kharat",
+            "date_of_birth": "2011-07-11",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "12",
+            "gender": "male"
+        },
+        {
+            "admission_number": "221",
+            "full_name": "Payal Yogesh Kangle",
+            "date_of_birth": "2011-11-28",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "13",
+            "gender": "female"
+        },
+        {
+            "admission_number": "222",
+            "full_name": "Pranav Amol Kumbhalkar",
+            "date_of_birth": "2011-12-21",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "14",
+            "gender": "male"
+        },
+        {
+            "admission_number": "223",
+            "full_name": "Prathmesh Ramnath Sangule",
+            "date_of_birth": "2011-09-01",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "15",
+            "gender": "male"
+        },
+        {
+            "admission_number": "224",
+            "full_name": "Riddhi Ramnath More",
+            "date_of_birth": "2011-09-16",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "16",
+            "gender": "female"
+        },
+        {
+            "admission_number": "225",
+            "full_name": "Satej Atish Tayade",
+            "date_of_birth": "2011-09-12",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "17",
+            "gender": "male"
+        },
+        {
+            "admission_number": "226",
+            "full_name": "Shreyash Sachin Mhaske",
+            "date_of_birth": "2011-06-08",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "18",
+            "gender": "male"
+        },
+        {
+            "admission_number": "227",
+            "full_name": "Shrutika Aniruddh Ekhande",
+            "date_of_birth": "2011-05-04",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "19",
+            "gender": "female"
+        },
+        {
+            "admission_number": "228",
+            "full_name": "Swarangi Dilip Jondhale",
+            "date_of_birth": "2011-08-15",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "20",
+            "gender": "female"
+        },
+        {
+            "admission_number": "229",
+            "full_name": "Uday Shivaji Madan",
+            "date_of_birth": "2011-02-20",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "21",
+            "gender": "male"
+        },
+        {
+            "admission_number": "230",
+            "full_name": "Vedant Vishnu Chavan",
+            "date_of_birth": "2011-02-10",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "22",
+            "gender": "male"
+        },
+        {
+            "admission_number": "231",
+            "full_name": "Vishwajeet Datta Jadhav",
+            "date_of_birth": "2011-07-29",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "23",
+            "gender": "male"
+        },
+        {
+            "admission_number": "232",
+            "full_name": "Yuvraj Bharat More",
+            "date_of_birth": "2011-03-22",
+            "admission_date": "2025-01-01",
+            "class_division_id": "83f007ab-55a4-4c80-9a5d-678bc2c96436",
+            "roll_number": "24",
+            "gender": "male"
+        }
+    ]
+}
