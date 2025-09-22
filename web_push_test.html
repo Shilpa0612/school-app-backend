@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>School App - Push Notification Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .info { background-color: #d1ecf1; color: #0c5460; }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #6c757d; cursor: not-allowed; }
+        .notification {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+        #notifications {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏫 School App - Push Notification Test</h1>
+        
+        <div id="status" class="status info">
+            Initializing Firebase...
+        </div>
+
+        <div>
+            <h3>🔐 Authentication</h3>
+            <input type="text" id="jwtToken" placeholder="Enter JWT Token" style="width: 400px; padding: 8px;">
+            <button onclick="setAuthToken()">Set Token</button>
+            <button onclick="logout()">Logout</button>
+        </div>
+
+        <div>
+            <h3>📱 Device Registration</h3>
+            <button onclick="requestPermission()">Request Notification Permission</button>
+            <button onclick="registerDevice()" id="registerBtn" disabled>Register Device</button>
+            <button onclick="getAvailableTopics()" id="topicsBtn" disabled>Get Available Topics</button>
+        </div>
+
+        <div>
+            <h3>🧪 Testing</h3>
+            <button onclick="sendTestNotification()" id="testBtn" disabled>Send Test Notification</button>
+            <button onclick="subscribeToTopic()" id="subscribeBtn" disabled>Subscribe to Topic</button>
+        </div>
+
+        <div>
+            <h3>📊 Status</h3>
+            <div id="deviceStatus">Device not registered</div>
+            <div id="permissionStatus">Permission not requested</div>
+            <div id="topicsStatus">Topics not loaded</div>
+        </div>
+
+        <div>
+            <h3>🔔 Received Notifications</h3>
+            <div id="notifications"></div>
+            <button onclick="clearNotifications()">Clear All</button>
+        </div>
+    </div>
+
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getMessaging, getToken, onMessage, isSupported } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging.js';
+
+        // Your Firebase config (replace with your actual config)
+        const firebaseConfig = {
+            apiKey: "your-api-key",
+            authDomain: "school-app-notifications-c86ab.firebaseapp.com",
+            projectId: "school-app-notifications-c86ab",
+            storageBucket: "school-app-notifications-c86ab.appspot.com",
+            messagingSenderId: "your-sender-id",
+            appId: "your-app-id"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        let messaging = null;
+        let currentToken = null;
+        let authToken = null;
+
+        // Check if messaging is supported
+        if (isSupported()) {
+            messaging = getMessaging(app);
+            updateStatus('Firebase initialized successfully', 'success');
+        } else {
+            updateStatus('Firebase messaging not supported in this browser', 'error');
+        }
+
+        // Global functions
+        window.setAuthToken = function() {
+            authToken = document.getElementById('jwtToken').value;
+            if (authToken) {
+                updateStatus('JWT Token set successfully', 'success');
+                document.getElementById('registerBtn').disabled = false;
+                document.getElementById('topicsBtn').disabled = false;
+                document.getElementById('testBtn').disabled = false;
+                document.getElementById('subscribeBtn').disabled = false;
+            }
+        };
+
+        window.logout = function() {
+            authToken = null;
+            document.getElementById('jwtToken').value = '';
+            updateStatus('Logged out', 'info');
+            document.getElementById('registerBtn').disabled = true;
+            document.getElementById('topicsBtn').disabled = true;
+            document.getElementById('testBtn').disabled = true;
+            document.getElementById('subscribeBtn').disabled = true;
+        };
+
+        window.requestPermission = async function() {
+            if (!messaging) {
+                updateStatus('Firebase messaging not available', 'error');
+                return;
+            }
+
+            try {
+                const permission = await Notification.requestPermission();
+                if (permission === 'granted') {
+                    updateStatus('Notification permission granted', 'success');
+                    document.getElementById('permissionStatus').innerHTML = '✅ Permission granted';
+                    
+                    // Get FCM token
+                    currentToken = await getToken(messaging, {
+                        vapidKey: 'your-vapid-key' // You need to get this from Firebase Console
+                    });
+                    
+                    if (currentToken) {
+                        updateStatus('FCM Token received: ' + currentToken.substring(0, 50) + '...', 'success');
+                        document.getElementById('deviceStatus').innerHTML = '✅ FCM Token: ' + currentToken.substring(0, 30) + '...';
+                    } else {
+                        updateStatus('No FCM token available', 'error');
+                    }
+                } else {
+                    updateStatus('Notification permission denied', 'error');
+                    document.getElementById('permissionStatus').innerHTML = '❌ Permission denied';
+                }
+            } catch (error) {
+                updateStatus('Error requesting permission: ' + error.message, 'error');
+            }
+        };
+
+        window.registerDevice = async function() {
+            if (!currentToken || !authToken) {
+                updateStatus('FCM token or auth token missing', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('http://localhost:3000/api/device-tokens/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({
+                        device_token: currentToken,
+                        platform: 'web',
+                        device_info: {
+                            userAgent: navigator.userAgent,
+                            language: navigator.language,
+                            platform: navigator.platform
+                        }
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    updateStatus('Device registered successfully', 'success');
+                    document.getElementById('deviceStatus').innerHTML = '✅ Device registered';
+                    
+                    if (result.data.topic_subscription) {
+                        updateStatus(`Auto-subscribed to ${result.data.topic_subscription.successful_subscriptions} topics`, 'success');
+                    }
+                } else {
+                    updateStatus('Device registration failed: ' + result.message, 'error');
+                }
+            } catch (error) {
+                updateStatus('Error registering device: ' + error.message, 'error');
+            }
+        };
+
+        window.getAvailableTopics = async function() {
+            if (!authToken) {
+                updateStatus('Auth token required', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('http://localhost:3000/api/device-tokens/available-topics', {
+                    headers: {
+                        'Authorization': `Bearer ${authToken}`
+                    }
+                });
+
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    updateStatus(`Found ${result.data.total_topics} available topics`, 'success');
+                    document.getElementById('topicsStatus').innerHTML = `✅ ${result.data.total_topics} topics available`;
+                    
+                    // Display topics
+                    console.log('Available topics:', result.data.all_topics);
+                    console.log('Categorized topics:', result.data.categorized_topics);
+                } else {
+                    updateStatus('Failed to get topics: ' + result.message, 'error');
+                }
+            } catch (error) {
+                updateStatus('Error getting topics: ' + error.message, 'error');
+            }
+        };
+
+        window.sendTestNotification = async function() {
+            if (!authToken) {
+                updateStatus('Auth token required', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch('http://localhost:3000/api/device-tokens/test-notification', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({
+                        title: 'Test Notification from Web',
+                        body: 'This is a test push notification sent from the web app!',
+                        data: {
+                            type: 'test',
+                            source: 'web',
+                            timestamp: new Date().toISOString()
+                        }
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    updateStatus('Test notification sent successfully', 'success');
+                } else {
+                    updateStatus('Test notification failed: ' + result.message, 'error');
+                }
+            } catch (error) {
+                updateStatus('Error sending test notification: ' + error.message, 'error');
+            }
+        };
+
+        window.subscribeToTopic = async function() {
+            if (!currentToken || !authToken) {
+                updateStatus('FCM token or auth token missing', 'error');
+                return;
+            }
+
+            const topic = prompt('Enter topic name (e.g., school_wide):');
+            if (!topic) return;
+
+            try {
+                const response = await fetch('http://localhost:3000/api/device-tokens/subscribe-topic', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${authToken}`
+                    },
+                    body: JSON.stringify({
+                        device_token: currentToken,
+                        topic: topic
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    updateStatus(`Subscribed to topic: ${topic}`, 'success');
+                } else {
+                    updateStatus('Topic subscription failed: ' + result.message, 'error');
+                }
+            } catch (error) {
+                updateStatus('Error subscribing to topic: ' + error.message, 'error');
+            }
+        };
+
+        window.clearNotifications = function() {
+            document.getElementById('notifications').innerHTML = '';
+        };
+
+        // Listen for messages
+        if (messaging) {
+            onMessage(messaging, (payload) => {
+                console.log('Message received:', payload);
+                
+                const notificationDiv = document.createElement('div');
+                notificationDiv.className = 'notification';
+                notificationDiv.innerHTML = `
+                    <strong>${payload.notification.title}</strong><br>
+                    ${payload.notification.body}<br>
+                    <small>Data: ${JSON.stringify(payload.data)}</small>
+                `;
+                
+                document.getElementById('notifications').prepend(notificationDiv);
+                
+                updateStatus('New notification received!', 'success');
+            });
+        }
+
+        function updateStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${type}`;
+            statusDiv.innerHTML = message;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+    </script>
+</body>
+</html>

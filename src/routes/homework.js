@@ -179,6 +179,9 @@ router.post('/',
 
             if (error) throw error;
 
+            // Send notifications to parents about new homework
+            await sendHomeworkNotifications(data, class_division_id);
+
             res.status(201).json({
                 status: 'success',
                 data: { homework: data }
@@ -2311,5 +2314,59 @@ router.put('/:homework_id/attachments',
         }
     }
 );
+
+/**
+ * Send notifications to parents when homework is created
+ */
+async function sendHomeworkNotifications(homework, classDivisionId) {
+    try {
+        // Get all parents with students in this class division
+        const { data: parentStudents, error } = await adminSupabase
+            .from('parent_student_mappings')
+            .select(`
+                parent_id,
+                student_id,
+                student:students!parent_student_mappings_student_id_fkey(
+                    full_name,
+                    admission_number,
+                    class_division:class_divisions!students_class_division_id_fkey(
+                        class_name,
+                        division_name
+                    )
+                )
+            `)
+            .eq('student.class_division_id', classDivisionId);
+
+        if (error) {
+            console.error('Error fetching parent-student mappings for homework:', error);
+            return;
+        }
+
+        // Send notifications to each parent
+        for (const mapping of parentStudents) {
+            await notificationService.sendParentNotification({
+                parentId: mapping.parent_id,
+                studentId: mapping.student_id,
+                type: notificationService.notificationTypes.HOMEWORK,
+                title: `New Homework: ${homework.title}`,
+                message: `Subject: ${homework.subject}\nDue: ${new Date(homework.due_date).toLocaleDateString()}\n\n${homework.description}`,
+                data: {
+                    homework_id: homework.id,
+                    subject: homework.subject,
+                    due_date: homework.due_date,
+                    student_name: mapping.student.full_name,
+                    student_class: `${mapping.student.class_division.class_name} ${mapping.student.class_division.division_name}`
+                },
+                priority: notificationService.priorityLevels.HIGH,
+                relatedId: homework.id
+            });
+        }
+
+        console.log(`Sent homework notifications to ${parentStudents.length} parents`);
+
+    } catch (error) {
+        console.error('Error in sendHomeworkNotifications:', error);
+    }
+}
 
 export default router; 

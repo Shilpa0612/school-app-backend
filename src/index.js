@@ -47,6 +47,8 @@ app.use('/api/announcements', (await import('./routes/announcements.js')).defaul
 app.use('/api/timetable', (await import('./routes/timetable.js')).default); // Add timetable routes
 app.use('/api/attendance', (await import('./routes/attendance.js')).default); // Add attendance routes
 app.use('/api/stats', (await import('./routes/stats.js')).default); // Add statistics routes
+app.use('/api/notifications', (await import('./routes/notifications.js')).default); // Add notifications routes
+app.use('/api/device-tokens', (await import('./routes/deviceTokens.js')).default); // Add device tokens routes
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -100,18 +102,28 @@ server.listen(PORT, () => {
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-    logger.info('SIGTERM received, shutting down gracefully');
-    server.close(() => {
-        logger.info('Server closed');
-        process.exit(0);
-    });
-});
+const gracefulShutdown = async (signal) => {
+    logger.info(`${signal} received, shutting down gracefully`);
 
-process.on('SIGINT', () => {
-    logger.info('SIGINT received, shutting down gracefully');
+    try {
+        // Import and shutdown WebSocket service
+        const { default: websocketService } = await import('./services/websocketService.js');
+        websocketService.shutdown();
+    } catch (error) {
+        logger.error('Error shutting down WebSocket service:', error);
+    }
+
     server.close(() => {
         logger.info('Server closed');
         process.exit(0);
     });
-}); 
+
+    // Force exit after 10 seconds if graceful shutdown takes too long
+    setTimeout(() => {
+        logger.error('Graceful shutdown timeout, forcing exit');
+        process.exit(1);
+    }, 10000);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT')); 

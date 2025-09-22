@@ -90,9 +90,10 @@ router.post('/',
                 });
             }
 
-            // If auto-approved, create recipients
+            // If auto-approved, create recipients and send notifications
             if (initialStatus === 'approved') {
                 await createAnnouncementRecipients(announcement.id, target_roles);
+                await sendAnnouncementNotifications(announcement, target_roles);
             }
 
             res.status(201).json({
@@ -687,9 +688,10 @@ router.patch('/:id/approval',
                 });
             }
 
-            // Create recipients if approved
+            // Create recipients and send notifications if approved
             if (action === 'approve') {
                 await createAnnouncementRecipients(announcement.id, announcement.target_roles);
+                await sendAnnouncementNotifications(updatedAnnouncement, announcement.target_roles);
             }
 
             res.json({
@@ -2071,6 +2073,76 @@ async function createAnnouncementRecipients(announcementId, targetRoles) {
         }
     } catch (error) {
         logger.error('Error in createAnnouncementRecipients:', error);
+    }
+}
+
+/**
+ * Send notifications to parents when announcements are created
+ */
+async function sendAnnouncementNotifications(announcement, targetRoles) {
+    try {
+        // Only send notifications to parents
+        if (!targetRoles.includes('parent')) {
+            return;
+        }
+
+        // Get all parents with their children
+        const { data: parentStudents, error } = await adminSupabase
+            .from('parent_student_mappings')
+            .select(`
+                parent_id,
+                student_id,
+                student:students!parent_student_mappings_student_id_fkey(
+                    full_name,
+                    admission_number,
+                    class_division:class_divisions!students_class_division_id_fkey(
+                        class_name,
+                        division_name
+                    )
+                )
+            `);
+
+        if (error) {
+            logger.error('Error fetching parent-student mappings:', error);
+            return;
+        }
+
+        // Group by parent to send bulk notifications
+        const parentGroups = {};
+        parentStudents.forEach(mapping => {
+            if (!parentGroups[mapping.parent_id]) {
+                parentGroups[mapping.parent_id] = [];
+            }
+            parentGroups[mapping.parent_id].push(mapping);
+        });
+
+        // Send notifications to each parent
+        for (const [parentId, mappings] of Object.entries(parentGroups)) {
+            for (const mapping of mappings) {
+                await notificationService.sendParentNotification({
+                    parentId: mapping.parent_id,
+                    studentId: mapping.student_id,
+                    type: notificationService.notificationTypes.ANNOUNCEMENT,
+                    title: `New Announcement: ${announcement.title}`,
+                    message: announcement.content,
+                    data: {
+                        announcement_id: announcement.id,
+                        announcement_type: announcement.announcement_type,
+                        priority: announcement.priority,
+                        is_featured: announcement.is_featured,
+                        student_name: mapping.student.full_name,
+                        student_class: `${mapping.student.class_division.class_name} ${mapping.student.class_division.division_name}`
+                    },
+                    priority: announcement.priority,
+                    relatedId: announcement.id
+                });
+            }
+        }
+
+        logger.info(`Sent announcement notifications to ${Object.keys(parentGroups).length} parents`);
+
+    } catch (error) {
+        logger.error('Error in sendAnnouncementNotifications:', error);
     }
 }
 

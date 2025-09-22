@@ -2,6 +2,7 @@ import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate } from '../middleware/auth.js';
+import notificationService from '../services/notificationService.js';
 
 // Import getActiveAcademicYear function from attendance routes
 async function getActiveAcademicYear() {
@@ -260,6 +261,11 @@ router.post('/events',
                     console.error('Error auto-syncing calendar event to holiday:', syncError);
                     // Don't fail the main request if sync fails
                 }
+            }
+
+            // Send notifications for approved events
+            if (data.status === 'approved') {
+                await sendEventNotifications(data, eventClassDivisions);
             }
 
             res.status(201).json({
@@ -2200,5 +2206,95 @@ router.get('/events/pending',
         }
     }
 );
+
+/**
+ * Send notifications to parents when events are created
+ */
+async function sendEventNotifications(event, classDivisions) {
+    try {
+        // Only send notifications for events that target parents
+        if (event.event_type === 'teacher_specific') {
+            return; // Skip teacher-specific events
+        }
+
+        // Get all parents with students in the targeted classes
+        let parentStudents = [];
+
+        if (event.event_type === 'school_wide') {
+            // School-wide events - get all parents
+            const { data: allParentStudents, error } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    parent_id,
+                    student_id,
+                    student:students!parent_student_mappings_student_id_fkey(
+                        full_name,
+                        admission_number,
+                        class_division:class_divisions!students_class_division_id_fkey(
+                            class_name,
+                            division_name
+                        )
+                    )
+                `);
+
+            if (error) {
+                console.error('Error fetching parent-student mappings for school-wide event:', error);
+                return;
+            }
+            parentStudents = allParentStudents;
+        } else if (classDivisions && classDivisions.length > 0) {
+            // Class-specific events - get parents of students in those classes
+            const { data: classParentStudents, error } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    parent_id,
+                    student_id,
+                    student:students!parent_student_mappings_student_id_fkey(
+                        full_name,
+                        admission_number,
+                        class_division:class_divisions!students_class_division_id_fkey(
+                            class_name,
+                            division_name
+                        )
+                    )
+                `)
+                .in('student.class_division_id', classDivisions);
+
+            if (error) {
+                console.error('Error fetching parent-student mappings for class event:', error);
+                return;
+            }
+            parentStudents = classParentStudents;
+        }
+
+        // Send notifications to each parent
+        for (const mapping of parentStudents) {
+            await notificationService.sendParentNotification({
+                parentId: mapping.parent_id,
+                studentId: mapping.student_id,
+                type: notificationService.notificationTypes.EVENT,
+                title: `New Event: ${event.title}`,
+                message: `Date: ${new Date(event.event_date).toLocaleDateString()}\nTime: ${event.start_time || 'All day'}\n\n${event.description}`,
+                data: {
+                    event_id: event.id,
+                    event_type: event.event_type,
+                    event_category: event.event_category,
+                    event_date: event.event_date,
+                    start_time: event.start_time,
+                    end_time: event.end_time,
+                    student_name: mapping.student.full_name,
+                    student_class: `${mapping.student.class_division.class_name} ${mapping.student.class_division.division_name}`
+                },
+                priority: event.event_category === 'exam' ? notificationService.priorityLevels.HIGH : notificationService.priorityLevels.NORMAL,
+                relatedId: event.id
+            });
+        }
+
+        console.log(`Sent event notifications to ${parentStudents.length} parents`);
+
+    } catch (error) {
+        console.error('Error in sendEventNotifications:', error);
+    }
+}
 
 export default router; 

@@ -9,19 +9,32 @@ class WebSocketService {
         this.wss = null;
         this.clients = new Map(); // userId -> WebSocket
         this.userSubscriptions = new Map(); // userId -> Set of subscribed threads
+        this.heartbeatInterval = null;
+        this.heartbeatIntervalMs = 30000; // 30 seconds
+        this.connectionTimeout = 60000; // 60 seconds
+        this.clientHeartbeats = new Map(); // userId -> last heartbeat timestamp
     }
 
     /**
      * Initialize WebSocket server
      */
     initialize(server) {
-        this.wss = new WebSocketServer({ server });
+        this.wss = new WebSocketServer({
+            server,
+            // Configure WebSocket server options
+            perMessageDeflate: false,
+            maxPayload: 16 * 1024, // 16KB max message size
+            clientTracking: true,
+        });
 
         this.wss.on('connection', (ws, req) => {
             this.handleConnection(ws, req);
         });
 
-        logger.info('WebSocket server initialized');
+        // Start heartbeat mechanism
+        this.startHeartbeat();
+
+        logger.info('WebSocket server initialized with heartbeat mechanism');
     }
 
     /**
@@ -44,6 +57,7 @@ class WebSocketService {
             // Store client connection
             this.clients.set(userId, ws);
             this.userSubscriptions.set(userId, new Set());
+            this.clientHeartbeats.set(userId, Date.now());
 
             // Send connection confirmation
             ws.send(JSON.stringify({
@@ -69,6 +83,11 @@ class WebSocketService {
                     });
                 }
             );
+
+            // Subscribe to notifications for parents
+            if (decoded.role === 'parent') {
+                this.subscribeToNotifications(userId);
+            }
 
             // Handle incoming messages
             ws.on('message', (data) => {
@@ -155,7 +174,14 @@ class WebSocketService {
                     break;
 
                 case 'ping':
+                    // Update heartbeat timestamp
+                    this.clientHeartbeats.set(userId, Date.now());
                     this.sendMessageToUser(userId, { type: 'pong' });
+                    break;
+
+                case 'heartbeat_response':
+                    // Client responded to server heartbeat
+                    this.clientHeartbeats.set(userId, Date.now());
                     break;
 
                 case 'send_message':
@@ -325,6 +351,9 @@ class WebSocketService {
 
         // Clean up subscriptions
         this.userSubscriptions.delete(userId);
+
+        // Clean up heartbeat tracking
+        this.clientHeartbeats.delete(userId);
 
         // Unsubscribe from real-time messages
         realtimeService.unsubscribeUser(userId);
@@ -543,6 +572,153 @@ class WebSocketService {
                 }
             }
         });
+    }
+
+    /**
+     * Start heartbeat mechanism to keep connections alive
+     */
+    startHeartbeat() {
+        this.heartbeatInterval = setInterval(() => {
+            this.performHeartbeatCheck();
+        }, this.heartbeatIntervalMs);
+
+        logger.info(`Heartbeat mechanism started (interval: ${this.heartbeatIntervalMs}ms)`);
+    }
+
+    /**
+     * Stop heartbeat mechanism
+     */
+    stopHeartbeat() {
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+            logger.info('Heartbeat mechanism stopped');
+        }
+    }
+
+    /**
+     * Perform heartbeat check on all connected clients
+     */
+    performHeartbeatCheck() {
+        const now = Date.now();
+        const disconnectedUsers = [];
+
+        this.clients.forEach((ws, userId) => {
+            const lastHeartbeat = this.clientHeartbeats.get(userId) || 0;
+            const timeSinceLastHeartbeat = now - lastHeartbeat;
+
+            if (ws.readyState === 1) { // WebSocket is OPEN
+                if (timeSinceLastHeartbeat > this.connectionTimeout) {
+                    // Client hasn't responded to heartbeat, consider it disconnected
+                    logger.warn(`Client ${userId} heartbeat timeout (${timeSinceLastHeartbeat}ms). Disconnecting...`);
+                    disconnectedUsers.push(userId);
+                    ws.terminate(); // Force close the connection
+                } else {
+                    // Send ping to client
+                    try {
+                        ws.send(JSON.stringify({
+                            type: 'heartbeat',
+                            timestamp: now,
+                            timeout: this.connectionTimeout
+                        }));
+                    } catch (error) {
+                        logger.error(`Error sending heartbeat to user ${userId}:`, error);
+                        disconnectedUsers.push(userId);
+                    }
+                }
+            } else {
+                // WebSocket is not open, clean up
+                disconnectedUsers.push(userId);
+            }
+        });
+
+        // Clean up disconnected users
+        disconnectedUsers.forEach(userId => {
+            this.handleDisconnect(userId);
+        });
+
+        if (disconnectedUsers.length > 0) {
+            logger.info(`Cleaned up ${disconnectedUsers.length} disconnected clients`);
+        }
+    }
+
+    /**
+     * Subscribe user to notifications
+     */
+    async subscribeToNotifications(userId) {
+        try {
+            // Subscribe to real-time notifications for this parent
+            realtimeService.subscribeToNotifications(
+                userId,
+                (notification) => {
+                    this.sendMessageToUser(userId, {
+                        type: 'notification',
+                        data: notification
+                    });
+                },
+                (error) => {
+                    logger.error(`Notification subscription error for user ${userId}:`, error);
+                }
+            );
+
+            logger.info(`User ${userId} subscribed to notifications`);
+        } catch (error) {
+            logger.error(`Error subscribing user ${userId} to notifications:`, error);
+        }
+    }
+
+    /**
+     * Send notification to parent
+     */
+    async sendNotificationToParent(parentId, notification) {
+        try {
+            if (this.isUserConnected(parentId)) {
+                this.sendMessageToUser(parentId, {
+                    type: 'notification',
+                    data: notification
+                });
+                logger.info(`Notification sent to parent ${parentId}`);
+            } else {
+                logger.info(`Parent ${parentId} not connected, notification will be delivered when they connect`);
+            }
+        } catch (error) {
+            logger.error(`Error sending notification to parent ${parentId}:`, error);
+        }
+    }
+
+    /**
+     * Graceful shutdown
+     */
+    shutdown() {
+        logger.info('Shutting down WebSocket service...');
+
+        // Stop heartbeat
+        this.stopHeartbeat();
+
+        // Close all client connections
+        this.clients.forEach((ws, userId) => {
+            try {
+                ws.send(JSON.stringify({
+                    type: 'server_shutdown',
+                    message: 'Server is shutting down'
+                }));
+                ws.close(1001, 'Server shutdown');
+            } catch (error) {
+                logger.error(`Error closing connection for user ${userId}:`, error);
+            }
+        });
+
+        // Close WebSocket server
+        if (this.wss) {
+            this.wss.close(() => {
+                logger.info('WebSocket server closed');
+            });
+        }
+
+        // Clear all data structures
+        this.clients.clear();
+        this.userSubscriptions.clear();
+        this.clientHeartbeats.clear();
     }
 }
 

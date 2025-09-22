@@ -197,6 +197,57 @@ class RealtimeService {
     }
 
     /**
+     * Subscribe to notifications for a parent
+     */
+    subscribeToNotifications(userId, onNotification, onError) {
+        try {
+            const subscription = supabase
+                .channel(`notifications_${userId}`)
+                .on('postgres_changes', {
+                    event: 'INSERT',
+                    schema: 'public',
+                    table: 'parent_notifications',
+                    filter: `parent_id=eq.${userId}`
+                }, async (payload) => {
+                    const notification = payload.new;
+
+                    // Get full notification with student info
+                    const { data: fullNotification, error } = await supabase
+                        .from('parent_notifications')
+                        .select(`
+                            *,
+                            student:students!parent_notifications_student_id_fkey(
+                                full_name,
+                                admission_number,
+                                class_division:class_divisions!students_class_division_id_fkey(
+                                    class_name,
+                                    division_name
+                                )
+                            )
+                        `)
+                        .eq('id', notification.id)
+                        .single();
+
+                    if (error) {
+                        logger.error('Error fetching notification details:', error);
+                        return;
+                    }
+
+                    // Call the callback
+                    if (onNotification) onNotification(fullNotification);
+                })
+                .subscribe();
+
+            this.subscriptions.set(`notifications_${userId}`, subscription);
+            logger.info(`User ${userId} subscribed to notifications`);
+
+        } catch (error) {
+            logger.error('Error subscribing to notifications:', error);
+            if (onError) onError(error);
+        }
+    }
+
+    /**
      * Get unread message count for a user
      */
     async getUnreadCount(userId) {
