@@ -124,13 +124,21 @@ class NotificationService {
                 is_read: notification.is_read
             };
 
-            // Send WebSocket notification if user is connected
-            if (websocketService.isUserConnected(parentId)) {
-                websocketService.sendMessageToUser(parentId, {
-                    type: 'notification',
-                    data: notificationData
-                });
-                logger.info(`Real-time WebSocket notification sent to parent ${parentId}`);
+            // Send WebSocket notification if user is connected to notification stream
+            const wsConnected = websocketService.isUserConnected(parentId);
+            if (wsConnected) {
+                // Send via dedicated notification WebSocket
+                const notificationSent = websocketService.sendNotificationToUser(parentId, notification);
+                if (notificationSent) {
+                    logger.info(`Real-time notification sent via WebSocket to parent ${parentId}`);
+                } else {
+                    // Fallback to general WebSocket
+                    websocketService.sendMessageToUser(parentId, {
+                        type: 'notification',
+                        data: notificationData
+                    });
+                    logger.info(`Real-time WebSocket notification sent to parent ${parentId} (fallback)`);
+                }
             } else {
                 logger.info(`Parent ${parentId} not connected via WebSocket, will try push notification`);
             }
