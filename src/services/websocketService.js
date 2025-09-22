@@ -27,6 +27,7 @@ class WebSocketService {
             clientTracking: true,
         });
 
+        // Main WebSocket connection handler
         this.wss.on('connection', (ws, req) => {
             this.handleConnection(ws, req);
         });
@@ -35,6 +36,100 @@ class WebSocketService {
         this.startHeartbeat();
 
         logger.info('WebSocket server initialized with heartbeat mechanism');
+    }
+
+    /**
+     * Initialize Notification WebSocket server (separate endpoint)
+     */
+    initializeNotificationServer(server) {
+        this.notificationWss = new WebSocketServer({
+            server,
+            path: '/notifications/ws',
+            perMessageDeflate: false,
+            maxPayload: 16 * 1024,
+            clientTracking: true,
+        });
+
+        this.notificationWss.on('connection', (ws, req) => {
+            this.handleNotificationConnection(ws, req);
+        });
+
+        logger.info('Notification WebSocket server initialized on /notifications/ws');
+    }
+
+    /**
+     * Handle new Notification WebSocket connection
+     */
+    handleNotificationConnection(ws, req) {
+        // Extract token from query parameters
+        const token = this.extractToken(req);
+
+        if (!token) {
+            ws.close(1008, 'Authentication required');
+            return;
+        }
+
+        try {
+            // Verify JWT token
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            const userId = decoded.userId;
+            const userRole = decoded.role;
+
+            // Check if user is authorized for notifications
+            if (!['parent', 'teacher', 'principal', 'admin'].includes(userRole)) {
+                ws.close(1008, 'Unauthorized access to notification stream');
+                return;
+            }
+
+            // Store connection
+            this.clients.set(userId, ws);
+            this.clientHeartbeats.set(userId, Date.now());
+
+            // Set connection metadata
+            ws.userId = userId;
+            ws.userRole = userRole;
+            ws.connectionType = 'notification';
+            ws.isAlive = true;
+
+            // Send connection confirmation
+            this.sendMessageToUser(userId, {
+                type: 'connection_established',
+                data: {
+                    user_id: userId,
+                    user_role: userRole,
+                    connection_type: 'notification_stream',
+                    timestamp: new Date().toISOString(),
+                    message_types: this.getMessageTypesForRole(userRole)
+                }
+            });
+
+            // Subscribe to notifications if user is a parent
+            if (userRole === 'parent') {
+                this.subscribeToNotifications(userId);
+            }
+
+            // Handle incoming messages
+            ws.on('message', (message) => {
+                this.handleNotificationMessage(ws, message);
+            });
+
+            // Handle connection close
+            ws.on('close', () => {
+                this.handleDisconnection(userId);
+            });
+
+            // Handle ping/pong for heartbeat
+            ws.on('pong', () => {
+                ws.isAlive = true;
+                this.clientHeartbeats.set(userId, Date.now());
+            });
+
+            logger.info(`Notification WebSocket connected: User ${userId} (${userRole})`);
+
+        } catch (error) {
+            logger.error('Notification WebSocket authentication error:', error);
+            ws.close(1008, 'Invalid token');
+        }
     }
 
     /**
@@ -316,6 +411,163 @@ class WebSocketService {
                 thread_id: threadId
             });
         }
+    }
+
+    /**
+     * Handle notification WebSocket messages
+     */
+    handleNotificationMessage(ws, message) {
+        try {
+            const data = JSON.parse(message.toString());
+
+            switch (data.type) {
+                case 'ping':
+                    // Respond to ping with pong
+                    ws.send(JSON.stringify({
+                        type: 'pong',
+                        timestamp: new Date().toISOString()
+                    }));
+                    break;
+
+                case 'heartbeat':
+                    // Update heartbeat
+                    ws.isAlive = true;
+                    this.clientHeartbeats.set(ws.userId, Date.now());
+                    break;
+
+                case 'subscribe_notifications':
+                    // Subscribe to specific notification types
+                    this.handleNotificationSubscription(ws, data);
+                    break;
+
+                case 'unsubscribe_notifications':
+                    // Unsubscribe from specific notification types
+                    this.handleNotificationUnsubscription(ws, data);
+                    break;
+
+                default:
+                    logger.warn(`Unknown notification message type: ${data.type}`);
+            }
+        } catch (error) {
+            logger.error('Error handling notification message:', error);
+        }
+    }
+
+    /**
+     * Handle notification subscription
+     */
+    handleNotificationSubscription(ws, data) {
+        const userId = ws.userId;
+        const notificationTypes = data.notification_types || [];
+
+        // Store subscription preferences
+        if (!this.userSubscriptions.has(userId)) {
+            this.userSubscriptions.set(userId, new Set());
+        }
+
+        notificationTypes.forEach(type => {
+            this.userSubscriptions.get(userId).add(type);
+        });
+
+        logger.info(`User ${userId} subscribed to notification types: ${notificationTypes.join(', ')}`);
+    }
+
+    /**
+     * Handle notification unsubscription
+     */
+    handleNotificationUnsubscription(ws, data) {
+        const userId = ws.userId;
+        const notificationTypes = data.notification_types || [];
+
+        if (this.userSubscriptions.has(userId)) {
+            notificationTypes.forEach(type => {
+                this.userSubscriptions.get(userId).delete(type);
+            });
+        }
+
+        logger.info(`User ${userId} unsubscribed from notification types: ${notificationTypes.join(', ')}`);
+    }
+
+    /**
+     * Get message types available for different user roles
+     */
+    getMessageTypesForRole(role) {
+        const messageTypes = {
+            parent: [
+                'notification',
+                'announcement',
+                'event',
+                'homework',
+                'classwork',
+                'message',
+                'attendance',
+                'birthday',
+                'system'
+            ],
+            teacher: [
+                'notification',
+                'announcement',
+                'event',
+                'homework',
+                'classwork',
+                'message',
+                'system',
+                'approval_request'
+            ],
+            principal: [
+                'notification',
+                'announcement',
+                'event',
+                'homework',
+                'classwork',
+                'message',
+                'system',
+                'approval_request',
+                'admin_alert'
+            ],
+            admin: [
+                'notification',
+                'announcement',
+                'event',
+                'homework',
+                'classwork',
+                'message',
+                'system',
+                'approval_request',
+                'admin_alert',
+                'system_maintenance'
+            ]
+        };
+
+        return messageTypes[role] || ['notification'];
+    }
+
+    /**
+     * Send notification to user via WebSocket
+     */
+    sendNotificationToUser(userId, notification) {
+        const ws = this.clients.get(userId);
+        if (ws && ws.connectionType === 'notification') {
+            const message = {
+                type: 'notification',
+                data: {
+                    id: notification.id,
+                    type: notification.type,
+                    title: notification.title,
+                    message: notification.message,
+                    priority: notification.priority,
+                    data: JSON.parse(notification.data || '{}'),
+                    related_id: notification.related_id,
+                    student_id: notification.student_id,
+                    created_at: notification.created_at,
+                    is_read: notification.is_read
+                }
+            };
+
+            this.sendMessageToUser(userId, message);
+            return true;
+        }
+        return false;
     }
 
     /**

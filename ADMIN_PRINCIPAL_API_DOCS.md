@@ -1026,6 +1026,114 @@ GET /api/academic/teachers-with-assignments
 - ✅ Overall summary for the school
 - ✅ Sorted alphabetically by teacher name
 
+### 4. Get Division Group Chat Messages
+
+```http
+GET /api/users/principal/division/:class_division_id/messages
+```
+
+**Access**: Admin, Principal only
+**Description**: Get all group chat messages for a specific class division, including messages from class teachers and subject teachers
+
+**Query Parameters**:
+
+- `page` (optional): Page number for pagination (default: 1)
+- `limit` (optional): Number of messages per page (default: 50)
+- `start_date` (optional): Filter messages from this date (ISO 8601 format)
+- `end_date` (optional): Filter messages until this date (ISO 8601 format)
+- `message_type` (optional): Filter by message type - `text`, `image`, `file`, or `all` (default: `all`)
+
+**Response**:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "class_division": {
+      "id": "uuid",
+      "class_name": "Grade 10 A",
+      "academic_year": "2024-2025",
+      "division": "A"
+    },
+    "teachers": [
+      {
+        "assignment_id": "uuid",
+        "teacher_id": "uuid",
+        "full_name": "Teacher Name",
+        "email": "teacher@school.com",
+        "phone_number": "+1234567890",
+        "assignment_type": "class_teacher",
+        "subject": "Mathematics",
+        "is_primary": true,
+        "assigned_date": "2024-06-01T00:00:00Z"
+      }
+    ],
+    "threads": [
+      {
+        "thread_id": "uuid",
+        "thread_title": "Grade 10 A Group Chat",
+        "thread_type": "group",
+        "created_at": "2024-06-01T00:00:00Z",
+        "updated_at": "2024-06-15T10:30:00Z",
+        "participants": [
+          {
+            "user_id": "uuid",
+            "role": "admin",
+            "full_name": "Teacher Name",
+            "user_role": "teacher"
+          }
+        ],
+        "messages": [
+          {
+            "message_id": "uuid",
+            "content": "Hello everyone!",
+            "message_type": "text",
+            "status": "sent",
+            "created_at": "2024-06-15T10:30:00Z",
+            "updated_at": "2024-06-15T10:30:00Z",
+            "sender": {
+              "id": "uuid",
+              "full_name": "Teacher Name",
+              "role": "teacher",
+              "email": "teacher@school.com"
+            },
+            "attachments": []
+          }
+        ]
+      }
+    ],
+    "total_messages": 150,
+    "pagination": {
+      "page": 1,
+      "limit": 50,
+      "total_pages": 3,
+      "has_next": true,
+      "has_prev": false
+    },
+    "summary": {
+      "total_teachers": 5,
+      "class_teachers": 1,
+      "subject_teachers": 3,
+      "assistant_teachers": 1,
+      "substitute_teachers": 0,
+      "total_threads": 3,
+      "messages_found": 50,
+      "unique_senders": 4
+    }
+  }
+}
+```
+
+**Key Features**:
+
+- ✅ Complete teacher coverage (class teachers, subject teachers, assistants, substitutes)
+- ✅ All group chat messages from division teachers
+- ✅ Message metadata (type, status, timestamps, attachments)
+- ✅ Advanced filtering (date range, message type)
+- ✅ Pagination support for large message volumes
+- ✅ Organized by chat threads with participant details
+- ✅ Comprehensive summary statistics
+
 ## Common Response Differences
 
 ### 1. View Student Details

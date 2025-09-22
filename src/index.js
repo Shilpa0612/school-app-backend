@@ -48,6 +48,7 @@ app.use('/api/timetable', (await import('./routes/timetable.js')).default); // A
 app.use('/api/attendance', (await import('./routes/attendance.js')).default); // Add attendance routes
 app.use('/api/stats', (await import('./routes/stats.js')).default); // Add statistics routes
 app.use('/api/notifications', (await import('./routes/notifications.js')).default); // Add notifications routes
+app.use('/api/notifications', (await import('./routes/notificationStream.js')).default); // Add notification streaming routes
 app.use('/api/device-tokens', (await import('./routes/deviceTokens.js')).default); // Add device tokens routes
 
 // Health check endpoint
@@ -86,6 +87,7 @@ server.listen(PORT, () => {
         try {
             const { default: websocketService } = await import('./services/websocketService.js');
             websocketService.initialize(server);
+            websocketService.initializeNotificationServer(server);
             logger.info('WebSocket service initialized successfully');
         } catch (error) {
             logger.error('Failed to initialize WebSocket service:', error);
