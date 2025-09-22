@@ -127,12 +127,18 @@ router.post('/events',
                 console.log(`✅ Class division validated: ${classDivision.class_level.name} ${classDivision.division}`);
             }
 
-            // Convert IST time to UTC for storage
-            let utcEventDate = new Date(event_date);
-            if (timezone === 'Asia/Kolkata') {
-                // If the input is in IST, convert to UTC
+            // Handle event_date conversion properly
+            let utcEventDate;
+            if (typeof event_date === 'string' && event_date.endsWith('Z')) {
+                // Date is already in UTC format, use as is
+                utcEventDate = new Date(event_date);
+            } else if (timezone === 'Asia/Kolkata') {
+                // Convert IST time to UTC for storage
                 const istOffset = 5.5 * 60 * 60 * 1000; // IST is UTC+5:30
-                utcEventDate = new Date(utcEventDate.getTime() - istOffset);
+                utcEventDate = new Date(new Date(event_date).getTime() - istOffset);
+            } else {
+                // For other timezones, convert to Date object
+                utcEventDate = new Date(event_date);
             }
 
             // Determine event status based on user role and event type
@@ -1645,11 +1651,21 @@ router.put('/events/:id',
                 updateData.is_multi_class = false;
             }
 
-            // Convert IST time to UTC if event_date is provided
-            if (updateData.event_date && updateData.timezone === 'Asia/Kolkata') {
-                const istOffset = 5.5 * 60 * 60 * 1000;
-                const utcEventDate = new Date(updateData.event_date.getTime() - istOffset);
-                updateData.event_date = utcEventDate.toISOString();
+            // Handle event_date conversion properly
+            if (updateData.event_date) {
+                // If the date is already in UTC format (ends with Z), use it as is
+                if (typeof updateData.event_date === 'string' && updateData.event_date.endsWith('Z')) {
+                    // Date is already in UTC, no conversion needed
+                    updateData.event_date = updateData.event_date;
+                } else if (updateData.timezone === 'Asia/Kolkata') {
+                    // Convert IST time to UTC for storage
+                    const istOffset = 5.5 * 60 * 60 * 1000;
+                    const utcEventDate = new Date(updateData.event_date.getTime() - istOffset);
+                    updateData.event_date = utcEventDate.toISOString();
+                } else {
+                    // For other timezones or if no timezone specified, convert to ISO string
+                    updateData.event_date = new Date(updateData.event_date).toISOString();
+                }
             }
 
             const { data, error } = await adminSupabase

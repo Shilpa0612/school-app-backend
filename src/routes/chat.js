@@ -2277,4 +2277,132 @@ router.post('/admin/resolve-duplicates', authenticate, async (req, res) => {
     }
 });
 
+// Delete chat thread
+router.delete('/threads/:id', authenticate, async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        logger.info(`Removing user ${req.user.id} (${req.user.role}) from thread ${id}`);
+
+        // Verify thread exists and user is a participant
+        const { data: thread, error: threadError } = await adminSupabase
+            .from('chat_threads')
+            .select(`
+                id,
+                title,
+                thread_type,
+                created_by,
+                status,
+                participants:chat_participants(user_id, role)
+            `)
+            .eq('id', id)
+            .single();
+
+        if (threadError) {
+            if (threadError.code === 'PGRST116') {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Thread not found'
+                });
+            }
+            logger.error('Error fetching thread:', threadError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch thread'
+            });
+        }
+
+        // Check if user is a participant in the thread
+        const isParticipant = thread.participants.some(p => p.user_id === req.user.id);
+        if (!isParticipant) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'You can only leave threads you participate in'
+            });
+        }
+
+        // Check if thread is already deleted or merged
+        if (thread.status === 'deleted' || thread.status === 'merged') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Thread is already deleted or merged'
+            });
+        }
+
+        // For group threads, only the creator can leave (effectively delete for them)
+        if (thread.thread_type === 'group' && thread.created_by !== req.user.id) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Only the thread creator can leave group threads'
+            });
+        }
+
+        // For direct threads, either participant can leave
+        // (This allows both participants to remove the conversation from their view)
+
+        // Remove user from participants (hard delete approach)
+        // This removes the user from the thread completely
+        const { error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .delete()
+            .eq('thread_id', id)
+            .eq('user_id', req.user.id);
+
+        if (participantError) {
+            logger.error('Error removing user from thread:', participantError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to remove user from thread'
+            });
+        }
+
+        // Notify other participants via WebSocket
+        try {
+            const otherParticipants = thread.participants
+                .filter(p => p.user_id !== req.user.id)
+                .map(p => p.user_id);
+
+            if (otherParticipants.length > 0) {
+                // Send notification to other participants
+                const notification = {
+                    type: 'thread_deleted',
+                    thread_id: id,
+                    thread_title: thread.title,
+                    deleted_by: {
+                        id: req.user.id,
+                        name: req.user.full_name || 'Unknown User',
+                        role: req.user.role
+                    },
+                    timestamp: new Date().toISOString()
+                };
+
+                // Import websocket service dynamically to avoid circular dependency
+                const { notifyUsers } = await import('../services/websocketService.js');
+                await notifyUsers(otherParticipants, notification);
+            }
+        } catch (wsError) {
+            logger.warn('Error sending WebSocket notification:', wsError);
+            // Don't fail the request if WebSocket notification fails
+        }
+
+        logger.info(`Successfully removed user ${req.user.id} from thread ${id}`);
+
+        res.json({
+            status: 'success',
+            message: 'Left thread successfully',
+            data: {
+                thread_id: id,
+                left_at: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in delete thread:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
 export default router; 
