@@ -10,8 +10,8 @@ class WebSocketService {
         this.clients = new Map(); // userId -> WebSocket
         this.userSubscriptions = new Map(); // userId -> Set of subscribed threads
         this.heartbeatInterval = null;
-        this.heartbeatIntervalMs = 30000; // 30 seconds
-        this.connectionTimeout = 60000; // 60 seconds
+        this.heartbeatIntervalMs = 60000; // 60 seconds - less frequent heartbeats
+        this.connectionTimeout = 300000; // 5 minutes - much longer timeout
         this.clientHeartbeats = new Map(); // userId -> last heartbeat timestamp
     }
 
@@ -136,13 +136,22 @@ class WebSocketService {
 
             // Handle connection close
             ws.on('close', () => {
-                this.handleDisconnection(userId);
+                this.handleDisconnect(userId);
             });
 
             // Handle ping/pong for heartbeat
             ws.on('pong', () => {
                 ws.isAlive = true;
                 this.clientHeartbeats.set(userId, Date.now());
+            });
+
+            // Handle errors
+            ws.on('error', (error) => {
+                logger.error(`Notification WebSocket error for user ${userId}:`, error);
+                // Only disconnect if the connection is actually broken
+                if (ws.readyState !== 1) {
+                    this.handleDisconnect(userId);
+                }
             });
 
             logger.info(`Notification WebSocket connected: User ${userId} (${userRole})`);
@@ -218,7 +227,10 @@ class WebSocketService {
             // Handle errors
             ws.on('error', (error) => {
                 logger.error(`WebSocket error for user ${userId}:`, error);
-                this.handleDisconnect(userId);
+                // Only disconnect if the connection is actually broken
+                if (ws.readyState !== 1) {
+                    this.handleDisconnect(userId);
+                }
             });
 
             logger.info(`User ${userId} connected to WebSocket`);
@@ -877,27 +889,18 @@ class WebSocketService {
         const disconnectedUsers = [];
 
         this.clients.forEach((ws, userId) => {
-            const lastHeartbeat = this.clientHeartbeats.get(userId) || 0;
-            const timeSinceLastHeartbeat = now - lastHeartbeat;
-
             if (ws.readyState === 1) { // WebSocket is OPEN
-                if (timeSinceLastHeartbeat > this.connectionTimeout) {
-                    // Client hasn't responded to heartbeat, consider it disconnected
-                    logger.warn(`Client ${userId} heartbeat timeout (${timeSinceLastHeartbeat}ms). Disconnecting...`);
+                // Send ping to client without forcing disconnection
+                try {
+                    ws.send(JSON.stringify({
+                        type: 'heartbeat',
+                        timestamp: now,
+                        timeout: this.connectionTimeout
+                    }));
+                } catch (error) {
+                    logger.error(`Error sending heartbeat to user ${userId}:`, error);
+                    // Only disconnect if there's an actual error sending
                     disconnectedUsers.push(userId);
-                    ws.terminate(); // Force close the connection
-                } else {
-                    // Send ping to client
-                    try {
-                        ws.send(JSON.stringify({
-                            type: 'heartbeat',
-                            timestamp: now,
-                            timeout: this.connectionTimeout
-                        }));
-                    } catch (error) {
-                        logger.error(`Error sending heartbeat to user ${userId}:`, error);
-                        disconnectedUsers.push(userId);
-                    }
                 }
             } else {
                 // WebSocket is not open, clean up
@@ -905,7 +908,7 @@ class WebSocketService {
             }
         });
 
-        // Clean up disconnected users
+        // Clean up only truly disconnected users (not timeout-based)
         disconnectedUsers.forEach(userId => {
             this.handleDisconnect(userId);
         });

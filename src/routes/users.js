@@ -2,6 +2,7 @@ import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
+import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
@@ -2349,6 +2350,403 @@ router.get('/staff/birthdays',
     }
 );
 
+// ============================================================================
+// GET DIVISION GROUP CHAT MESSAGES FOR PRINCIPAL
+// ============================================================================
+
+// Get all group chat messages for a specific division (Principal only)
+router.get('/principal/division/:class_division_id/messages',
+    authenticate,
+    authorize(['admin', 'principal']),
+    async (req, res, next) => {
+        try {
+            const { class_division_id } = req.params;
+            const {
+                page = 1,
+                limit = 50,
+                start_date,
+                end_date,
+                message_type = 'all' // 'text', 'image', 'file', 'all'
+            } = req.query;
+
+            const offset = (page - 1) * limit;
+            const principalId = req.user.id;
+
+            // Validate class_division_id format
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(class_division_id)) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Invalid class_division_id format. Must be a valid UUID'
+                });
+            }
+
+            // First, get class division details
+            const { data: classDivision, error: classError } = await adminSupabase
+                .from('class_divisions')
+                .select(`
+                    id,
+                    division,
+                    academic_year:academic_year_id (
+                        year_name
+                    ),
+                    class_level:class_level_id (
+                        name,
+                        sequence_number
+                    )
+                `)
+                .eq('id', class_division_id)
+                .single();
+
+            if (classError || !classDivision) {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Class division not found'
+                });
+            }
+
+            // Get all teachers assigned to this division (class teachers and subject teachers)
+            const { data: teacherAssignments, error: assignmentsError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    id,
+                    teacher_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    assigned_date,
+                    is_active,
+                    teacher:teacher_id (
+                        id,
+                        full_name,
+                        phone_number,
+                        email,
+                        role
+                    )
+                `)
+                .eq('class_division_id', class_division_id)
+                .eq('is_active', true)
+                .order('is_primary', { ascending: false })
+                .order('assigned_date', { ascending: true });
+
+            if (assignmentsError) {
+                logger.error('Error fetching teacher assignments:', assignmentsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch teacher assignments'
+                });
+            }
+
+            const teacherIds = teacherAssignments.map(assignment => assignment.teacher_id);
+
+            if (teacherIds.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        class_division: {
+                            id: classDivision.id,
+                            class_name: `${classDivision.class_level.name} ${classDivision.division}`,
+                            academic_year: classDivision.academic_year.year_name,
+                            division: classDivision.division
+                        },
+                        teachers: [],
+                        messages: [],
+                        total_messages: 0,
+                        summary: {
+                            total_teachers: 0,
+                            class_teachers: 0,
+                            subject_teachers: 0,
+                            messages_found: 0
+                        }
+                    }
+                });
+            }
+
+            // First, get all thread IDs where any of these teachers are participants
+            const { data: participantThreads, error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .select('thread_id')
+                .in('user_id', teacherIds);
+
+            if (participantError) {
+                logger.error('Error fetching participant threads:', participantError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch participant threads'
+                });
+            }
+
+            const threadIds = participantThreads.map(p => p.thread_id);
+
+            if (threadIds.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        class_division: {
+                            id: classDivision.id,
+                            class_name: `${classDivision.class_level.name} ${classDivision.division}`,
+                            academic_year: classDivision.academic_year.year_name,
+                            division: classDivision.division
+                        },
+                        teachers: teacherAssignments.map(assignment => ({
+                            id: assignment.teacher.id,
+                            name: assignment.teacher.full_name,
+                            phone: assignment.teacher.phone_number,
+                            email: assignment.teacher.email,
+                            role: assignment.teacher.role,
+                            assignment_type: assignment.assignment_type,
+                            subject: assignment.subject,
+                            is_primary: assignment.is_primary
+                        })),
+                        messages: [],
+                        total_messages: 0,
+                        summary: {
+                            total_teachers: teacherAssignments.length,
+                            class_teachers: teacherAssignments.filter(a => a.assignment_type === 'class_teacher').length,
+                            subject_teachers: teacherAssignments.filter(a => a.assignment_type === 'subject_teacher').length,
+                            messages_found: 0
+                        }
+                    }
+                });
+            }
+
+            // Get all chat threads where any of these teachers are participants
+            const { data: threads, error: threadsError } = await adminSupabase
+                .from('chat_threads')
+                .select(`
+                    id,
+                    title,
+                    thread_type,
+                    created_at,
+                    updated_at,
+                    participants:chat_participants(
+                        user_id,
+                        role,
+                        user:users(
+                            id,
+                            full_name,
+                            role
+                        )
+                    )
+                `)
+                .in('id', threadIds)
+                .eq('thread_type', 'group')
+                .order('updated_at', { ascending: false });
+
+            if (threadsError) {
+                logger.error('Error fetching chat threads:', threadsError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch chat threads'
+                });
+            }
+
+            if (threads.length === 0) {
+                return res.json({
+                    status: 'success',
+                    data: {
+                        class_division: {
+                            id: classDivision.id,
+                            class_name: `${classDivision.class_level.name} ${classDivision.division}`,
+                            academic_year: classDivision.academic_year.year_name,
+                            division: classDivision.division
+                        },
+                        teachers: teacherAssignments.map(assignment => ({
+                            assignment_id: assignment.id,
+                            teacher_id: assignment.teacher_id,
+                            full_name: assignment.teacher.full_name,
+                            email: assignment.teacher.email,
+                            phone_number: assignment.teacher.phone_number,
+                            assignment_type: assignment.assignment_type,
+                            subject: assignment.subject,
+                            is_primary: assignment.is_primary,
+                            assigned_date: assignment.assigned_date
+                        })),
+                        messages: [],
+                        total_messages: 0,
+                        summary: {
+                            total_teachers: teacherAssignments.length,
+                            class_teachers: teacherAssignments.filter(a => a.assignment_type === 'class_teacher').length,
+                            subject_teachers: teacherAssignments.filter(a => a.assignment_type === 'subject_teacher').length,
+                            messages_found: 0
+                        }
+                    }
+                });
+            }
+
+            // Build query for messages from these threads
+            let messagesQuery = adminSupabase
+                .from('chat_messages')
+                .select(`
+                    id,
+                    thread_id,
+                    sender_id,
+                    content,
+                    message_type,
+                    status,
+                    created_at,
+                    updated_at,
+                    sender:users!chat_messages_sender_id_fkey(
+                        id,
+                        full_name,
+                        role,
+                        email
+                    ),
+                    attachments:chat_message_attachments(*)
+                `)
+                .in('thread_id', threadIds)
+                .order('created_at', { ascending: false });
+
+            // Apply date filters
+            if (start_date) {
+                messagesQuery = messagesQuery.gte('created_at', new Date(start_date).toISOString());
+            }
+            if (end_date) {
+                messagesQuery = messagesQuery.lte('created_at', new Date(end_date).toISOString());
+            }
+
+            // Apply message type filter
+            if (message_type !== 'all') {
+                messagesQuery = messagesQuery.eq('message_type', message_type);
+            }
+
+            // Apply pagination
+            messagesQuery = messagesQuery.range(offset, offset + limit - 1);
+
+            const { data: messages, error: messagesError } = await messagesQuery;
+
+            if (messagesError) {
+                logger.error('Error fetching messages:', messagesError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch messages'
+                });
+            }
+
+            // Get total count for pagination
+            let countQuery = adminSupabase
+                .from('chat_messages')
+                .select('id', { count: 'exact' })
+                .in('thread_id', threadIds);
+
+            if (start_date) {
+                countQuery = countQuery.gte('created_at', new Date(start_date).toISOString());
+            }
+            if (end_date) {
+                countQuery = countQuery.lte('created_at', new Date(end_date).toISOString());
+            }
+            if (message_type !== 'all') {
+                countQuery = countQuery.eq('message_type', message_type);
+            }
+
+            const { count: totalMessages, error: countError } = await countQuery;
+
+            if (countError) {
+                logger.error('Error getting message count:', countError);
+            }
+
+            // Organize messages by thread for better structure
+            const messagesByThread = {};
+            messages.forEach(message => {
+                if (!messagesByThread[message.thread_id]) {
+                    messagesByThread[message.thread_id] = [];
+                }
+                messagesByThread[message.thread_id].push(message);
+            });
+
+            // Find the thread details for each message
+            const threadsWithMessages = threads.map(thread => {
+                const threadMessages = messagesByThread[thread.id] || [];
+                return {
+                    thread_id: thread.id,
+                    thread_title: thread.title,
+                    thread_type: thread.thread_type,
+                    created_at: thread.created_at,
+                    updated_at: thread.updated_at,
+                    participants: thread.participants.map(p => ({
+                        user_id: p.user_id,
+                        role: p.role,
+                        full_name: p.user.full_name,
+                        user_role: p.user.role
+                    })),
+                    messages: threadMessages.map(message => ({
+                        message_id: message.id,
+                        content: message.content,
+                        message_type: message.message_type,
+                        status: message.status,
+                        created_at: message.created_at,
+                        updated_at: message.updated_at,
+                        sender: {
+                            id: message.sender.id,
+                            full_name: message.sender.full_name,
+                            role: message.sender.role,
+                            email: message.sender.email
+                        },
+                        attachments: message.attachments || []
+                    }))
+                };
+            });
+
+            // Calculate summary statistics
+            const classTeachers = teacherAssignments.filter(a => a.assignment_type === 'class_teacher');
+            const subjectTeachers = teacherAssignments.filter(a => a.assignment_type === 'subject_teacher');
+            const assistantTeachers = teacherAssignments.filter(a => a.assignment_type === 'assistant_teacher');
+            const substituteTeachers = teacherAssignments.filter(a => a.assignment_type === 'substitute_teacher');
+
+            res.json({
+                status: 'success',
+                data: {
+                    class_division: {
+                        id: classDivision.id,
+                        class_name: `${classDivision.class_level.name} ${classDivision.division}`,
+                        academic_year: classDivision.academic_year.year_name,
+                        division: classDivision.division
+                    },
+                    teachers: teacherAssignments.map(assignment => ({
+                        assignment_id: assignment.id,
+                        teacher_id: assignment.teacher_id,
+                        full_name: assignment.teacher.full_name,
+                        email: assignment.teacher.email,
+                        phone_number: assignment.teacher.phone_number,
+                        assignment_type: assignment.assignment_type,
+                        subject: assignment.subject,
+                        is_primary: assignment.is_primary,
+                        assigned_date: assignment.assigned_date
+                    })),
+                    threads: threadsWithMessages,
+                    total_messages: totalMessages || 0,
+                    pagination: {
+                        page: parseInt(page),
+                        limit: parseInt(limit),
+                        total_pages: Math.ceil((totalMessages || 0) / limit),
+                        has_next: offset + limit < (totalMessages || 0),
+                        has_prev: page > 1
+                    },
+                    filters_applied: {
+                        start_date: start_date || null,
+                        end_date: end_date || null,
+                        message_type: message_type,
+                        class_division_id: class_division_id
+                    },
+                    summary: {
+                        total_teachers: teacherAssignments.length,
+                        class_teachers: classTeachers.length,
+                        subject_teachers: subjectTeachers.length,
+                        assistant_teachers: assistantTeachers.length,
+                        substitute_teachers: substituteTeachers.length,
+                        total_threads: threads.length,
+                        messages_found: messages.length,
+                        unique_senders: [...new Set(messages.map(m => m.sender_id))].length
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in get division messages for principal:', error);
+            next(error);
+        }
+    }
+);
+
 // Get all chats for principal with filtering (Admin/Principal only)
 router.get('/principal/chats',
     authenticate,
@@ -2763,362 +3161,6 @@ router.get('/principal/chats',
 
         } catch (error) {
             console.error('Error in get principal chats:', error);
-            next(error);
-        }
-    }
-);
-
-// ============================================================================
-// GET DIVISION GROUP CHAT MESSAGES FOR PRINCIPAL
-// ============================================================================
-
-// Get all group chat messages for a specific division (Principal only)
-router.get('/principal/division/:class_division_id/messages',
-    authenticate,
-    authorize(['admin', 'principal']),
-    async (req, res, next) => {
-        try {
-            const { class_division_id } = req.params;
-            const {
-                page = 1,
-                limit = 50,
-                start_date,
-                end_date,
-                message_type = 'all' // 'text', 'image', 'file', 'all'
-            } = req.query;
-
-            const offset = (page - 1) * limit;
-            const principalId = req.user.id;
-
-            // Validate class_division_id format
-            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(class_division_id)) {
-                return res.status(400).json({
-                    status: 'error',
-                    message: 'Invalid class_division_id format. Must be a valid UUID'
-                });
-            }
-
-            // First, get class division details
-            const { data: classDivision, error: classError } = await adminSupabase
-                .from('class_divisions')
-                .select(`
-                    id,
-                    division,
-                    academic_year:academic_year_id (
-                        year_name
-                    ),
-                    class_level:class_level_id (
-                        name,
-                        sequence_number
-                    )
-                `)
-                .eq('id', class_division_id)
-                .single();
-
-            if (classError || !classDivision) {
-                return res.status(404).json({
-                    status: 'error',
-                    message: 'Class division not found'
-                });
-            }
-
-            // Get all teachers assigned to this division (class teachers and subject teachers)
-            const { data: teacherAssignments, error: assignmentsError } = await adminSupabase
-                .from('class_teacher_assignments')
-                .select(`
-                    id,
-                    teacher_id,
-                    assignment_type,
-                    subject,
-                    is_primary,
-                    assigned_date,
-                    is_active,
-                    teacher:teacher_id (
-                        id,
-                        full_name,
-                        phone_number,
-                        email,
-                        role
-                    )
-                `)
-                .eq('class_division_id', class_division_id)
-                .eq('is_active', true)
-                .order('is_primary', { ascending: false })
-                .order('assigned_date', { ascending: true });
-
-            if (assignmentsError) {
-                logger.error('Error fetching teacher assignments:', assignmentsError);
-                return res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to fetch teacher assignments'
-                });
-            }
-
-            const teacherIds = teacherAssignments.map(assignment => assignment.teacher_id);
-
-            if (teacherIds.length === 0) {
-                return res.json({
-                    status: 'success',
-                    data: {
-                        class_division: {
-                            id: classDivision.id,
-                            class_name: `${classDivision.class_level.name} ${classDivision.division}`,
-                            academic_year: classDivision.academic_year.year_name,
-                            division: classDivision.division
-                        },
-                        teachers: [],
-                        messages: [],
-                        total_messages: 0,
-                        summary: {
-                            total_teachers: 0,
-                            class_teachers: 0,
-                            subject_teachers: 0,
-                            messages_found: 0
-                        }
-                    }
-                });
-            }
-
-            // Get all chat threads where any of these teachers are participants
-            const { data: threads, error: threadsError } = await adminSupabase
-                .from('chat_threads')
-                .select(`
-                    id,
-                    title,
-                    thread_type,
-                    created_at,
-                    updated_at,
-                    participants:chat_participants(
-                        user_id,
-                        role,
-                        user:users(
-                            id,
-                            full_name,
-                            role
-                        )
-                    )
-                `)
-                .in('id',
-                    adminSupabase
-                        .from('chat_participants')
-                        .select('thread_id')
-                        .in('user_id', teacherIds)
-                )
-                .eq('thread_type', 'group')
-                .order('updated_at', { ascending: false });
-
-            if (threadsError) {
-                logger.error('Error fetching chat threads:', threadsError);
-                return res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to fetch chat threads'
-                });
-            }
-
-            const threadIds = threads.map(thread => thread.id);
-
-            if (threadIds.length === 0) {
-                return res.json({
-                    status: 'success',
-                    data: {
-                        class_division: {
-                            id: classDivision.id,
-                            class_name: `${classDivision.class_level.name} ${classDivision.division}`,
-                            academic_year: classDivision.academic_year.year_name,
-                            division: classDivision.division
-                        },
-                        teachers: teacherAssignments.map(assignment => ({
-                            assignment_id: assignment.id,
-                            teacher_id: assignment.teacher_id,
-                            full_name: assignment.teacher.full_name,
-                            email: assignment.teacher.email,
-                            phone_number: assignment.teacher.phone_number,
-                            assignment_type: assignment.assignment_type,
-                            subject: assignment.subject,
-                            is_primary: assignment.is_primary,
-                            assigned_date: assignment.assigned_date
-                        })),
-                        messages: [],
-                        total_messages: 0,
-                        summary: {
-                            total_teachers: teacherAssignments.length,
-                            class_teachers: teacherAssignments.filter(a => a.assignment_type === 'class_teacher').length,
-                            subject_teachers: teacherAssignments.filter(a => a.assignment_type === 'subject_teacher').length,
-                            messages_found: 0
-                        }
-                    }
-                });
-            }
-
-            // Build query for messages from these threads
-            let messagesQuery = adminSupabase
-                .from('chat_messages')
-                .select(`
-                    id,
-                    thread_id,
-                    sender_id,
-                    content,
-                    message_type,
-                    status,
-                    created_at,
-                    updated_at,
-                    sender:users!chat_messages_sender_id_fkey(
-                        id,
-                        full_name,
-                        role,
-                        email
-                    ),
-                    attachments:chat_message_attachments(*)
-                `)
-                .in('thread_id', threadIds)
-                .order('created_at', { ascending: false });
-
-            // Apply date filters
-            if (start_date) {
-                messagesQuery = messagesQuery.gte('created_at', new Date(start_date).toISOString());
-            }
-            if (end_date) {
-                messagesQuery = messagesQuery.lte('created_at', new Date(end_date).toISOString());
-            }
-
-            // Apply message type filter
-            if (message_type !== 'all') {
-                messagesQuery = messagesQuery.eq('message_type', message_type);
-            }
-
-            // Apply pagination
-            messagesQuery = messagesQuery.range(offset, offset + limit - 1);
-
-            const { data: messages, error: messagesError } = await messagesQuery;
-
-            if (messagesError) {
-                logger.error('Error fetching messages:', messagesError);
-                return res.status(500).json({
-                    status: 'error',
-                    message: 'Failed to fetch messages'
-                });
-            }
-
-            // Get total count for pagination
-            let countQuery = adminSupabase
-                .from('chat_messages')
-                .select('id', { count: 'exact' })
-                .in('thread_id', threadIds);
-
-            if (start_date) {
-                countQuery = countQuery.gte('created_at', new Date(start_date).toISOString());
-            }
-            if (end_date) {
-                countQuery = countQuery.lte('created_at', new Date(end_date).toISOString());
-            }
-            if (message_type !== 'all') {
-                countQuery = countQuery.eq('message_type', message_type);
-            }
-
-            const { count: totalMessages, error: countError } = await countQuery;
-
-            if (countError) {
-                logger.error('Error getting message count:', countError);
-            }
-
-            // Organize messages by thread for better structure
-            const messagesByThread = {};
-            messages.forEach(message => {
-                if (!messagesByThread[message.thread_id]) {
-                    messagesByThread[message.thread_id] = [];
-                }
-                messagesByThread[message.thread_id].push(message);
-            });
-
-            // Find the thread details for each message
-            const threadsWithMessages = threads.map(thread => {
-                const threadMessages = messagesByThread[thread.id] || [];
-                return {
-                    thread_id: thread.id,
-                    thread_title: thread.title,
-                    thread_type: thread.thread_type,
-                    created_at: thread.created_at,
-                    updated_at: thread.updated_at,
-                    participants: thread.participants.map(p => ({
-                        user_id: p.user_id,
-                        role: p.role,
-                        full_name: p.user.full_name,
-                        user_role: p.user.role
-                    })),
-                    messages: threadMessages.map(message => ({
-                        message_id: message.id,
-                        content: message.content,
-                        message_type: message.message_type,
-                        status: message.status,
-                        created_at: message.created_at,
-                        updated_at: message.updated_at,
-                        sender: {
-                            id: message.sender.id,
-                            full_name: message.sender.full_name,
-                            role: message.sender.role,
-                            email: message.sender.email
-                        },
-                        attachments: message.attachments || []
-                    }))
-                };
-            });
-
-            // Calculate summary statistics
-            const classTeachers = teacherAssignments.filter(a => a.assignment_type === 'class_teacher');
-            const subjectTeachers = teacherAssignments.filter(a => a.assignment_type === 'subject_teacher');
-            const assistantTeachers = teacherAssignments.filter(a => a.assignment_type === 'assistant_teacher');
-            const substituteTeachers = teacherAssignments.filter(a => a.assignment_type === 'substitute_teacher');
-
-            res.json({
-                status: 'success',
-                data: {
-                    class_division: {
-                        id: classDivision.id,
-                        class_name: `${classDivision.class_level.name} ${classDivision.division}`,
-                        academic_year: classDivision.academic_year.year_name,
-                        division: classDivision.division
-                    },
-                    teachers: teacherAssignments.map(assignment => ({
-                        assignment_id: assignment.id,
-                        teacher_id: assignment.teacher_id,
-                        full_name: assignment.teacher.full_name,
-                        email: assignment.teacher.email,
-                        phone_number: assignment.teacher.phone_number,
-                        assignment_type: assignment.assignment_type,
-                        subject: assignment.subject,
-                        is_primary: assignment.is_primary,
-                        assigned_date: assignment.assigned_date
-                    })),
-                    threads: threadsWithMessages,
-                    total_messages: totalMessages || 0,
-                    pagination: {
-                        page: parseInt(page),
-                        limit: parseInt(limit),
-                        total_pages: Math.ceil((totalMessages || 0) / limit),
-                        has_next: offset + limit < (totalMessages || 0),
-                        has_prev: page > 1
-                    },
-                    filters_applied: {
-                        start_date: start_date || null,
-                        end_date: end_date || null,
-                        message_type: message_type,
-                        class_division_id: class_division_id
-                    },
-                    summary: {
-                        total_teachers: teacherAssignments.length,
-                        class_teachers: classTeachers.length,
-                        subject_teachers: subjectTeachers.length,
-                        assistant_teachers: assistantTeachers.length,
-                        substitute_teachers: substituteTeachers.length,
-                        total_threads: threads.length,
-                        messages_found: messages.length,
-                        unique_senders: [...new Set(messages.map(m => m.sender_id))].length
-                    }
-                }
-            });
-
-        } catch (error) {
-            logger.error('Error in get division messages for principal:', error);
             next(error);
         }
     }
