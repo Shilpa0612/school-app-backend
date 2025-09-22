@@ -2,6 +2,7 @@ import express from 'express';
 import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
+import attendanceNotificationService from '../services/attendanceNotificationService.js';
 
 const router = express.Router();
 
@@ -727,6 +728,18 @@ router.post('/daily', authenticate, async (req, res) => {
                     count: present_students.length,
                     student_ids: present_students
                 });
+
+                // Send real-time attendance notifications to parents
+                console.log('📱 Sending real-time attendance notifications...');
+                const teacherName = req.user.full_name || 'Teacher';
+                for (const studentId of present_students) {
+                    await attendanceNotificationService.sendRealtimeAttendanceNotification(
+                        studentId,
+                        'present',
+                        attendance_date,
+                        teacherName
+                    );
+                }
             } catch (updateError) {
                 logger.error('Error updating present students:', updateError);
                 return res.status(500).json({
@@ -965,6 +978,18 @@ router.post('/simple', authenticate, async (req, res) => {
         });
 
         await Promise.all(updatePromises);
+
+        // Send real-time attendance notifications to parents
+        console.log('📱 Sending real-time attendance notifications for simplified attendance...');
+        const teacherName = req.user.full_name || 'Teacher';
+        for (const record of student_attendance) {
+            await attendanceNotificationService.sendRealtimeAttendanceNotification(
+                record.student_id,
+                record.status,
+                attendance_date,
+                teacherName
+            );
+        }
 
         // Get all student records for this day
         const { data: studentRecords, error: studentError } = await adminSupabase

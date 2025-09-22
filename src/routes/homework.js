@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import multer from 'multer';
 import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
+import notificationService from '../services/notificationService.js';
 
 const router = express.Router();
 
@@ -180,7 +181,7 @@ router.post('/',
             if (error) throw error;
 
             // Send notifications to parents about new homework
-            await sendHomeworkNotifications(data, class_division_id);
+            sendHomeworkNotifications(data, class_division_id);
 
             res.status(201).json({
                 status: 'success',
@@ -2320,33 +2321,115 @@ router.put('/:homework_id/attachments',
  */
 async function sendHomeworkNotifications(homework, classDivisionId) {
     try {
+        console.log('📚 sendHomeworkNotifications called for homework:', homework.id, 'classDivisionId:', classDivisionId);
+
         // Get all parents with students in this class division
+        // Get all students in this class division first
+        const { data: studentsInClass, error: studentsError } = await adminSupabase
+            .from('student_academic_records')
+            .select('student_id, class_division_id')
+            .eq('class_division_id', classDivisionId)
+            .eq('status', 'ongoing');
+
+        if (studentsError) {
+            console.error('❌ Error fetching students in class:', studentsError);
+            return;
+        }
+
+        const studentIds = studentsInClass.map(s => s.student_id);
+
+        // Then get parent mappings for these students
         const { data: parentStudents, error } = await adminSupabase
             .from('parent_student_mappings')
             .select(`
                 parent_id,
-                student_id,
-                student:students!parent_student_mappings_student_id_fkey(
-                    full_name,
-                    admission_number,
-                    class_division:class_divisions!students_class_division_id_fkey(
-                        class_name,
-                        division_name
-                    )
-                )
+                student_id
             `)
-            .eq('student.class_division_id', classDivisionId);
+            .in('student_id', studentIds);
 
         if (error) {
-            console.error('Error fetching parent-student mappings for homework:', error);
+            console.error('❌ Error fetching parent-student mappings for homework:', error);
             return;
         }
 
-        // Send notifications to each parent
+        console.log(`📊 Found ${parentStudents.length} parent-student mappings for homework`);
+
+        // Get student information
+        const { data: students, error: studentsInfoError } = await adminSupabase
+            .from('students_master')
+            .select('id, full_name, admission_number')
+            .in('id', studentIds);
+
+        if (studentsInfoError) {
+            console.error('❌ Error fetching students:', studentsInfoError);
+            return;
+        }
+
+        // Create student map
+        const studentMap = {};
+        students.forEach(student => {
+            const academicRecord = studentsInClass.find(ar => ar.student_id === student.id);
+            studentMap[student.id] = {
+                ...student,
+                class_division_id: academicRecord?.class_division_id
+            };
+        });
+
+        // Get class division information
+        const { data: classDivision, error: classError } = await adminSupabase
+            .from('class_divisions')
+            .select(`
+                id,
+                division,
+                class_level:class_level_id (
+                    name
+                )
+            `)
+            .eq('id', classDivisionId)
+            .single();
+
+        if (classError) {
+            console.error('❌ Error fetching class division:', classError);
+            return;
+        }
+
+        const className = classDivision ? `${classDivision.class_level.name} ${classDivision.division}` : 'Unknown Class';
+
+        // Group notifications by parent to avoid duplicates
+        const parentNotifications = new Map();
         for (const mapping of parentStudents) {
-            await notificationService.sendParentNotification({
-                parentId: mapping.parent_id,
+            const student = studentMap[mapping.student_id];
+            if (!student) {
+                console.error(`❌ Student not found for ID: ${mapping.student_id}`);
+                continue;
+            }
+
+            // Group by parent to avoid duplicate notifications
+            if (!parentNotifications.has(mapping.parent_id)) {
+                parentNotifications.set(mapping.parent_id, {
+                    parentId: mapping.parent_id,
+                    students: []
+                });
+            }
+
+            parentNotifications.get(mapping.parent_id).students.push({
                 studentId: mapping.student_id,
+                studentName: student.full_name
+            });
+        }
+
+        console.log(`📤 Sending homework notifications to ${parentNotifications.size} parents...`);
+
+        // Send notifications to each parent (one per parent, not per student)
+        const notificationPromises = Array.from(parentNotifications.values()).map(async (parentData) => {
+            console.log(`📨 Sending homework notification to parent ${parentData.parentId} for ${parentData.students.length} students`);
+
+            // Use the first student for the notification (since it's the same homework for all)
+            const firstStudent = parentData.students[0];
+
+            const result = await notificationService.sendParentNotification({
+                parentId: parentData.parentId,
+                studentId: firstStudent.studentId,
                 type: notificationService.notificationTypes.HOMEWORK,
                 title: `New Homework: ${homework.title}`,
                 message: `Subject: ${homework.subject}\nDue: ${new Date(homework.due_date).toLocaleDateString()}\n\n${homework.description}`,
@@ -2354,15 +2437,27 @@ async function sendHomeworkNotifications(homework, classDivisionId) {
                     homework_id: homework.id,
                     subject: homework.subject,
                     due_date: homework.due_date,
-                    student_name: mapping.student.full_name,
-                    student_class: `${mapping.student.class_division.class_name} ${mapping.student.class_division.division_name}`
+                    student_name: firstStudent.studentName,
+                    student_class: className,
+                    affected_students: parentData.students.length
                 },
                 priority: notificationService.priorityLevels.HIGH,
                 relatedId: homework.id
             });
-        }
 
-        console.log(`Sent homework notifications to ${parentStudents.length} parents`);
+            console.log(`✅ Homework notification result for parent ${parentData.parentId}:`, result.success ? 'SUCCESS' : 'FAILED');
+            return result;
+        });
+
+        // Send all notifications in parallel (non-blocking) with a small delay
+        setTimeout(() => {
+            Promise.all(notificationPromises).then(results => {
+                const successCount = results.filter(r => r.success).length;
+                console.log(`✅ Sent homework notifications to ${successCount}/${parentNotifications.size} parents`);
+            }).catch(error => {
+                console.error('❌ Error in homework notification sending:', error);
+            });
+        }, 100); // 100ms delay to ensure API response is sent first
 
     } catch (error) {
         console.error('Error in sendHomeworkNotifications:', error);

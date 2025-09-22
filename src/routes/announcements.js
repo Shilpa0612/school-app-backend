@@ -2,6 +2,7 @@ import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { adminSupabase } from '../config/supabase.js';
 import { authenticate, authorize } from '../middleware/auth.js';
+import notificationService from '../services/notificationService.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -93,7 +94,7 @@ router.post('/',
             // If auto-approved, create recipients and send notifications
             if (initialStatus === 'approved') {
                 await createAnnouncementRecipients(announcement.id, target_roles);
-                await sendAnnouncementNotifications(announcement, target_roles);
+                sendAnnouncementNotifications(announcement, target_roles);
             }
 
             res.status(201).json({
@@ -691,7 +692,7 @@ router.patch('/:id/approval',
             // Create recipients and send notifications if approved
             if (action === 'approve') {
                 await createAnnouncementRecipients(announcement.id, announcement.target_roles);
-                await sendAnnouncementNotifications(updatedAnnouncement, announcement.target_roles);
+                sendAnnouncementNotifications(updatedAnnouncement, announcement.target_roles);
             }
 
             res.json({
@@ -2081,31 +2082,85 @@ async function createAnnouncementRecipients(announcementId, targetRoles) {
  */
 async function sendAnnouncementNotifications(announcement, targetRoles) {
     try {
+        console.log('📢 sendAnnouncementNotifications called for announcement:', announcement.id, 'targetRoles:', targetRoles);
+
         // Only send notifications to parents
         if (!targetRoles.includes('parent')) {
+            console.log('⏭️ Skipping announcement notifications - parents not in target roles');
             return;
         }
 
+        console.log('👨‍👩‍👧‍👦 Processing announcement for parents');
         // Get all parents with their children
         const { data: parentStudents, error } = await adminSupabase
             .from('parent_student_mappings')
             .select(`
                 parent_id,
-                student_id,
-                student:students!parent_student_mappings_student_id_fkey(
-                    full_name,
-                    admission_number,
-                    class_division:class_divisions!students_class_division_id_fkey(
-                        class_name,
-                        division_name
-                    )
-                )
+                student_id
             `);
 
         if (error) {
-            logger.error('Error fetching parent-student mappings:', error);
+            console.error('❌ Error fetching parent-student mappings for announcement:', error);
             return;
         }
+
+        console.log(`📊 Found ${parentStudents.length} parent-student mappings for announcement`);
+
+        // Get all student information
+        const studentIds = parentStudents.map(mapping => mapping.student_id);
+        const { data: students, error: studentsError } = await adminSupabase
+            .from('students_master')
+            .select('id, full_name, admission_number')
+            .in('id', studentIds);
+
+        if (studentsError) {
+            console.error('❌ Error fetching students:', studentsError);
+            return;
+        }
+
+        // Get student academic records to get class_division_id
+        const { data: academicRecords, error: academicError } = await adminSupabase
+            .from('student_academic_records')
+            .select('student_id, class_division_id')
+            .in('student_id', studentIds)
+            .eq('status', 'ongoing');
+
+        if (academicError) {
+            console.error('❌ Error fetching academic records:', academicError);
+            return;
+        }
+
+        const studentMap = {};
+        students.forEach(student => {
+            const academicRecord = academicRecords.find(ar => ar.student_id === student.id);
+            studentMap[student.id] = {
+                ...student,
+                class_division_id: academicRecord?.class_division_id
+            };
+        });
+
+        // Get class division information for all students
+        const classDivisionIds = [...new Set(academicRecords.map(ar => ar.class_division_id))];
+        const { data: classDivisions, error: classError } = await adminSupabase
+            .from('class_divisions')
+            .select(`
+                id,
+                division,
+                class_level:class_level_id (
+                    name
+                )
+            `)
+            .in('id', classDivisionIds);
+
+        if (classError) {
+            console.error('❌ Error fetching class divisions:', classError);
+            return;
+        }
+
+        const classDivisionMap = {};
+        classDivisions.forEach(cd => {
+            classDivisionMap[cd.id] = cd;
+        });
 
         // Group by parent to send bulk notifications
         const parentGroups = {};
@@ -2116,30 +2171,55 @@ async function sendAnnouncementNotifications(announcement, targetRoles) {
             parentGroups[mapping.parent_id].push(mapping);
         });
 
-        // Send notifications to each parent
-        for (const [parentId, mappings] of Object.entries(parentGroups)) {
-            for (const mapping of mappings) {
-                await notificationService.sendParentNotification({
-                    parentId: mapping.parent_id,
-                    studentId: mapping.student_id,
-                    type: notificationService.notificationTypes.ANNOUNCEMENT,
-                    title: `New Announcement: ${announcement.title}`,
-                    message: announcement.content,
-                    data: {
-                        announcement_id: announcement.id,
-                        announcement_type: announcement.announcement_type,
-                        priority: announcement.priority,
-                        is_featured: announcement.is_featured,
-                        student_name: mapping.student.full_name,
-                        student_class: `${mapping.student.class_division.class_name} ${mapping.student.class_division.division_name}`
-                    },
-                    priority: announcement.priority,
-                    relatedId: announcement.id
-                });
-            }
-        }
+        console.log(`📤 Sending announcement notifications to ${Object.keys(parentGroups).length} parents...`);
 
-        logger.info(`Sent announcement notifications to ${Object.keys(parentGroups).length} parents`);
+        // Send notifications to each parent (one per parent, not per student)
+        const notificationPromises = Object.entries(parentGroups).map(async ([parentId, mappings]) => {
+            console.log(`📨 Sending announcement notification to parent ${parentId} for ${mappings.length} students`);
+
+            // Use the first student for the notification (since it's the same announcement for all)
+            const firstMapping = mappings[0];
+            const student = studentMap[firstMapping.student_id];
+            if (!student) {
+                console.error(`❌ Student not found for ID: ${firstMapping.student_id}`);
+                return { success: false };
+            }
+
+            const classDivision = classDivisionMap[student.class_division_id];
+            const className = classDivision ? `${classDivision.class_level.name} ${classDivision.division}` : 'Unknown Class';
+
+            const result = await notificationService.sendParentNotification({
+                parentId: firstMapping.parent_id,
+                studentId: firstMapping.student_id,
+                type: notificationService.notificationTypes.ANNOUNCEMENT,
+                title: `New Announcement: ${announcement.title}`,
+                message: announcement.content,
+                data: {
+                    announcement_id: announcement.id,
+                    announcement_type: announcement.announcement_type,
+                    priority: announcement.priority,
+                    is_featured: announcement.is_featured,
+                    student_name: student.full_name,
+                    student_class: className,
+                    affected_students: mappings.length
+                },
+                priority: announcement.priority,
+                relatedId: announcement.id
+            });
+
+            console.log(`✅ Announcement notification result for parent ${parentId}:`, result.success ? 'SUCCESS' : 'FAILED');
+            return result;
+        });
+
+        // Send all notifications in parallel (non-blocking) with a small delay
+        setTimeout(() => {
+            Promise.all(notificationPromises).then(results => {
+                const successCount = results.filter(r => r.success).length;
+                console.log(`✅ Sent announcement notifications to ${successCount}/${Object.keys(parentGroups).length} parents`);
+            }).catch(error => {
+                console.error('❌ Error in announcement notification sending:', error);
+            });
+        }, 100); // 100ms delay to ensure API response is sent first
 
     } catch (error) {
         logger.error('Error in sendAnnouncementNotifications:', error);

@@ -574,7 +574,7 @@ class WebSocketService {
      */
     sendNotificationToUser(userId, notification) {
         const ws = this.clients.get(userId);
-        if (ws && ws.connectionType === 'notification') {
+        if (ws && ws.readyState === 1) { // WebSocket is OPEN
             const message = {
                 type: 'notification',
                 data: {

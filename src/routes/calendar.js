@@ -263,9 +263,9 @@ router.post('/events',
                 }
             }
 
-            // Send notifications for approved events
+            // Send notifications for approved events (non-blocking)
             if (data.status === 'approved') {
-                await sendEventNotifications(data, eventClassDivisions);
+                sendEventNotifications(data, eventClassDivisions);
             }
 
             res.status(201).json({
@@ -2212,8 +2212,11 @@ router.get('/events/pending',
  */
 async function sendEventNotifications(event, classDivisions) {
     try {
+        console.log('🔔 sendEventNotifications called for event:', event.id, 'type:', event.event_type);
+
         // Only send notifications for events that target parents
         if (event.event_type === 'teacher_specific') {
+            console.log('⏭️ Skipping teacher-specific event');
             return; // Skip teacher-specific events
         }
 
@@ -2221,44 +2224,45 @@ async function sendEventNotifications(event, classDivisions) {
         let parentStudents = [];
 
         if (event.event_type === 'school_wide') {
+            console.log('🌍 Processing school-wide event');
             // School-wide events - get all parents
             const { data: allParentStudents, error } = await adminSupabase
                 .from('parent_student_mappings')
                 .select(`
                     parent_id,
-                    student_id,
-                    student:students!parent_student_mappings_student_id_fkey(
-                        full_name,
-                        admission_number,
-                        class_division:class_divisions!students_class_division_id_fkey(
-                            class_name,
-                            division_name
-                        )
-                    )
+                    student_id
                 `);
 
             if (error) {
-                console.error('Error fetching parent-student mappings for school-wide event:', error);
+                console.error('❌ Error fetching parent-student mappings for school-wide event:', error);
                 return;
             }
             parentStudents = allParentStudents;
+            console.log(`📊 Found ${parentStudents.length} parent-student mappings for school-wide event`);
         } else if (classDivisions && classDivisions.length > 0) {
             // Class-specific events - get parents of students in those classes
+            // Get all students in the specified class divisions first
+            const { data: studentsInClasses, error: studentsError } = await adminSupabase
+                .from('student_academic_records')
+                .select('student_id, class_division_id')
+                .in('class_division_id', classDivisions)
+                .eq('status', 'ongoing');
+
+            if (studentsError) {
+                console.error('Error fetching students in classes:', studentsError);
+                return;
+            }
+
+            const studentIds = studentsInClasses.map(s => s.id);
+
+            // Then get parent mappings for these students
             const { data: classParentStudents, error } = await adminSupabase
                 .from('parent_student_mappings')
                 .select(`
                     parent_id,
-                    student_id,
-                    student:students!parent_student_mappings_student_id_fkey(
-                        full_name,
-                        admission_number,
-                        class_division:class_divisions!students_class_division_id_fkey(
-                            class_name,
-                            division_name
-                        )
-                    )
+                    student_id
                 `)
-                .in('student.class_division_id', classDivisions);
+                .in('student_id', studentIds);
 
             if (error) {
                 console.error('Error fetching parent-student mappings for class event:', error);
@@ -2267,11 +2271,102 @@ async function sendEventNotifications(event, classDivisions) {
             parentStudents = classParentStudents;
         }
 
-        // Send notifications to each parent
+        // Get all student information
+        const studentIds = parentStudents.map(mapping => mapping.student_id);
+        const { data: students, error: studentsError } = await adminSupabase
+            .from('students_master')
+            .select('id, full_name, admission_number')
+            .in('id', studentIds);
+
+        if (studentsError) {
+            console.error('❌ Error fetching students:', studentsError);
+            return;
+        }
+
+        // Get student academic records to get class_division_id
+        const { data: academicRecords, error: academicError } = await adminSupabase
+            .from('student_academic_records')
+            .select('student_id, class_division_id')
+            .in('student_id', studentIds)
+            .eq('status', 'ongoing');
+
+        if (academicError) {
+            console.error('❌ Error fetching academic records:', academicError);
+            return;
+        }
+
+        const studentMap = {};
+        students.forEach(student => {
+            const academicRecord = academicRecords.find(ar => ar.student_id === student.id);
+            studentMap[student.id] = {
+                ...student,
+                class_division_id: academicRecord?.class_division_id
+            };
+        });
+
+        // Get class division information for all students
+        const classDivisionIds = [...new Set(academicRecords.map(ar => ar.class_division_id))];
+        const { data: classDivisions, error: classError } = await adminSupabase
+            .from('class_divisions')
+            .select(`
+                id,
+                division,
+                class_level:class_level_id (
+                    name
+                )
+            `)
+            .in('id', classDivisionIds);
+
+        if (classError) {
+            console.error('❌ Error fetching class divisions:', classError);
+            return;
+        }
+
+        const classDivisionMap = {};
+        classDivisions.forEach(cd => {
+            classDivisionMap[cd.id] = cd;
+        });
+
+        // Group notifications by parent to avoid duplicates
+        const parentNotifications = new Map();
         for (const mapping of parentStudents) {
-            await notificationService.sendParentNotification({
-                parentId: mapping.parent_id,
+            const student = studentMap[mapping.student_id];
+            if (!student) {
+                console.error(`❌ Student not found for ID: ${mapping.student_id}`);
+                continue;
+            }
+
+            const classDivision = classDivisionMap[student.class_division_id];
+            const className = classDivision ? `${classDivision.class_level.name} ${classDivision.division}` : 'Unknown Class';
+
+            // Group by parent to avoid duplicate notifications
+            if (!parentNotifications.has(mapping.parent_id)) {
+                parentNotifications.set(mapping.parent_id, {
+                    parentId: mapping.parent_id,
+                    students: [],
+                    classDivision: classDivision,
+                    className: className
+                });
+            }
+
+            parentNotifications.get(mapping.parent_id).students.push({
                 studentId: mapping.student_id,
+                studentName: student.full_name,
+                className: className
+            });
+        }
+
+        // Send notifications to each parent (one per parent, not per student)
+        console.log(`📤 Sending notifications to ${parentNotifications.size} parents...`);
+        const notificationPromises = Array.from(parentNotifications.values()).map(async (parentData) => {
+            console.log(`📨 Sending notification to parent ${parentData.parentId} for ${parentData.students.length} students`);
+
+            // Use the first student for the notification (since it's the same event for all)
+            const firstStudent = parentData.students[0];
+
+            const result = await notificationService.sendParentNotification({
+                parentId: parentData.parentId,
+                studentId: firstStudent.studentId,
                 type: notificationService.notificationTypes.EVENT,
                 title: `New Event: ${event.title}`,
                 message: `Date: ${new Date(event.event_date).toLocaleDateString()}\nTime: ${event.start_time || 'All day'}\n\n${event.description}`,
@@ -2282,15 +2377,27 @@ async function sendEventNotifications(event, classDivisions) {
                     event_date: event.event_date,
                     start_time: event.start_time,
                     end_time: event.end_time,
-                    student_name: mapping.student.full_name,
-                    student_class: `${mapping.student.class_division.class_name} ${mapping.student.class_division.division_name}`
+                    student_name: firstStudent.studentName,
+                    student_class: firstStudent.className,
+                    affected_students: parentData.students.length
                 },
                 priority: event.event_category === 'exam' ? notificationService.priorityLevels.HIGH : notificationService.priorityLevels.NORMAL,
                 relatedId: event.id
             });
-        }
 
-        console.log(`Sent event notifications to ${parentStudents.length} parents`);
+            console.log(`✅ Notification result for parent ${parentData.parentId}:`, result.success ? 'SUCCESS' : 'FAILED');
+            return result;
+        });
+
+        // Send all notifications in parallel (non-blocking) with a small delay
+        setTimeout(() => {
+            Promise.all(notificationPromises).then(results => {
+                const successCount = results.filter(r => r.success).length;
+                console.log(`✅ Sent event notifications to ${successCount}/${parentNotifications.size} parents`);
+            }).catch(error => {
+                console.error('❌ Error in notification sending:', error);
+            });
+        }, 100); // 100ms delay to ensure API response is sent first
 
     } catch (error) {
         console.error('Error in sendEventNotifications:', error);
