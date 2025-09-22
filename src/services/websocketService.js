@@ -118,15 +118,9 @@ class WebSocketService {
                 }
             });
 
-            // Auto-subscribe to ALL notifications if user is a parent
+            // Auto-subscribe to notifications only for parents
             if (userRole === 'parent') {
-                this.subscribeToAllParentNotifications(userId);
-            } else if (userRole === 'teacher') {
-                this.subscribeToTeacherNotifications(userId);
-            } else if (userRole === 'principal') {
-                this.subscribeToPrincipalNotifications(userId);
-            } else if (userRole === 'admin') {
-                this.subscribeToAdminNotifications(userId);
+                this.subscribeToNotifications(userId);
             }
 
             // Handle incoming messages
