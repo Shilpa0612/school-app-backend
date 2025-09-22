@@ -87,7 +87,7 @@ server.listen(PORT, () => {
         try {
             const { default: websocketService } = await import('./services/websocketService.js');
             websocketService.initialize(server);
-            websocketService.initializeNotificationServer(server);
+            // Note: initializeNotificationServer is now handled by the main initialize method
             logger.info('WebSocket service initialized successfully');
         } catch (error) {
             logger.error('Failed to initialize WebSocket service:', error);

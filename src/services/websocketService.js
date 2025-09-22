@@ -16,9 +16,15 @@ class WebSocketService {
     }
 
     /**
-     * Initialize WebSocket server
+     * Initialize WebSocket server with path-based routing
      */
     initialize(server) {
+        // Prevent multiple initializations
+        if (this.wss) {
+            logger.warn('WebSocket server already initialized, skipping...');
+            return;
+        }
+
         this.wss = new WebSocketServer({
             server,
             // Configure WebSocket server options
@@ -27,34 +33,43 @@ class WebSocketService {
             clientTracking: true,
         });
 
-        // Main WebSocket connection handler
+        // Single WebSocket connection handler with path-based routing
         this.wss.on('connection', (ws, req) => {
-            this.handleConnection(ws, req);
+            try {
+                const url = new URL(req.url, `http://${req.headers.host}`);
+                const pathname = url.pathname;
+
+                // Route based on path
+                if (pathname === '/notifications/ws') {
+                    this.handleNotificationConnection(ws, req);
+                } else {
+                    this.handleConnection(ws, req);
+                }
+            } catch (error) {
+                logger.error('Error in WebSocket connection handler:', error);
+                ws.close(1011, 'Internal server error');
+            }
+        });
+
+        // Handle WebSocket server errors
+        this.wss.on('error', (error) => {
+            logger.error('WebSocket server error:', error);
         });
 
         // Start heartbeat mechanism
         this.startHeartbeat();
 
-        logger.info('WebSocket server initialized with heartbeat mechanism');
+        logger.info('WebSocket server initialized with path-based routing');
+        logger.info('Available endpoints: / (general chat), /notifications/ws (notifications)');
     }
 
     /**
-     * Initialize Notification WebSocket server (separate endpoint)
+     * Initialize Notification WebSocket server (now handled by main server)
+     * This method is kept for backward compatibility but does nothing
      */
     initializeNotificationServer(server) {
-        this.notificationWss = new WebSocketServer({
-            server,
-            path: '/notifications/ws',
-            perMessageDeflate: false,
-            maxPayload: 16 * 1024,
-            clientTracking: true,
-        });
-
-        this.notificationWss.on('connection', (ws, req) => {
-            this.handleNotificationConnection(ws, req);
-        });
-
-        logger.info('Notification WebSocket server initialized on /notifications/ws');
+        // This is now handled by the main initialize() method
+        logger.info('Notification WebSocket routing handled by main WebSocket server');
     }
 
     /**
