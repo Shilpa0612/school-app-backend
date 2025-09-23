@@ -1445,4 +1445,74 @@ function getDaysUntilBirthday(birthday) {
     return daysDiff;
 }
 
+// Debug endpoint for teacher class assignments
+router.get('/debug/teacher-assignments',
+    authenticate,
+    authorize('teacher'),
+    async (req, res, next) => {
+        try {
+            const teacherId = req.user.id;
+
+            // Check legacy class assignments
+            const { data: legacyDivisions, error: legacyError } = await adminSupabase
+                .from('class_divisions')
+                .select('id, division, class_level:class_level_id(name)')
+                .eq('teacher_id', teacherId);
+
+            if (legacyError) {
+                logger.error('Error checking legacy divisions:', legacyError);
+            }
+
+            // Check many-to-many assignments
+            const { data: mmAssignments, error: mmError } = await adminSupabase
+                .from('class_teacher_assignments')
+                .select(`
+                    class_division_id,
+                    assignment_type,
+                    subject,
+                    is_primary,
+                    is_active,
+                    class_division:class_division_id(
+                        id,
+                        division,
+                        class_level:class_level_id(name)
+                    )
+                `)
+                .eq('teacher_id', teacherId)
+                .eq('is_active', true);
+
+            if (mmError) {
+                logger.error('Error checking many-to-many assignments:', mmError);
+            }
+
+            // Get all unique assigned class IDs
+            const assignedIds = Array.from(new Set([
+                ...(legacyDivisions?.map(d => d.id) || []),
+                ...(mmAssignments?.map(a => a.class_division_id) || [])
+            ]));
+
+            res.json({
+                status: 'success',
+                data: {
+                    teacher_id: teacherId,
+                    teacher_name: req.user.full_name,
+                    legacy_assignments: legacyDivisions || [],
+                    many_to_many_assignments: mmAssignments || [],
+                    total_assigned_classes: assignedIds.length,
+                    assigned_class_ids: assignedIds,
+                    debug_info: {
+                        legacy_count: legacyDivisions?.length || 0,
+                        mm_count: mmAssignments?.length || 0,
+                        has_assignments: assignedIds.length > 0
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in debug teacher assignments:', error);
+            next(error);
+        }
+    }
+);
+
 export default router; 

@@ -1515,7 +1515,7 @@ router.get('/events/:id',
             } else if (isSingleClass) {
                 // Single class event - fetch class info separately
                 if (classDivisions[0]) {
-                    const { data: classData } = await supabase
+                    const { data: classData } = await adminSupabase
                         .from('class_divisions')
                         .select(`
                             id,
