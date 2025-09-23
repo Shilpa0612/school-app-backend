@@ -1500,6 +1500,13 @@ router.get('/events/:id',
                     type: 'multi_class',
                     class_count: classDivisions.length,
                     class_ids: classDivisions,
+                    class_names: classNames,
+                    class_details: classesData ? classesData.map(cls => ({
+                        id: cls.id,
+                        name: `${cls.class_level.name} ${cls.division}`,
+                        class_level: cls.class_level.name,
+                        division: cls.division
+                    })) : [],
                     message: `Applies to ${classDivisions.length} classes`
                 };
 
@@ -1519,9 +1526,23 @@ router.get('/events/:id',
                         .eq('id', classDivisions[0])
                         .single();
 
-                    processedEvent.class_info = classData || {
+                    processedEvent.class_info = classData ? {
                         type: 'single_class',
                         class_count: 1,
+                        class_ids: [classDivisions[0]],
+                        class_names: [`${classData.class_level.name} ${classData.division}`],
+                        class_details: [{
+                            id: classData.id,
+                            name: `${classData.class_level.name} ${classData.division}`,
+                            class_level: classData.class_level.name,
+                            division: classData.division,
+                            academic_year: classData.academic_year?.year_name
+                        }],
+                        message: 'Single class event'
+                    } : {
+                        type: 'single_class',
+                        class_count: 1,
+                        class_ids: [classDivisions[0]],
                         message: 'Class information not available'
                     };
 

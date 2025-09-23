@@ -683,6 +683,24 @@ router.get('/class/:class_division_id',
 
             if (error) throw error;
 
+            // Fetch all subjects to create a lookup map
+            const { data: subjects, error: subjectsError } = await adminSupabase
+                .from('subjects')
+                .select('id, name, code, description, is_active')
+                .eq('is_active', true);
+
+            if (subjectsError) {
+                logger.warn('Error fetching subjects:', subjectsError);
+            }
+
+            // Create subject lookup map
+            const subjectMap = {};
+            if (subjects) {
+                subjects.forEach(subject => {
+                    subjectMap[subject.id] = subject;
+                });
+            }
+
             // Organize by day
             const timetableByDay = {};
             const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -692,7 +710,26 @@ router.get('/class/:class_division_id',
                 if (!timetableByDay[dayName]) {
                     timetableByDay[dayName] = [];
                 }
-                timetableByDay[dayName].push(entry);
+                // Enhance entry with subject information
+                const subjectInfo = subjectMap[entry.subject];
+                const enhancedEntry = {
+                    ...entry,
+                    subject_info: subjectInfo ? {
+                        id: subjectInfo.id,
+                        name: subjectInfo.name,
+                        code: subjectInfo.code,
+                        description: subjectInfo.description,
+                        display_name: subjectInfo.name
+                    } : {
+                        id: 'free_period',
+                        name: 'Free Period',
+                        code: null,
+                        description: null,
+                        display_name: 'Free Period'
+                    }
+                };
+
+                timetableByDay[dayName].push(enhancedEntry);
             });
 
             // Sort periods within each day
@@ -700,12 +737,33 @@ router.get('/class/:class_division_id',
                 timetableByDay[day].sort((a, b) => a.period_number - b.period_number);
             });
 
+            // Enhance response with subject information summary
+            const subjectSummary = {};
+            data.forEach(entry => {
+                const subjectInfo = subjectMap[entry.subject];
+                if (subjectInfo) {
+                    const subjectKey = subjectInfo.id;
+                    if (!subjectSummary[subjectKey]) {
+                        subjectSummary[subjectKey] = {
+                            id: subjectInfo.id,
+                            name: subjectInfo.name,
+                            code: subjectInfo.code,
+                            description: subjectInfo.description,
+                            display_name: subjectInfo.name,
+                            periods_per_week: 0
+                        };
+                    }
+                    subjectSummary[subjectKey].periods_per_week++;
+                }
+            });
+
             res.json({
                 status: 'success',
                 data: {
                     class_division_id,
                     timetable: timetableByDay,
-                    total_entries: data.length
+                    total_entries: data.length,
+                    subject_summary: Object.values(subjectSummary)
                 }
             });
         } catch (error) {
@@ -841,7 +899,17 @@ router.get('/parent/children',
                         if (!timetableByDay[dayName]) {
                             timetableByDay[dayName] = [];
                         }
-                        timetableByDay[dayName].push(entry);
+                        // Enhance entry with subject information
+                        const enhancedEntry = {
+                            ...entry,
+                            subject_info: {
+                                name: entry.subject || 'Free Period',
+                                id: entry.subject ? entry.subject.toLowerCase().replace(/\s+/g, '_') : 'free_period',
+                                display_name: entry.subject || 'Free Period'
+                            }
+                        };
+
+                        timetableByDay[dayName].push(enhancedEntry);
                     });
 
                     // Sort periods within each day
@@ -1063,7 +1131,26 @@ router.get('/student/:student_id',
                 if (!timetableByDay[dayName]) {
                     timetableByDay[dayName] = [];
                 }
-                timetableByDay[dayName].push(entry);
+                // Enhance entry with subject information
+                const subjectInfo = subjectMap[entry.subject];
+                const enhancedEntry = {
+                    ...entry,
+                    subject_info: subjectInfo ? {
+                        id: subjectInfo.id,
+                        name: subjectInfo.name,
+                        code: subjectInfo.code,
+                        description: subjectInfo.description,
+                        display_name: subjectInfo.name
+                    } : {
+                        id: 'free_period',
+                        name: 'Free Period',
+                        code: null,
+                        description: null,
+                        display_name: 'Free Period'
+                    }
+                };
+
+                timetableByDay[dayName].push(enhancedEntry);
             });
 
             // Sort periods within each day
@@ -1169,6 +1256,24 @@ router.get('/teacher/:teacher_id',
 
             if (error) throw error;
 
+            // Fetch all subjects to create a lookup map
+            const { data: subjects, error: subjectsError } = await adminSupabase
+                .from('subjects')
+                .select('id, name, code, description, is_active')
+                .eq('is_active', true);
+
+            if (subjectsError) {
+                logger.warn('Error fetching subjects:', subjectsError);
+            }
+
+            // Create subject lookup map
+            const subjectMap = {};
+            if (subjects) {
+                subjects.forEach(subject => {
+                    subjectMap[subject.id] = subject;
+                });
+            }
+
             // Organize by day
             const timetableByDay = {};
             const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -1178,7 +1283,26 @@ router.get('/teacher/:teacher_id',
                 if (!timetableByDay[dayName]) {
                     timetableByDay[dayName] = [];
                 }
-                timetableByDay[dayName].push(entry);
+                // Enhance entry with subject information
+                const subjectInfo = subjectMap[entry.subject];
+                const enhancedEntry = {
+                    ...entry,
+                    subject_info: subjectInfo ? {
+                        id: subjectInfo.id,
+                        name: subjectInfo.name,
+                        code: subjectInfo.code,
+                        description: subjectInfo.description,
+                        display_name: subjectInfo.name
+                    } : {
+                        id: 'free_period',
+                        name: 'Free Period',
+                        code: null,
+                        description: null,
+                        display_name: 'Free Period'
+                    }
+                };
+
+                timetableByDay[dayName].push(enhancedEntry);
             });
 
             // Sort periods within each day
