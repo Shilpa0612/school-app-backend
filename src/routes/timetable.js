@@ -734,6 +734,7 @@ router.get('/class/:class_division_id',
 
                 const enhancedEntry = {
                     ...entry,
+                    subject: subjectInfo ? subjectInfo.name : 'Free Period', // Replace UUID with subject name
                     subject_info: subjectInfo ? {
                         id: subjectInfo.id,
                         name: subjectInfo.name,
@@ -1163,6 +1164,7 @@ router.get('/student/:student_id',
 
                 const enhancedEntry = {
                     ...entry,
+                    subject: subjectInfo ? subjectInfo.name : 'Free Period', // Replace UUID with subject name
                     subject_info: subjectInfo ? {
                         id: subjectInfo.id,
                         name: subjectInfo.name,
@@ -1333,6 +1335,7 @@ router.get('/teacher/:teacher_id',
 
                 const enhancedEntry = {
                     ...entry,
+                    subject: subjectInfo ? subjectInfo.name : 'Free Period', // Replace UUID with subject name
                     subject_info: subjectInfo ? {
                         id: subjectInfo.id,
                         name: subjectInfo.name,
