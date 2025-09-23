@@ -683,11 +683,10 @@ router.get('/class/:class_division_id',
 
             if (error) throw error;
 
-            // Fetch all subjects to create a lookup map
+            // Fetch all subjects to create a lookup map (including inactive ones for debugging)
             const { data: subjects, error: subjectsError } = await adminSupabase
                 .from('subjects')
-                .select('id, name, code, description, is_active')
-                .eq('is_active', true);
+                .select('id, name, code, is_active');
 
             if (subjectsError) {
                 logger.warn('Error fetching subjects:', subjectsError);
@@ -701,6 +700,16 @@ router.get('/class/:class_division_id',
                 });
             }
 
+            // Debug: Log subject lookup info
+            const debugInfo = {
+                total_subjects: subjects?.length || 0,
+                subject_ids_in_timetable: [...new Set(data.map(entry => entry.subject))],
+                subject_map_keys: Object.keys(subjectMap),
+                sample_subject: subjects?.[0]
+            };
+            logger.info('Subject lookup debug:', debugInfo);
+            console.log('🔍 TIMETABLE DEBUG:', debugInfo);
+
             // Organize by day
             const timetableByDay = {};
             const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -712,19 +721,28 @@ router.get('/class/:class_division_id',
                 }
                 // Enhance entry with subject information
                 const subjectInfo = subjectMap[entry.subject];
+
+                // Debug: Log the lookup for this specific entry
+                const entryDebugInfo = {
+                    entry_subject_id: entry.subject,
+                    subject_found: !!subjectInfo,
+                    subject_info: subjectInfo,
+                    available_subject_ids: Object.keys(subjectMap)
+                };
+                logger.info('Subject lookup for entry:', entryDebugInfo);
+                console.log('🔍 ENTRY DEBUG:', entryDebugInfo);
+
                 const enhancedEntry = {
                     ...entry,
                     subject_info: subjectInfo ? {
                         id: subjectInfo.id,
                         name: subjectInfo.name,
                         code: subjectInfo.code,
-                        description: subjectInfo.description,
                         display_name: subjectInfo.name
                     } : {
                         id: 'free_period',
                         name: 'Free Period',
                         code: null,
-                        description: null,
                         display_name: 'Free Period'
                     }
                 };
@@ -748,7 +766,6 @@ router.get('/class/:class_division_id',
                             id: subjectInfo.id,
                             name: subjectInfo.name,
                             code: subjectInfo.code,
-                            description: subjectInfo.description,
                             display_name: subjectInfo.name,
                             periods_per_week: 0
                         };
@@ -1133,19 +1150,28 @@ router.get('/student/:student_id',
                 }
                 // Enhance entry with subject information
                 const subjectInfo = subjectMap[entry.subject];
+
+                // Debug: Log the lookup for this specific entry
+                const entryDebugInfo = {
+                    entry_subject_id: entry.subject,
+                    subject_found: !!subjectInfo,
+                    subject_info: subjectInfo,
+                    available_subject_ids: Object.keys(subjectMap)
+                };
+                logger.info('Subject lookup for entry:', entryDebugInfo);
+                console.log('🔍 ENTRY DEBUG:', entryDebugInfo);
+
                 const enhancedEntry = {
                     ...entry,
                     subject_info: subjectInfo ? {
                         id: subjectInfo.id,
                         name: subjectInfo.name,
                         code: subjectInfo.code,
-                        description: subjectInfo.description,
                         display_name: subjectInfo.name
                     } : {
                         id: 'free_period',
                         name: 'Free Period',
                         code: null,
-                        description: null,
                         display_name: 'Free Period'
                     }
                 };
@@ -1256,11 +1282,10 @@ router.get('/teacher/:teacher_id',
 
             if (error) throw error;
 
-            // Fetch all subjects to create a lookup map
+            // Fetch all subjects to create a lookup map (including inactive ones for debugging)
             const { data: subjects, error: subjectsError } = await adminSupabase
                 .from('subjects')
-                .select('id, name, code, description, is_active')
-                .eq('is_active', true);
+                .select('id, name, code, is_active');
 
             if (subjectsError) {
                 logger.warn('Error fetching subjects:', subjectsError);
@@ -1274,6 +1299,16 @@ router.get('/teacher/:teacher_id',
                 });
             }
 
+            // Debug: Log subject lookup info
+            const debugInfo = {
+                total_subjects: subjects?.length || 0,
+                subject_ids_in_timetable: [...new Set(data.map(entry => entry.subject))],
+                subject_map_keys: Object.keys(subjectMap),
+                sample_subject: subjects?.[0]
+            };
+            logger.info('Subject lookup debug:', debugInfo);
+            console.log('🔍 TIMETABLE DEBUG:', debugInfo);
+
             // Organize by day
             const timetableByDay = {};
             const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
@@ -1285,19 +1320,28 @@ router.get('/teacher/:teacher_id',
                 }
                 // Enhance entry with subject information
                 const subjectInfo = subjectMap[entry.subject];
+
+                // Debug: Log the lookup for this specific entry
+                const entryDebugInfo = {
+                    entry_subject_id: entry.subject,
+                    subject_found: !!subjectInfo,
+                    subject_info: subjectInfo,
+                    available_subject_ids: Object.keys(subjectMap)
+                };
+                logger.info('Subject lookup for entry:', entryDebugInfo);
+                console.log('🔍 ENTRY DEBUG:', entryDebugInfo);
+
                 const enhancedEntry = {
                     ...entry,
                     subject_info: subjectInfo ? {
                         id: subjectInfo.id,
                         name: subjectInfo.name,
                         code: subjectInfo.code,
-                        description: subjectInfo.description,
                         display_name: subjectInfo.name
                     } : {
                         id: 'free_period',
                         name: 'Free Period',
                         code: null,
-                        description: null,
                         display_name: 'Free Period'
                     }
                 };
@@ -1816,6 +1860,57 @@ router.post('/bulk-entries',
             });
         } catch (error) {
             logger.error('Error creating bulk timetable entries:', error);
+            next(error);
+        }
+    }
+);
+
+// Debug endpoint to check subjects
+router.get('/debug/subjects',
+    authenticate,
+    async (req, res, next) => {
+        try {
+            // Get all subjects (both active and inactive)
+            const { data: allSubjects, error: allError } = await adminSupabase
+                .from('subjects')
+                .select('id, name, code, is_active')
+                .order('name');
+
+            if (allError) {
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to fetch subjects',
+                    error: allError
+                });
+            }
+
+            // Get only active subjects
+            const activeSubjects = allSubjects?.filter(s => s.is_active) || [];
+            const inactiveSubjects = allSubjects?.filter(s => !s.is_active) || [];
+
+            // Test the specific subject ID from the timetable
+            const testSubjectId = "e1e3b4d8-9ac2-4e57-b829-3f66869816c7";
+            const testSubject = allSubjects?.find(s => s.id === testSubjectId);
+
+            res.json({
+                status: 'success',
+                data: {
+                    total_subjects: allSubjects?.length || 0,
+                    active_subjects: activeSubjects.length,
+                    inactive_subjects: inactiveSubjects.length,
+                    all_subjects: allSubjects,
+                    active_subjects_only: activeSubjects,
+                    inactive_subjects_only: inactiveSubjects,
+                    test_subject_lookup: {
+                        subject_id: testSubjectId,
+                        found: !!testSubject,
+                        subject_data: testSubject
+                    }
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in debug subjects:', error);
             next(error);
         }
     }
