@@ -185,20 +185,26 @@ class PushNotificationService {
                     body: notification.message
                 },
                 data: {
-                    type: notification.type,
-                    id: notification.id,
-                    student_id: notification.student_id,
-                    priority: notification.priority,
-                    related_id: notification.related_id || '',
-                    created_at: notification.created_at
+                    type: String(notification.type || 'notification'),
+                    id: String(notification.id || ''),
+                    student_id: String(notification.student_id || ''),
+                    priority: String(notification.priority || 'normal'),
+                    related_id: String(notification.related_id || ''),
+                    created_at: String(notification.created_at || new Date().toISOString())
                 },
                 android: {
+                    priority: 'high', // Required for background notifications
                     notification: {
                         icon: 'ic_notification',
                         color: this.getPriorityColor(notification.priority),
                         sound: 'default',
                         channelId: 'school_notifications',
-                        priority: this.getAndroidPriority(notification.priority)
+                        priority: 'high', // Required for background notifications
+                        clickAction: 'FLUTTER_NOTIFICATION_CLICK',
+                        visibility: 'public',
+                        localOnly: false,
+                        sticky: true,
+                        tag: String(notification.id || 'default')
                     }
                 },
                 apns: {
@@ -210,7 +216,12 @@ class PushNotificationService {
                             },
                             sound: 'default',
                             badge: 1,
-                            category: 'SCHOOL_NOTIFICATION'
+                            category: 'SCHOOL_NOTIFICATION',
+                            // Critical for background notifications
+                            'content-available': 1,
+                            'mutable-content': 1,
+                            'alert-type': 'banner',
+                            'interruption-level': 'active'
                         }
                     }
                 }

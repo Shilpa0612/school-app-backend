@@ -1,6 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import { authenticate } from '../middleware/auth.js';
+import parentTopicService from '../services/parentTopicService.js';
 import pushNotificationService from '../services/pushNotificationService.js';
 import { logger } from '../utils/logger.js';
 
@@ -50,29 +51,44 @@ router.post('/register',
             let topicSubscriptionResult = null;
             if (req.user.role === 'parent') {
                 try {
-                    topicSubscriptionResult = await parentTopicService.autoSubscribeParentDevice(
-                        req.user.id,
-                        device_token
-                    );
-                    logger.info(`Auto-subscribed parent ${req.user.id} to topics:`, topicSubscriptionResult);
+                    if (parentTopicService?.autoSubscribeParentDevice) {
+                        topicSubscriptionResult = await parentTopicService.autoSubscribeParentDevice(
+                            req.user.id,
+                            device_token
+                        );
+                        logger.info(`Auto-subscribed parent ${req.user.id} to topics:`, {
+                            success: topicSubscriptionResult?.success === true,
+                            subscribedTopics: topicSubscriptionResult?.subscribedTopics?.length || 0
+                        });
+                    } else {
+                        logger.info('parentTopicService missing autoSubscribeParentDevice; skipping');
+                    }
                 } catch (error) {
-                    logger.error('Error auto-subscribing parent to topics:', error);
-                    // Don't fail the registration if topic subscription fails
+                    // Downgrade to warn and do not include verbose error to avoid noisy logs
+                    logger.warn('Parent topic auto-subscribe skipped due to configuration/data issue:', {
+                        message: error?.message,
+                        code: error?.code
+                    });
+                    // Do NOT fail registration; continue gracefully
                 }
+            }
+
+            const responseData = {
+                device_id: result.deviceId
+            };
+            if (topicSubscriptionResult?.success) {
+                responseData.topic_subscription = {
+                    subscribed_topics: topicSubscriptionResult.subscribedTopics?.length || 0,
+                    total_topics: topicSubscriptionResult.totalTopics || 0,
+                    successful_subscriptions: topicSubscriptionResult.successfulSubscriptions || 0,
+                    failed_subscriptions: topicSubscriptionResult.failedSubscriptions || 0
+                };
             }
 
             res.json({
                 status: 'success',
                 message: 'Device token registered successfully',
-                data: {
-                    device_id: result.deviceId,
-                    topic_subscription: topicSubscriptionResult ? {
-                        subscribed_topics: topicSubscriptionResult.subscribedTopics?.length || 0,
-                        total_topics: topicSubscriptionResult.totalTopics || 0,
-                        successful_subscriptions: topicSubscriptionResult.successfulSubscriptions || 0,
-                        failed_subscriptions: topicSubscriptionResult.failedSubscriptions || 0
-                    } : null
-                }
+                data: responseData
             });
 
         } catch (error) {
@@ -109,7 +125,7 @@ router.delete('/unregister',
             const { device_token } = req.body;
 
             const result = await pushNotificationService.unregisterDeviceToken(
-                req.user.userId,
+                req.user.id,
                 device_token
             );
 
@@ -353,7 +369,7 @@ router.post('/test',
             };
 
             const result = await pushNotificationService.sendToUser(
-                req.user.userId,
+                req.user.id,
                 testNotification
             );
 
