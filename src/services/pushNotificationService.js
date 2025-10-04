@@ -52,31 +52,88 @@ class PushNotificationService {
 
     /**
      * Register device token for push notifications
+     * Ensures only one active token per user per platform
      */
-    async registerDeviceToken(userId, deviceToken, platform = 'android') {
+    async registerDeviceToken(userId, deviceToken, platform = 'android', deviceInfo = {}) {
         try {
             await this.initialize();
 
-            const { error } = await adminSupabase
+            // First, deactivate all existing tokens for this user and platform
+            const { error: deactivateError } = await adminSupabase
                 .from('user_device_tokens')
-                .upsert({
-                    user_id: userId,
-                    device_token: deviceToken,
-                    platform: platform,
-                    is_active: true,
-                    last_used: new Date().toISOString(),
-                    created_at: new Date().toISOString()
-                }, {
-                    onConflict: 'user_id,device_token'
-                });
+                .update({ 
+                    is_active: false,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('user_id', userId)
+                .eq('platform', platform)
+                .eq('is_active', true);
 
-            if (error) {
-                logger.error('Error registering device token:', error);
-                return { success: false, error };
+            if (deactivateError) {
+                logger.error('Error deactivating existing tokens:', deactivateError);
+                return { success: false, error: deactivateError };
             }
 
-            logger.info(`Device token registered for user ${userId}`);
-            return { success: true };
+            // Check if this exact token already exists for this user
+            const { data: existingToken, error: checkError } = await adminSupabase
+                .from('user_device_tokens')
+                .select('id, is_active')
+                .eq('user_id', userId)
+                .eq('device_token', deviceToken)
+                .single();
+
+            if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows found
+                logger.error('Error checking existing token:', checkError);
+                return { success: false, error: checkError };
+            }
+
+            let deviceId;
+            if (existingToken) {
+                // Token exists, reactivate it
+                const { error: reactivateError } = await adminSupabase
+                    .from('user_device_tokens')
+                    .update({
+                        is_active: true,
+                        last_used: new Date().toISOString(),
+                        updated_at: new Date().toISOString(),
+                        device_info: deviceInfo
+                    })
+                    .eq('id', existingToken.id);
+
+                if (reactivateError) {
+                    logger.error('Error reactivating token:', reactivateError);
+                    return { success: false, error: reactivateError };
+                }
+
+                deviceId = existingToken.id;
+                logger.info(`Reactivated existing device token for user ${userId}`);
+            } else {
+                // Token doesn't exist, create new one
+                const { data: newToken, error: insertError } = await adminSupabase
+                    .from('user_device_tokens')
+                    .insert({
+                        user_id: userId,
+                        device_token: deviceToken,
+                        platform: platform,
+                        device_info: deviceInfo,
+                        is_active: true,
+                        last_used: new Date().toISOString(),
+                        created_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    })
+                    .select('id')
+                    .single();
+
+                if (insertError) {
+                    logger.error('Error inserting new token:', insertError);
+                    return { success: false, error: insertError };
+                }
+
+                deviceId = newToken.id;
+                logger.info(`Created new device token for user ${userId}`);
+            }
+
+            return { success: true, deviceId };
 
         } catch (error) {
             logger.error('Error in registerDeviceToken:', error);
@@ -372,6 +429,121 @@ class PushNotificationService {
 
         } catch (error) {
             logger.error('Error in cleanupInactiveTokens:', error);
+            return { success: false, error };
+        }
+    }
+
+    /**
+     * Clean up duplicate tokens for a user (keep only the most recent active token per platform)
+     */
+    async cleanupDuplicateTokens(userId = null) {
+        try {
+            let query = adminSupabase
+                .from('user_device_tokens')
+                .select('*')
+                .eq('is_active', true)
+                .order('last_used', { ascending: false });
+
+            if (userId) {
+                query = query.eq('user_id', userId);
+            }
+
+            const { data: activeTokens, error: fetchError } = await query;
+
+            if (fetchError) {
+                logger.error('Error fetching active tokens:', fetchError);
+                return { success: false, error: fetchError };
+            }
+
+            if (!activeTokens || activeTokens.length === 0) {
+                return { success: true, cleaned: 0 };
+            }
+
+            // Group by user_id and platform, keep only the most recent token
+            const tokensToKeep = new Map();
+            const tokensToDeactivate = [];
+
+            for (const token of activeTokens) {
+                const key = `${token.user_id}_${token.platform}`;
+                if (!tokensToKeep.has(key)) {
+                    tokensToKeep.set(key, token);
+                } else {
+                    tokensToDeactivate.push(token.id);
+                }
+            }
+
+            if (tokensToDeactivate.length === 0) {
+                logger.info('No duplicate tokens found');
+                return { success: true, cleaned: 0 };
+            }
+
+            // Deactivate duplicate tokens
+            const { error: deactivateError } = await adminSupabase
+                .from('user_device_tokens')
+                .update({ 
+                    is_active: false,
+                    updated_at: new Date().toISOString()
+                })
+                .in('id', tokensToDeactivate);
+
+            if (deactivateError) {
+                logger.error('Error deactivating duplicate tokens:', deactivateError);
+                return { success: false, error: deactivateError };
+            }
+
+            logger.info(`Cleaned up ${tokensToDeactivate.length} duplicate tokens`);
+            return { success: true, cleaned: tokensToDeactivate.length };
+
+        } catch (error) {
+            logger.error('Error in cleanupDuplicateTokens:', error);
+            return { success: false, error };
+        }
+    }
+
+    /**
+     * Get token statistics for a user
+     */
+    async getTokenStats(userId) {
+        try {
+            const { data: tokens, error } = await adminSupabase
+                .from('user_device_tokens')
+                .select('platform, is_active, last_used, created_at')
+                .eq('user_id', userId)
+                .order('created_at', { ascending: false });
+
+            if (error) {
+                logger.error('Error fetching token stats:', error);
+                return { success: false, error };
+            }
+
+            const stats = {
+                total: tokens.length,
+                active: tokens.filter(t => t.is_active).length,
+                inactive: tokens.filter(t => !t.is_active).length,
+                byPlatform: {}
+            };
+
+            // Group by platform
+            tokens.forEach(token => {
+                if (!stats.byPlatform[token.platform]) {
+                    stats.byPlatform[token.platform] = {
+                        total: 0,
+                        active: 0,
+                        inactive: 0
+                    };
+                }
+                stats.byPlatform[token.platform].total++;
+                if (token.is_active) {
+                    stats.byPlatform[token.platform].active++;
+                } else {
+                    stats.byPlatform[token.platform].inactive++;
+                }
+            });
+
+            return { success: true, stats };
+
+        } catch (error) {
+            logger.error('Error in getTokenStats:', error);
             return { success: false, error };
         }
     }

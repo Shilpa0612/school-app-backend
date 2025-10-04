@@ -12,9 +12,9 @@ async function autoSubscribeParentDevice(parentId, deviceToken) {
     try {
         // 1) Fetch student's ids mapped to this parent
         const { data: mappings, error: mapErr } = await adminSupabase
-            .from('parent_student_mappings')
+                .from('parent_student_mappings')
             .select('student_id')
-            .eq('parent_id', parentId);
+                .eq('parent_id', parentId);
 
         if (mapErr) {
             logger.warn('ParentTopicService: mapping fetch failed', { code: mapErr.code, message: mapErr.message });
@@ -63,19 +63,19 @@ async function autoSubscribeParentDevice(parentId, deviceToken) {
                 }
             } catch (e) {
                 failures.push({ topic, error: e?.message || 'unknown_error' });
+                }
             }
-        }
 
-        return {
+            return {
             success: failures.length === 0,
             subscribedTopics: topics,
             totalTopics: topics.length,
             successfulSubscriptions: topics.length - failures.length,
             failedSubscriptions: failures.length
         };
-    } catch (error) {
+        } catch (error) {
         logger.warn('ParentTopicService: unexpected error', { message: error?.message });
-        return { success: false, error };
+            return { success: false, error };
     }
 }
 

@@ -49,17 +49,34 @@ router.post('/register',
 
             // Auto-subscribe parents to relevant topics
             let topicSubscriptionResult = null;
+            const waitForSubscription = String(req.query.wait_subscription || '').toLowerCase() === 'true';
             if (req.user.role === 'parent') {
                 try {
                     if (parentTopicService?.autoSubscribeParentDevice) {
-                        topicSubscriptionResult = await parentTopicService.autoSubscribeParentDevice(
-                            req.user.id,
-                            device_token
-                        );
-                        logger.info(`Auto-subscribed parent ${req.user.id} to topics:`, {
-                            success: topicSubscriptionResult?.success === true,
-                            subscribedTopics: topicSubscriptionResult?.subscribedTopics?.length || 0
-                        });
+                        if (waitForSubscription) {
+                            // Synchronous (returns details, slower)
+                    topicSubscriptionResult = await parentTopicService.autoSubscribeParentDevice(
+                        req.user.id,
+                        device_token
+                    );
+                            logger.info(`Auto-subscribed parent ${req.user.id} to topics:`, {
+                                success: topicSubscriptionResult?.success === true,
+                                subscribedTopics: topicSubscriptionResult?.subscribedTopics?.length || 0
+                            });
+                        } else {
+                            // Fire-and-forget (fast response)
+                            parentTopicService
+                                .autoSubscribeParentDevice(req.user.id, device_token)
+                                .then((res) => {
+                                    logger.info(`Auto-subscribed parent ${req.user.id} to topics (async):`, {
+                                        success: res?.success === true,
+                                        subscribedTopics: res?.subscribedTopics?.length || 0
+                                    });
+                                })
+                                .catch((err) => {
+                                    logger.warn('Async parent topic auto-subscribe failed:', { message: err?.message });
+                                });
+                        }
                     } else {
                         logger.info('parentTopicService missing autoSubscribeParentDevice; skipping');
                     }
@@ -76,12 +93,15 @@ router.post('/register',
             const responseData = {
                 device_id: result.deviceId
             };
-            if (topicSubscriptionResult?.success) {
+            // Always include subscription summary flag for parents
+            if (req.user.role === 'parent') {
                 responseData.topic_subscription = {
-                    subscribed_topics: topicSubscriptionResult.subscribedTopics?.length || 0,
-                    total_topics: topicSubscriptionResult.totalTopics || 0,
-                    successful_subscriptions: topicSubscriptionResult.successfulSubscriptions || 0,
-                    failed_subscriptions: topicSubscriptionResult.failedSubscriptions || 0
+                    mode: waitForSubscription ? 'wait' : 'async',
+                    success: Boolean(topicSubscriptionResult?.success),
+                    subscribed_topics: topicSubscriptionResult?.subscribedTopics?.length || 0,
+                    total_topics: topicSubscriptionResult?.totalTopics || 0,
+                    successful_subscriptions: topicSubscriptionResult?.successfulSubscriptions || 0,
+                    failed_subscriptions: topicSubscriptionResult?.failedSubscriptions || 0
                 };
             }
 
@@ -399,5 +419,70 @@ router.post('/test',
         }
     }
 );
+
+/**
+ * @route POST /api/device-tokens/cleanup-duplicates
+ * @desc Clean up duplicate tokens for the authenticated user
+ * @access Authenticated users only
+ */
+router.post('/cleanup-duplicates', authenticate, async (req, res) => {
+    try {
+        const result = await pushNotificationService.cleanupDuplicateTokens(req.user.id);
+
+        if (!result.success) {
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to clean up duplicate tokens',
+                error: result.error
+            });
+        }
+
+        res.json({
+            status: 'success',
+            message: 'Duplicate tokens cleaned up successfully',
+            data: {
+                cleaned: result.cleaned
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in POST /api/device-tokens/cleanup-duplicates:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+/**
+ * @route GET /api/device-tokens/stats
+ * @desc Get token statistics for the authenticated user
+ * @access Authenticated users only
+ */
+router.get('/stats', authenticate, async (req, res) => {
+    try {
+        const result = await pushNotificationService.getTokenStats(req.user.id);
+
+        if (!result.success) {
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to get token statistics',
+                error: result.error
+            });
+        }
+
+        res.json({
+            status: 'success',
+            data: result.stats
+        });
+
+    } catch (error) {
+        logger.error('Error in GET /api/device-tokens/stats:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
 
 export default router;
