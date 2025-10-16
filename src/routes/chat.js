@@ -5,6 +5,235 @@ import { logger } from '../utils/logger.js';
 
 const router = express.Router();
 
+// Helper function to check if message needs approval
+// Teacher -> Parent messages need approval
+// Parent -> Teacher messages do NOT need approval
+async function needsApproval(senderId, threadId) {
+    try {
+        // Get sender's role
+        const { data: sender, error: senderError } = await adminSupabase
+            .from('users')
+            .select('role')
+            .eq('id', senderId)
+            .single();
+
+        if (senderError || !sender) {
+            logger.error('Error fetching sender role:', senderError);
+            return false; // Default to no approval needed if error
+        }
+
+        // Only check if sender is a teacher
+        if (sender.role !== 'teacher') {
+            return false; // Non-teachers don't need approval
+        }
+
+        // Get all participants in the thread except the sender
+        const { data: participants, error: participantsError } = await adminSupabase
+            .from('chat_participants')
+            .select('user_id, user:users!chat_participants_user_id_fkey(role)')
+            .eq('thread_id', threadId)
+            .neq('user_id', senderId);
+
+        if (participantsError || !participants) {
+            logger.error('Error fetching thread participants:', participantsError);
+            return false;
+        }
+
+        // Check if any participant is a parent
+        const hasParentRecipient = participants.some(p => p.user?.role === 'parent');
+
+        // Teacher -> Parent requires approval
+        // Teacher -> Teacher does NOT require approval
+        return hasParentRecipient;
+
+    } catch (error) {
+        logger.error('Error in needsApproval check:', error);
+        return false;
+    }
+}
+
+// ========== READ RECEIPT HELPER FUNCTIONS ==========
+
+// Helper function to mark a message as read
+async function markMessageAsRead(messageId, userId) {
+    try {
+        // Insert read receipt (ON CONFLICT DO NOTHING handles duplicates)
+        const { data, error } = await adminSupabase
+            .from('message_reads')
+            .insert({
+                message_id: messageId,
+                user_id: userId,
+                read_at: new Date().toISOString()
+            })
+            .select()
+            .single();
+
+        if (error && error.code !== '23505') { // 23505 = unique violation (already read)
+            logger.error('Error marking message as read:', error);
+            return { success: false, error };
+        }
+
+        // Update message status to 'read' if not already
+        await adminSupabase
+            .from('chat_messages')
+            .update({ status: 'read' })
+            .eq('id', messageId)
+            .neq('status', 'read');
+
+        return { success: true, data };
+    } catch (error) {
+        logger.error('Error in markMessageAsRead:', error);
+        return { success: false, error };
+    }
+}
+
+// Helper function to get read-by list for a message
+async function getMessageReadBy(messageId) {
+    try {
+        const { data, error } = await adminSupabase
+            .from('message_reads')
+            .select(`
+                id,
+                user_id,
+                read_at,
+                user:users!message_reads_user_id_fkey(
+                    id,
+                    full_name,
+                    role
+                )
+            `)
+            .eq('message_id', messageId)
+            .order('read_at', { ascending: true });
+
+        if (error) {
+            logger.error('Error getting message read-by list:', error);
+            return { success: false, error };
+        }
+
+        return { success: true, data: data || [] };
+    } catch (error) {
+        logger.error('Error in getMessageReadBy:', error);
+        return { success: false, error };
+    }
+}
+
+// Helper function to get unread count for a thread
+async function getUnreadCountForThread(threadId, userId) {
+    try {
+        const { data: messages, error } = await adminSupabase
+            .from('chat_messages')
+            .select('id')
+            .eq('thread_id', threadId)
+            .neq('sender_id', userId)
+            .eq('approval_status', 'approved');
+
+        if (error) {
+            logger.error('Error getting messages for unread count:', error);
+            return 0;
+        }
+
+        if (!messages || messages.length === 0) return 0;
+
+        const messageIds = messages.map(m => m.id);
+
+        const { data: reads, error: readsError } = await adminSupabase
+            .from('message_reads')
+            .select('message_id')
+            .eq('user_id', userId)
+            .in('message_id', messageIds);
+
+        if (readsError) {
+            logger.error('Error getting read receipts:', readsError);
+            return 0;
+        }
+
+        const readMessageIds = new Set((reads || []).map(r => r.message_id));
+        return messages.filter(m => !readMessageIds.has(m.id)).length;
+
+    } catch (error) {
+        logger.error('Error in getUnreadCountForThread:', error);
+        return 0;
+    }
+}
+
+// Helper function to mark all messages in thread as read
+async function markThreadAsRead(threadId, userId) {
+    try {
+        // Get all unread messages in thread (approved only, not sent by user)
+        const { data: messages, error } = await adminSupabase
+            .from('chat_messages')
+            .select('id')
+            .eq('thread_id', threadId)
+            .neq('sender_id', userId)
+            .eq('approval_status', 'approved');
+
+        if (error) {
+            logger.error('Error getting messages to mark as read:', error);
+            return { success: false, count: 0 };
+        }
+
+        if (!messages || messages.length === 0) {
+            // Update last_read_at anyway
+            await adminSupabase
+                .from('chat_participants')
+                .update({ last_read_at: new Date().toISOString() })
+                .eq('thread_id', threadId)
+                .eq('user_id', userId);
+
+            return { success: true, count: 0 };
+        }
+
+        // Get already read messages
+        const messageIds = messages.map(m => m.id);
+        const { data: existingReads } = await adminSupabase
+            .from('message_reads')
+            .select('message_id')
+            .eq('user_id', userId)
+            .in('message_id', messageIds);
+
+        const alreadyReadIds = new Set((existingReads || []).map(r => r.message_id));
+        const unreadMessages = messages.filter(m => !alreadyReadIds.has(m.id));
+
+        if (unreadMessages.length > 0) {
+            // Insert read receipts for unread messages
+            const readReceipts = unreadMessages.map(m => ({
+                message_id: m.id,
+                user_id: userId,
+                read_at: new Date().toISOString()
+            }));
+
+            const { error: insertError } = await adminSupabase
+                .from('message_reads')
+                .insert(readReceipts);
+
+            if (insertError) {
+                logger.error('Error inserting read receipts:', insertError);
+                return { success: false, count: 0 };
+            }
+
+            // Update message status to 'read'
+            await adminSupabase
+                .from('chat_messages')
+                .update({ status: 'read' })
+                .in('id', unreadMessages.map(m => m.id))
+                .neq('status', 'read');
+        }
+
+        // Update last_read_at for backward compatibility
+        await adminSupabase
+            .from('chat_participants')
+            .update({ last_read_at: new Date().toISOString() })
+            .eq('thread_id', threadId)
+            .eq('user_id', userId);
+
+        return { success: true, count: unreadMessages.length };
+
+    } catch (error) {
+        logger.error('Error in markThreadAsRead:', error);
+        return { success: false, count: 0 };
+    }
+}
+
 // Helper function to resolve existing duplicate threads
 async function resolveDuplicateThreads(participantIds, threadType) {
     try {
@@ -975,14 +1204,28 @@ router.get('/messages', authenticate, async (req, res) => {
         }
 
         // Get messages from chat_messages table (primary storage for chat)
-        const { data: messages, error } = await adminSupabase
+        // Filter logic:
+        // - Admin/Principal: see all messages
+        // - Teachers/Parents: see approved messages + their own pending messages
+        let messagesQuery = adminSupabase
             .from('chat_messages')
             .select(`
                 *,
                 sender:users!chat_messages_sender_id_fkey(full_name, role),
-                attachments:chat_message_attachments(*)
+                attachments:chat_message_attachments(*),
+                approver:users!chat_messages_approved_by_fkey(full_name, role)
             `)
-            .eq('thread_id', thread_id)
+            .eq('thread_id', thread_id);
+
+        // Apply approval filter based on user role
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            // For non-admin/principal users, use OR filter to show:
+            // 1. All approved messages
+            // 2. Their own messages (regardless of approval status)
+            messagesQuery = messagesQuery.or(`approval_status.eq.approved,sender_id.eq.${req.user.id}`);
+        }
+
+        const { data: messages, error } = await messagesQuery
             .order('created_at', { ascending: false })
             .range(offset, offset + limit - 1);
 
@@ -994,18 +1237,74 @@ router.get('/messages', authenticate, async (req, res) => {
             });
         }
 
-        // Update last read timestamp
+        // Fetch read receipts for all messages
+        let messagesWithReceipts = [];
+        if (messages && messages.length > 0) {
+            const messageIds = messages.map(m => m.id);
+
+            // Get read receipts for all messages
+            const { data: allReads } = await adminSupabase
+                .from('message_reads')
+                .select(`
+                    message_id,
+                    user_id,
+                    read_at,
+                    user:users!message_reads_user_id_fkey(id, full_name, role)
+                `)
+                .in('message_id', messageIds);
+
+            // Group reads by message_id
+            const readsByMessage = {};
+            (allReads || []).forEach(read => {
+                if (!readsByMessage[read.message_id]) {
+                    readsByMessage[read.message_id] = [];
+                }
+                readsByMessage[read.message_id].push({
+                    user_id: read.user_id,
+                    user_name: read.user?.full_name || 'Unknown',
+                    user_role: read.user?.role || 'Unknown',
+                    read_at: read.read_at
+                });
+            });
+
+            // Attach read receipts to each message
+            messagesWithReceipts = messages.map(msg => {
+                const readBy = readsByMessage[msg.id] || [];
+                const isReadByCurrentUser = readBy.some(r => r.user_id === req.user.id);
+
+                return {
+                    ...msg,
+                    read_by: readBy,
+                    read_count: readBy.length,
+                    is_read: isReadByCurrentUser || msg.sender_id === req.user.id // Own messages are always "read"
+                };
+            });
+        }
+
+        // Mark messages as read automatically when fetching
+        // This happens in the background and shouldn't block the response
+        markThreadAsRead(thread_id, req.user.id).catch(err => {
+            logger.error('Error auto-marking messages as read:', err);
+        });
+
+        // Update last read timestamp for backward compatibility
         await adminSupabase
             .from('chat_participants')
             .update({ last_read_at: new Date().toISOString() })
             .eq('thread_id', thread_id)
             .eq('user_id', req.user.id);
 
-        // Get total count from chat_messages table
-        const { count, error: countError } = await adminSupabase
+        // Get total count from chat_messages table with same filter
+        let countQuery = adminSupabase
             .from('chat_messages')
             .select('*', { count: 'exact', head: true })
             .eq('thread_id', thread_id);
+
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            countQuery = countQuery.or(`approval_status.eq.approved,sender_id.eq.${req.user.id}`);
+        }
+
+        const { count, error: countError } = await countQuery;
 
         if (countError) {
             logger.error('Error getting message count:', countError);
@@ -1023,7 +1322,7 @@ router.get('/messages', authenticate, async (req, res) => {
             status: 'success',
             data: {
                 participants: formattedParticipants,
-                messages: messages.reverse(), // Show oldest first
+                messages: messagesWithReceipts.reverse(), // Show oldest first
                 pagination: {
                     page: parseInt(page),
                     limit: parseInt(limit),
@@ -1092,6 +1391,10 @@ router.post('/messages', authenticate, async (req, res) => {
             });
         }
 
+        // Check if message needs approval (Teacher -> Parent)
+        const requiresApproval = await needsApproval(req.user.id, thread_id);
+        const approvalStatus = requiresApproval ? 'pending' : 'approved';
+
         // Create message directly in chat_messages (authoritative storage for chat)
         const { data: chatMessage, error: chatInsertError } = await adminSupabase
             .from('chat_messages')
@@ -1099,7 +1402,8 @@ router.post('/messages', authenticate, async (req, res) => {
                 thread_id,
                 sender_id: req.user.id,
                 content,
-                message_type
+                message_type,
+                approval_status: approvalStatus
             })
             .select(`
                 *,
@@ -1123,7 +1427,10 @@ router.post('/messages', authenticate, async (req, res) => {
 
         res.status(201).json({
             status: 'success',
-            data: chatMessage
+            data: chatMessage,
+            message: requiresApproval
+                ? 'Message sent successfully and is pending approval'
+                : 'Message sent successfully'
         });
 
     } catch (error) {
@@ -2398,6 +2705,684 @@ router.delete('/threads/:id', authenticate, async (req, res) => {
 
     } catch (error) {
         logger.error('Error in delete thread:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// ========== MESSAGE APPROVAL ENDPOINTS (Admin/Principal Only) ==========
+
+// Get pending messages for approval
+router.get('/messages/pending', authenticate, async (req, res) => {
+    try {
+        // Only admin and principal can view pending messages
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied. Only admins and principals can view pending messages.'
+            });
+        }
+
+        const { page = 1, limit = 50, thread_id } = req.query;
+        const offset = (page - 1) * limit;
+
+        // Build query for pending messages
+        let query = adminSupabase
+            .from('chat_messages')
+            .select(`
+                *,
+                sender:users!chat_messages_sender_id_fkey(id, full_name, role, email),
+                thread:chat_threads!chat_messages_thread_id_fkey(
+                    id,
+                    title,
+                    thread_type,
+                    participants:chat_participants(
+                        user_id,
+                        user:users!chat_participants_user_id_fkey(id, full_name, role)
+                    )
+                )
+            `)
+            .eq('approval_status', 'pending')
+            .order('created_at', { ascending: false });
+
+        // Optionally filter by specific thread
+        if (thread_id) {
+            query = query.eq('thread_id', thread_id);
+        }
+
+        const { data: messages, error } = await query
+            .range(offset, offset + limit - 1);
+
+        if (error) {
+            logger.error('Error fetching pending messages:', error);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch pending messages'
+            });
+        }
+
+        // Get total count
+        let countQuery = adminSupabase
+            .from('chat_messages')
+            .select('*', { count: 'exact', head: true })
+            .eq('approval_status', 'pending');
+
+        if (thread_id) {
+            countQuery = countQuery.eq('thread_id', thread_id);
+        }
+
+        const { count, error: countError } = await countQuery;
+
+        if (countError) {
+            logger.error('Error getting pending messages count:', countError);
+        }
+
+        res.json({
+            status: 'success',
+            data: {
+                messages,
+                pagination: {
+                    page: parseInt(page),
+                    limit: parseInt(limit),
+                    total: count || 0,
+                    total_pages: Math.ceil((count || 0) / limit)
+                }
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in get pending messages:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Approve a message
+router.post('/messages/:message_id/approve', authenticate, async (req, res) => {
+    try {
+        // Only admin and principal can approve messages
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied. Only admins and principals can approve messages.'
+            });
+        }
+
+        const { message_id } = req.params;
+
+        // Get the message
+        const { data: message, error: fetchError } = await adminSupabase
+            .from('chat_messages')
+            .select(`
+                *,
+                sender:users!chat_messages_sender_id_fkey(full_name, role),
+                thread:chat_threads!chat_messages_thread_id_fkey(
+                    id,
+                    title,
+                    participants:chat_participants(user_id)
+                )
+            `)
+            .eq('id', message_id)
+            .single();
+
+        if (fetchError) {
+            if (fetchError.code === 'PGRST116') {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Message not found'
+                });
+            }
+            logger.error('Error fetching message:', fetchError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch message'
+            });
+        }
+
+        // Check if message is already approved or rejected
+        if (message.approval_status !== 'pending') {
+            return res.status(400).json({
+                status: 'error',
+                message: `Message is already ${message.approval_status}`
+            });
+        }
+
+        // Approve the message
+        const { data: approvedMessage, error: approveError } = await adminSupabase
+            .from('chat_messages')
+            .update({
+                approval_status: 'approved',
+                approved_by: req.user.id,
+                approved_at: new Date().toISOString()
+            })
+            .eq('id', message_id)
+            .select(`
+                *,
+                sender:users!chat_messages_sender_id_fkey(full_name, role),
+                approver:users!chat_messages_approved_by_fkey(full_name, role)
+            `)
+            .single();
+
+        if (approveError) {
+            logger.error('Error approving message:', approveError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to approve message'
+            });
+        }
+
+        logger.info(`Message ${message_id} approved by ${req.user.full_name} (${req.user.role})`);
+
+        res.json({
+            status: 'success',
+            message: 'Message approved successfully',
+            data: approvedMessage
+        });
+
+    } catch (error) {
+        logger.error('Error in approve message:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Reject a message
+router.post('/messages/:message_id/reject', authenticate, async (req, res) => {
+    try {
+        // Only admin and principal can reject messages
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied. Only admins and principals can reject messages.'
+            });
+        }
+
+        const { message_id } = req.params;
+        const { rejection_reason } = req.body;
+
+        if (!rejection_reason || rejection_reason.trim() === '') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Rejection reason is required'
+            });
+        }
+
+        // Get the message
+        const { data: message, error: fetchError } = await adminSupabase
+            .from('chat_messages')
+            .select('*')
+            .eq('id', message_id)
+            .single();
+
+        if (fetchError) {
+            if (fetchError.code === 'PGRST116') {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Message not found'
+                });
+            }
+            logger.error('Error fetching message:', fetchError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch message'
+            });
+        }
+
+        // Check if message is already approved or rejected
+        if (message.approval_status !== 'pending') {
+            return res.status(400).json({
+                status: 'error',
+                message: `Message is already ${message.approval_status}`
+            });
+        }
+
+        // Reject the message
+        const { data: rejectedMessage, error: rejectError } = await adminSupabase
+            .from('chat_messages')
+            .update({
+                approval_status: 'rejected',
+                approved_by: req.user.id,
+                approved_at: new Date().toISOString(),
+                rejection_reason: rejection_reason.trim()
+            })
+            .eq('id', message_id)
+            .select(`
+                *,
+                sender:users!chat_messages_sender_id_fkey(full_name, role),
+                approver:users!chat_messages_approved_by_fkey(full_name, role)
+            `)
+            .single();
+
+        if (rejectError) {
+            logger.error('Error rejecting message:', rejectError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to reject message'
+            });
+        }
+
+        logger.info(`Message ${message_id} rejected by ${req.user.full_name} (${req.user.role}). Reason: ${rejection_reason}`);
+
+        res.json({
+            status: 'success',
+            message: 'Message rejected successfully',
+            data: rejectedMessage
+        });
+
+    } catch (error) {
+        logger.error('Error in reject message:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Get approval statistics (for dashboard)
+router.get('/messages/approval-stats', authenticate, async (req, res) => {
+    try {
+        // Only admin and principal can view stats
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied. Only admins and principals can view approval statistics.'
+            });
+        }
+
+        // Get counts for each status
+        const { data: pendingCount } = await adminSupabase
+            .from('chat_messages')
+            .select('*', { count: 'exact', head: true })
+            .eq('approval_status', 'pending');
+
+        const { data: approvedCount } = await adminSupabase
+            .from('chat_messages')
+            .select('*', { count: 'exact', head: true })
+            .eq('approval_status', 'approved');
+
+        const { data: rejectedCount } = await adminSupabase
+            .from('chat_messages')
+            .select('*', { count: 'exact', head: true })
+            .eq('approval_status', 'rejected');
+
+        // Get pending messages grouped by sender
+        const { data: pendingBySender, error: senderError } = await adminSupabase
+            .from('chat_messages')
+            .select(`
+                sender_id,
+                sender:users!chat_messages_sender_id_fkey(full_name, role)
+            `)
+            .eq('approval_status', 'pending');
+
+        if (senderError) {
+            logger.error('Error fetching pending by sender:', senderError);
+        }
+
+        // Count messages per sender
+        const senderStats = {};
+        (pendingBySender || []).forEach(msg => {
+            const senderId = msg.sender_id;
+            if (!senderStats[senderId]) {
+                senderStats[senderId] = {
+                    sender_id: senderId,
+                    sender_name: msg.sender?.full_name || 'Unknown',
+                    sender_role: msg.sender?.role || 'Unknown',
+                    pending_count: 0
+                };
+            }
+            senderStats[senderId].pending_count++;
+        });
+
+        res.json({
+            status: 'success',
+            data: {
+                total_pending: pendingCount?.length || 0,
+                total_approved: approvedCount?.length || 0,
+                total_rejected: rejectedCount?.length || 0,
+                pending_by_sender: Object.values(senderStats)
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in get approval stats:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// ========== READ RECEIPT ENDPOINTS ==========
+
+// Mark a specific message as read
+router.post('/messages/:message_id/read', authenticate, async (req, res) => {
+    try {
+        const { message_id } = req.params;
+        const userId = req.user.id;
+
+        // Get the message to verify it exists and user has access
+        const { data: message, error: fetchError } = await adminSupabase
+            .from('chat_messages')
+            .select(`
+                id,
+                thread_id,
+                sender_id,
+                content,
+                approval_status
+            `)
+            .eq('id', message_id)
+            .single();
+
+        if (fetchError) {
+            if (fetchError.code === 'PGRST116') {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Message not found'
+                });
+            }
+            logger.error('Error fetching message:', fetchError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch message'
+            });
+        }
+
+        // Only approved messages can be marked as read
+        if (message.approval_status !== 'approved') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Cannot mark pending or rejected messages as read'
+            });
+        }
+
+        // Verify user is a participant in the thread
+        const { data: participant, error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .select('*')
+            .eq('thread_id', message.thread_id)
+            .eq('user_id', userId)
+            .single();
+
+        if (participantError || !participant) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied to this message'
+            });
+        }
+
+        // Don't mark own messages as read
+        if (message.sender_id === userId) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Cannot mark your own message as read'
+            });
+        }
+
+        // Mark the message as read
+        const result = await markMessageAsRead(message_id, userId);
+
+        if (!result.success) {
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to mark message as read'
+            });
+        }
+
+        logger.info(`Message ${message_id} marked as read by user ${userId}`);
+
+        res.json({
+            status: 'success',
+            message: 'Message marked as read',
+            data: {
+                message_id,
+                user_id: userId,
+                read_at: result.data?.read_at || new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in mark message as read:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Get read-by list for a message
+router.get('/messages/:message_id/read-by', authenticate, async (req, res) => {
+    try {
+        const { message_id } = req.params;
+        const userId = req.user.id;
+
+        // Get the message to verify access
+        const { data: message, error: fetchError } = await adminSupabase
+            .from('chat_messages')
+            .select(`
+                id,
+                thread_id,
+                sender_id
+            `)
+            .eq('id', message_id)
+            .single();
+
+        if (fetchError) {
+            if (fetchError.code === 'PGRST116') {
+                return res.status(404).json({
+                    status: 'error',
+                    message: 'Message not found'
+                });
+            }
+            logger.error('Error fetching message:', fetchError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to fetch message'
+            });
+        }
+
+        // Verify user is participant in thread or is the sender
+        const { data: participant, error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .select('*')
+            .eq('thread_id', message.thread_id)
+            .eq('user_id', userId)
+            .single();
+
+        if (participantError || !participant) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied to this message'
+            });
+        }
+
+        // Get read-by list
+        const result = await getMessageReadBy(message_id);
+
+        if (!result.success) {
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to get read-by list'
+            });
+        }
+
+        // Format the response
+        const readBy = result.data.map(read => ({
+            user_id: read.user_id,
+            user_name: read.user?.full_name || 'Unknown',
+            user_role: read.user?.role || 'Unknown',
+            read_at: read.read_at
+        }));
+
+        res.json({
+            status: 'success',
+            data: {
+                message_id,
+                read_count: readBy.length,
+                read_by: readBy
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in get read-by list:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Mark all messages in a thread as read (bulk operation)
+router.post('/threads/:thread_id/mark-all-read', authenticate, async (req, res) => {
+    try {
+        const { thread_id } = req.params;
+        const userId = req.user.id;
+
+        // Verify user is participant in thread
+        const { data: participant, error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .select('*')
+            .eq('thread_id', thread_id)
+            .eq('user_id', userId)
+            .single();
+
+        if (participantError || !participant) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied to this thread'
+            });
+        }
+
+        // Mark all messages as read
+        const result = await markThreadAsRead(thread_id, userId);
+
+        if (!result.success) {
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to mark messages as read'
+            });
+        }
+
+        logger.info(`${result.count} messages marked as read in thread ${thread_id} by user ${userId}`);
+
+        res.json({
+            status: 'success',
+            message: `${result.count} message(s) marked as read`,
+            data: {
+                thread_id,
+                user_id: userId,
+                messages_marked: result.count,
+                marked_at: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in mark thread as read:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Get unread count for a specific thread
+router.get('/threads/:thread_id/unread-count', authenticate, async (req, res) => {
+    try {
+        const { thread_id } = req.params;
+        const userId = req.user.id;
+
+        // Verify user is participant in thread
+        const { data: participant, error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .select('*')
+            .eq('thread_id', thread_id)
+            .eq('user_id', userId)
+            .single();
+
+        if (participantError || !participant) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'Access denied to this thread'
+            });
+        }
+
+        // Get unread count
+        const unreadCount = await getUnreadCountForThread(thread_id, userId);
+
+        res.json({
+            status: 'success',
+            data: {
+                thread_id,
+                unread_count: unreadCount
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in get unread count:', error);
+        res.status(500).json({
+            status: 'error',
+            message: 'Internal server error'
+        });
+    }
+});
+
+// Get total unread count across all threads for user
+router.get('/unread-count', authenticate, async (req, res) => {
+    try {
+        const userId = req.user.id;
+
+        // Get all threads user is part of
+        const { data: participations, error: participationsError } = await adminSupabase
+            .from('chat_participants')
+            .select('thread_id')
+            .eq('user_id', userId);
+
+        if (participationsError) {
+            logger.error('Error getting user threads:', participationsError);
+            return res.status(500).json({
+                status: 'error',
+                message: 'Failed to get threads'
+            });
+        }
+
+        if (!participations || participations.length === 0) {
+            return res.json({
+                status: 'success',
+                data: {
+                    total_unread: 0,
+                    threads: []
+                }
+            });
+        }
+
+        // Get unread count for each thread
+        const threadCounts = await Promise.all(
+            participations.map(async (p) => {
+                const count = await getUnreadCountForThread(p.thread_id, userId);
+                return {
+                    thread_id: p.thread_id,
+                    unread_count: count
+                };
+            })
+        );
+
+        const totalUnread = threadCounts.reduce((sum, tc) => sum + tc.unread_count, 0);
+
+        res.json({
+            status: 'success',
+            data: {
+                total_unread: totalUnread,
+                threads: threadCounts.filter(tc => tc.unread_count > 0)
+            }
+        });
+
+    } catch (error) {
+        logger.error('Error in get total unread count:', error);
         res.status(500).json({
             status: 'error',
             message: 'Internal server error'

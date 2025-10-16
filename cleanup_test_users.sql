@@ -1,0 +1,13 @@
+-- ⚠️ DEPRECATED - DO NOT USE THIS SCRIPT
+-- This script uses wildcards and will delete REAL parents!
+-- 
+-- Use one of these instead:
+-- 1. cleanup_test_users_SAFE.sql (filters by name + email + date)
+-- 2. cleanup_specific_test_users.sql (delete by exact ID)
+--
+-- Example of REAL parents that would be wrongly deleted:
+-- - phone: 8888101093 - Dnyaneshwar Namdev Sahane (REAL parent)
+-- - phone: 8888779023 - Sambhaji Dattatray Balap (REAL parent)
+--
+-- DO NOT RUN THIS SCRIPT!
+

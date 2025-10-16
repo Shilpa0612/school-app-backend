@@ -317,6 +317,28 @@ class WebSocketService {
                     this.handleSendMessage(userId, message);
                     break;
 
+                case 'mark_as_read':
+                    if (!message.message_id) {
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Message ID is required for marking as read'
+                        });
+                        return;
+                    }
+                    this.handleMarkAsRead(userId, message.message_id, message.thread_id);
+                    break;
+
+                case 'mark_thread_read':
+                    if (!message.thread_id) {
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Thread ID is required for marking thread as read'
+                        });
+                        return;
+                    }
+                    this.handleMarkThreadRead(userId, message.thread_id);
+                    break;
+
                 default:
                     logger.warn(`Unknown message type from user ${userId}:`, message.type);
                     this.sendMessageToUser(userId, {
@@ -411,10 +433,16 @@ class WebSocketService {
                     }
                 );
 
+                // AUTOMATICALLY mark all messages as read when subscribing to thread
+                // This happens when user opens/views the chat
+                this.handleMarkThreadRead(userId, threadId);
+
                 this.sendMessageToUser(userId, {
                     type: 'thread_subscribed',
                     thread_id: threadId
                 });
+
+                logger.info(`User ${userId} subscribed to thread ${threadId} (auto-marking as read)`);
             }
         } catch (error) {
             logger.error(`Error in subscribeToThread for user ${userId}:`, error);
@@ -663,6 +691,55 @@ class WebSocketService {
     }
 
     /**
+     * Check if message needs approval
+     * Teacher -> Parent messages need approval
+     * Parent -> Teacher messages do NOT need approval
+     */
+    async needsApproval(senderId, threadId) {
+        try {
+            // Get sender's role
+            const { data: sender, error: senderError } = await adminSupabase
+                .from('users')
+                .select('role')
+                .eq('id', senderId)
+                .single();
+
+            if (senderError || !sender) {
+                logger.error('Error fetching sender role:', senderError);
+                return false; // Default to no approval needed if error
+            }
+
+            // Only check if sender is a teacher
+            if (sender.role !== 'teacher') {
+                return false; // Non-teachers don't need approval
+            }
+
+            // Get all participants in the thread except the sender
+            const { data: participants, error: participantsError } = await adminSupabase
+                .from('chat_participants')
+                .select('user_id, user:users!chat_participants_user_id_fkey(role)')
+                .eq('thread_id', threadId)
+                .neq('user_id', senderId);
+
+            if (participantsError || !participants) {
+                logger.error('Error fetching thread participants:', participantsError);
+                return false;
+            }
+
+            // Check if any participant is a parent
+            const hasParentRecipient = participants.some(p => p.user?.role === 'parent');
+
+            // Teacher -> Parent requires approval
+            // Teacher -> Teacher does NOT require approval
+            return hasParentRecipient;
+
+        } catch (error) {
+            logger.error('Error in needsApproval check:', error);
+            return false;
+        }
+    }
+
+    /**
      * Handle sending message through WebSocket
      */
     async handleSendMessage(userId, message) {
@@ -756,6 +833,10 @@ class WebSocketService {
                 return;
             }
 
+            // Check if message needs approval (Teacher -> Parent)
+            const requiresApproval = await this.needsApproval(userId, thread_id);
+            const approvalStatus = requiresApproval ? 'pending' : 'approved';
+
             // Create message in chat_messages table (primary storage for chat)
             const { data: newMessage, error } = await adminSupabase
                 .from('chat_messages')
@@ -764,7 +845,8 @@ class WebSocketService {
                     sender_id: userId,
                     content,
                     message_type: message_type,
-                    status: 'sent'
+                    status: 'sent',
+                    approval_status: approvalStatus
                 })
                 .select(`
                     *,
@@ -796,39 +878,312 @@ class WebSocketService {
                     content: newMessage.content,
                     message_type: newMessage.message_type,
                     status: newMessage.status,
+                    approval_status: newMessage.approval_status,
                     created_at: newMessage.created_at,
                     sender: newMessage.sender
-                }
+                },
+                message: requiresApproval
+                    ? 'Message sent successfully and is pending approval'
+                    : 'Message sent successfully'
             });
 
-            // Broadcast to all participants in the thread
-            const { data: participants, error: participantsError } = await adminSupabase
-                .from('chat_participants')
-                .select('user_id')
-                .eq('thread_id', thread_id);
+            // Only broadcast to other participants if message is approved
+            // Pending messages (teacher -> parent) should not be visible until approved
+            if (!requiresApproval || approvalStatus === 'approved') {
+                // Broadcast to all participants in the thread
+                const { data: participants, error: participantsError } = await adminSupabase
+                    .from('chat_participants')
+                    .select('user_id')
+                    .eq('thread_id', thread_id);
 
-            if (participantsError) {
-                logger.error('Error fetching participants for broadcasting:', participantsError);
-            } else if (participants && participants.length > 0) {
-                logger.info(`Broadcasting message to ${participants.length} participants in thread ${thread_id}`);
+                if (participantsError) {
+                    logger.error('Error fetching participants for broadcasting:', participantsError);
+                } else if (participants && participants.length > 0) {
+                    logger.info(`Broadcasting message to ${participants.length} participants in thread ${thread_id}`);
 
-                participants.forEach(participant => {
-                    if (participant.user_id !== userId) {
-                        logger.info(`Sending message to participant: ${participant.user_id}`);
-                        this.sendMessageToUser(participant.user_id, {
-                            type: 'new_message',
-                            data: newMessage
-                        });
-                    }
-                });
-            } else {
-                logger.warn(`No participants found for thread ${thread_id}`);
+                    participants.forEach(participant => {
+                        if (participant.user_id !== userId) {
+                            logger.info(`Sending message to participant: ${participant.user_id}`);
+                            this.sendMessageToUser(participant.user_id, {
+                                type: 'new_message',
+                                data: newMessage
+                            });
+                        }
+                    });
+                } else {
+                    logger.warn(`No participants found for thread ${thread_id}`);
+                }
             }
 
             logger.info(`Message sent via WebSocket by user ${userId} in thread ${thread_id}`);
 
         } catch (error) {
             logger.error(`Error handling WebSocket message from user ${userId}:`, error);
+            this.sendMessageToUser(userId, {
+                type: 'error',
+                message: 'Internal server error'
+            });
+        }
+    }
+
+    /**
+     * Handle marking a message as read
+     */
+    async handleMarkAsRead(userId, messageId, threadId) {
+        try {
+            // Get the message to verify access and get thread_id if not provided
+            const { data: message, error: fetchError } = await adminSupabase
+                .from('chat_messages')
+                .select('id, thread_id, sender_id, approval_status')
+                .eq('id', messageId)
+                .single();
+
+            if (fetchError || !message) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Message not found'
+                });
+                return;
+            }
+
+            // Use thread_id from message if not provided
+            const actualThreadId = threadId || message.thread_id;
+
+            // Verify user is participant in thread
+            const { data: participant, error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .select('*')
+                .eq('thread_id', actualThreadId)
+                .eq('user_id', userId)
+                .single();
+
+            if (participantError || !participant) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Access denied to this thread'
+                });
+                return;
+            }
+
+            // Don't mark own messages as read
+            if (message.sender_id === userId) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Cannot mark your own message as read'
+                });
+                return;
+            }
+
+            // Only approved messages can be marked as read
+            if (message.approval_status !== 'approved') {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Cannot mark pending or rejected messages as read'
+                });
+                return;
+            }
+
+            // Insert read receipt
+            const { data: readReceipt, error: insertError } = await adminSupabase
+                .from('message_reads')
+                .insert({
+                    message_id: messageId,
+                    user_id: userId,
+                    read_at: new Date().toISOString()
+                })
+                .select()
+                .single();
+
+            if (insertError && insertError.code !== '23505') { // 23505 = unique violation (already read)
+                logger.error('Error creating read receipt via WebSocket:', insertError);
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Failed to mark message as read'
+                });
+                return;
+            }
+
+            // Update message status to 'read'
+            await adminSupabase
+                .from('chat_messages')
+                .update({ status: 'read' })
+                .eq('id', messageId)
+                .neq('status', 'read');
+
+            // Send confirmation to user
+            this.sendMessageToUser(userId, {
+                type: 'message_read',
+                data: {
+                    message_id: messageId,
+                    thread_id: actualThreadId,
+                    user_id: userId,
+                    read_at: readReceipt?.read_at || new Date().toISOString()
+                }
+            });
+
+            // Broadcast read receipt to message sender and other thread participants
+            const { data: participants, error: participantsError } = await adminSupabase
+                .from('chat_participants')
+                .select('user_id')
+                .eq('thread_id', actualThreadId);
+
+            if (!participantsError && participants) {
+                // Get user info for the read receipt
+                const { data: userInfo } = await adminSupabase
+                    .from('users')
+                    .select('id, full_name, role')
+                    .eq('id', userId)
+                    .single();
+
+                participants.forEach(participant => {
+                    // Broadcast to everyone except the user who marked it as read
+                    if (participant.user_id !== userId) {
+                        this.sendMessageToUser(participant.user_id, {
+                            type: 'message_read_by_other',
+                            data: {
+                                message_id: messageId,
+                                thread_id: actualThreadId,
+                                read_by: {
+                                    user_id: userId,
+                                    user_name: userInfo?.full_name || 'Unknown',
+                                    user_role: userInfo?.role || 'Unknown'
+                                },
+                                read_at: readReceipt?.read_at || new Date().toISOString()
+                            }
+                        });
+                    }
+                });
+            }
+
+            logger.info(`Message ${messageId} marked as read by user ${userId} via WebSocket`);
+
+        } catch (error) {
+            logger.error(`Error handling mark as read via WebSocket:`, error);
+            this.sendMessageToUser(userId, {
+                type: 'error',
+                message: 'Internal server error'
+            });
+        }
+    }
+
+    /**
+     * Handle marking all messages in a thread as read
+     */
+    async handleMarkThreadRead(userId, threadId) {
+        try {
+            // Verify user is participant in thread
+            const { data: participant, error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .select('*')
+                .eq('thread_id', threadId)
+                .eq('user_id', userId)
+                .single();
+
+            if (participantError || !participant) {
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Access denied to this thread'
+                });
+                return;
+            }
+
+            // Get all unread approved messages in thread (not sent by user)
+            const { data: messages, error } = await adminSupabase
+                .from('chat_messages')
+                .select('id')
+                .eq('thread_id', threadId)
+                .neq('sender_id', userId)
+                .eq('approval_status', 'approved');
+
+            if (error) {
+                logger.error('Error getting messages to mark as read:', error);
+                this.sendMessageToUser(userId, {
+                    type: 'error',
+                    message: 'Failed to fetch messages'
+                });
+                return;
+            }
+
+            if (!messages || messages.length === 0) {
+                // Update last_read_at anyway
+                await adminSupabase
+                    .from('chat_participants')
+                    .update({ last_read_at: new Date().toISOString() })
+                    .eq('thread_id', threadId)
+                    .eq('user_id', userId);
+
+                this.sendMessageToUser(userId, {
+                    type: 'thread_marked_read',
+                    data: {
+                        thread_id: threadId,
+                        messages_marked: 0,
+                        marked_at: new Date().toISOString()
+                    }
+                });
+                return;
+            }
+
+            // Get already read messages
+            const messageIds = messages.map(m => m.id);
+            const { data: existingReads } = await adminSupabase
+                .from('message_reads')
+                .select('message_id')
+                .eq('user_id', userId)
+                .in('message_id', messageIds);
+
+            const alreadyReadIds = new Set((existingReads || []).map(r => r.message_id));
+            const unreadMessages = messages.filter(m => !alreadyReadIds.has(m.id));
+
+            if (unreadMessages.length > 0) {
+                // Insert read receipts for unread messages
+                const readReceipts = unreadMessages.map(m => ({
+                    message_id: m.id,
+                    user_id: userId,
+                    read_at: new Date().toISOString()
+                }));
+
+                const { error: insertError } = await adminSupabase
+                    .from('message_reads')
+                    .insert(readReceipts);
+
+                if (insertError) {
+                    logger.error('Error inserting read receipts:', insertError);
+                    this.sendMessageToUser(userId, {
+                        type: 'error',
+                        message: 'Failed to mark messages as read'
+                    });
+                    return;
+                }
+
+                // Update message status to 'read'
+                await adminSupabase
+                    .from('chat_messages')
+                    .update({ status: 'read' })
+                    .in('id', unreadMessages.map(m => m.id))
+                    .neq('status', 'read');
+            }
+
+            // Update last_read_at for backward compatibility
+            await adminSupabase
+                .from('chat_participants')
+                .update({ last_read_at: new Date().toISOString() })
+                .eq('thread_id', threadId)
+                .eq('user_id', userId);
+
+            // Send confirmation to user
+            this.sendMessageToUser(userId, {
+                type: 'thread_marked_read',
+                data: {
+                    thread_id: threadId,
+                    messages_marked: unreadMessages.length,
+                    marked_at: new Date().toISOString()
+                }
+            });
+
+            logger.info(`${unreadMessages.length} messages marked as read in thread ${threadId} by user ${userId} via WebSocket`);
+
+        } catch (error) {
+            logger.error(`Error handling mark thread as read via WebSocket:`, error);
             this.sendMessageToUser(userId, {
                 type: 'error',
                 message: 'Internal server error'
