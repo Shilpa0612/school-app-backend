@@ -1502,9 +1502,8 @@ router.get('/teacher/announcements',
                     'target_roles.cs.{teacher}'
                 ];
                 if (teacherClassDivisions.length > 0) {
-                    // Only show announcements that are targeted to teacher's assigned classes OR have no specific class targeting
+                    // Only show announcements that are targeted to teacher's assigned classes
                     visibilityConditions.push(`target_classes.cs.{${teacherClassDivisions.join(',')}}`);
-                    visibilityConditions.push(`target_classes.eq.{}`);
                 } else {
                     // If teacher has no class assignments, only show teacher role announcements
                     visibilityConditions = ['target_roles.cs.{teacher}'];

@@ -279,7 +279,13 @@ router.get('/',
 
                     if (classIds.length > 0) {
                         query = query.in('class_division_id', classIds);
+                    } else {
+                        // If parent has no children with proper class assignments, return empty result
+                        query = query.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
                     }
+                } else {
+                    // If parent has no children, return empty result
+                    query = query.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
                 }
             }
             // Admin and Principal can see all homework (no additional filtering needed)
@@ -393,7 +399,13 @@ router.get('/',
 
                     if (classIds.length > 0) {
                         countQuery = countQuery.in('class_division_id', classIds);
+                    } else {
+                        // If parent has no children with proper class assignments, return empty result
+                        countQuery = countQuery.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
                     }
+                } else {
+                    // If parent has no children, return empty result
+                    countQuery = countQuery.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
                 }
             }
 
