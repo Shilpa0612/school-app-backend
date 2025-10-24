@@ -3,28 +3,9 @@
  * This script tests the /api/announcements/teacher/announcements endpoint
  */
 
+import axios from 'axios';
+
 const BASE_URL = 'https://ajws-school-ba8ae5e3f955.herokuapp.com/api';
-
-// Helper function to make HTTP requests
-async function makeRequest(url, options = {}) {
-    const response = await fetch(url, {
-        headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
-        },
-        ...options
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-        const error = new Error(data.message || 'Request failed');
-        error.response = { data, status: response.status };
-        throw error;
-    }
-
-    return { data };
-}
 
 async function testTeacherAnnouncementFiltering() {
     console.log('🧪 Testing Teacher Announcement Filtering Fix...\n');
@@ -32,12 +13,9 @@ async function testTeacherAnnouncementFiltering() {
     try {
         // Test 1: Login as Omkar (Multi-role teacher)
         console.log('1. Logging in as Omkar Sanjay Raut (Multi-role teacher)...');
-        const loginResponse = await makeRequest(`${BASE_URL}/auth/login`, {
-            method: 'POST',
-            body: JSON.stringify({
-                phone_number: '9158834913',
-                password: 'Temp@1234'
-            })
+        const loginResponse = await axios.post(`${BASE_URL}/auth/login`, {
+            phone_number: '9158834913',
+            password: 'Temp@1234'
         });
 
         const token = loginResponse.data.data.token;
@@ -45,8 +23,7 @@ async function testTeacherAnnouncementFiltering() {
 
         // Test 2: Get teacher assignments
         console.log('\n2. Getting teacher assignments...');
-        const assignmentsResponse = await makeRequest(`${BASE_URL}/academic/my-teacher-id`, {
-            method: 'GET',
+        const assignmentsResponse = await axios.get(`${BASE_URL}/academic/my-teacher-id`, {
             headers: { Authorization: `Bearer ${token}` }
         });
 
@@ -57,9 +34,12 @@ async function testTeacherAnnouncementFiltering() {
 
         // Test 3: Get teacher announcements
         console.log('\n3. Getting teacher announcements...');
-        const announcementsResponse = await makeRequest(`${BASE_URL}/announcements/teacher/announcements?page=1&limit=50`, {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${token}` }
+        const announcementsResponse = await axios.get(`${BASE_URL}/announcements/teacher/announcements`, {
+            headers: { Authorization: `Bearer ${token}` },
+            params: {
+                page: 1,
+                limit: 50
+            }
         });
 
         const announcements = announcementsResponse.data.data.announcements;
@@ -128,12 +108,9 @@ async function testUnassignedTeacher() {
     try {
         // Test with Ganesh (Unassigned teacher)
         console.log('1. Logging in as Ganesh Madhukar Dabhade (Unassigned teacher)...');
-        const loginResponse = await makeRequest(`${BASE_URL}/auth/login`, {
-            method: 'POST',
-            body: JSON.stringify({
-                phone_number: '9404511717',
-                password: 'Temp@1234'
-            })
+        const loginResponse = await axios.post(`${BASE_URL}/auth/login`, {
+            phone_number: '9404511717',
+            password: 'Temp@1234'
         });
 
         const token = loginResponse.data.data.token;
@@ -141,9 +118,12 @@ async function testUnassignedTeacher() {
 
         // Test 2: Get teacher announcements
         console.log('\n2. Getting teacher announcements...');
-        const announcementsResponse = await makeRequest(`${BASE_URL}/announcements/teacher/announcements?page=1&limit=50`, {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${token}` }
+        const announcementsResponse = await axios.get(`${BASE_URL}/announcements/teacher/announcements`, {
+            headers: { Authorization: `Bearer ${token}` },
+            params: {
+                page: 1,
+                limit: 50
+            }
         });
 
         const announcements = announcementsResponse.data.data.announcements;

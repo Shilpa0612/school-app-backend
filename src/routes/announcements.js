@@ -1498,26 +1498,21 @@ router.get('/teacher/announcements',
                 }
             } else {
                 // Default: teachers see teacher-wide and class/subject targeted announcements only
+                visibilityConditions = [
+                    'target_roles.cs.{teacher}'
+                ];
                 if (teacherClassDivisions.length > 0) {
-                    // Teachers with class assignments can see teacher-wide AND class-targeted announcements
-                    visibilityConditions = [
-                        'target_roles.cs.{teacher}',
-                        `target_classes.ov.{${teacherClassDivisions.join(',')}}`
-                    ];
-                    if (subject_filter === 'true' && teacherSubjects.length > 0) {
-                        visibilityConditions.push(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
-                    }
-                    query = query.or(visibilityConditions.join(','));
+                    // Only show announcements that are targeted to teacher's assigned classes OR have no specific class targeting
+                    visibilityConditions.push(`target_classes.cs.{${teacherClassDivisions.join(',')}}`);
+                    visibilityConditions.push(`target_classes.eq.{}`);
                 } else {
-                    // Teachers without class assignments can only see teacher-wide announcements (no class targeting)
-                    visibilityConditions = [
-                        'and(target_roles.cs.{teacher},target_classes.eq.{})'
-                    ];
-                    if (subject_filter === 'true' && teacherSubjects.length > 0) {
-                        visibilityConditions.push(`and(target_roles.cs.{teacher},target_subjects.ov.{${teacherSubjects.join(',')}},target_classes.eq.{})`);
-                    }
-                    query = query.or(visibilityConditions.join(','));
+                    // If teacher has no class assignments, only show teacher role announcements
+                    visibilityConditions = ['target_roles.cs.{teacher}'];
                 }
+                if (subject_filter === 'true' && teacherSubjects.length > 0) {
+                    visibilityConditions.push(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
+                }
+                query = query.or(visibilityConditions.join(','));
             }
 
             // Apply additional filters
