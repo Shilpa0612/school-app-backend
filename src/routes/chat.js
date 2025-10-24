@@ -3086,6 +3086,8 @@ router.post('/messages/:message_id/approve', authenticate, async (req, res) => {
 
         // Send notifications to parent and broadcast to participants
         try {
+            logger.info('🔔 Starting notification process for approved message...');
+
             // Get thread participants for notifications
             const { data: threadParticipants, error: participantsError } = await adminSupabase
                 .from('chat_participants')
@@ -3095,15 +3097,26 @@ router.post('/messages/:message_id/approve', authenticate, async (req, res) => {
                 `)
                 .eq('thread_id', approvedMessage.thread_id);
 
-            if (!participantsError && threadParticipants) {
+            if (participantsError) {
+                logger.error('❌ Error fetching thread participants:', participantsError);
+            } else if (threadParticipants) {
+                logger.info(`📊 Found ${threadParticipants.length} thread participants`);
+
                 // Send notifications to parents
-                sendChatMessageApprovalNotifications(approvedMessage, threadParticipants);
+                logger.info('📨 Calling sendChatMessageApprovalNotifications...');
+                await sendChatMessageApprovalNotifications(approvedMessage, threadParticipants);
 
                 // Broadcast approved message to all participants
-                broadcastApprovedMessage(approvedMessage, approvedMessage.thread_id);
+                logger.info('📡 Calling broadcastApprovedMessage...');
+                await broadcastApprovedMessage(approvedMessage, approvedMessage.thread_id);
+
+                logger.info('✅ Notification process completed');
+            } else {
+                logger.warn('⚠️ No thread participants found');
             }
         } catch (notificationError) {
-            logger.error('Error sending approval notifications:', notificationError);
+            logger.error('❌ Error sending approval notifications:', notificationError);
+            logger.error('Notification error details:', notificationError.stack);
             // Don't fail the approval if notifications fail
         }
 

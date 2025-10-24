@@ -1,4 +1,4 @@
-const axios = require('axios');
+import axios from 'axios';
 
 // Configuration
 const BASE_URL = 'https://ajws-school-ba8ae5e3f955.herokuapp.com/api';
@@ -293,15 +293,9 @@ async function main() {
 }
 
 // Run the test
-if (require.main === module) {
-    main();
-}
+main();
 
-module.exports = {
-    loginAllUsers,
-    getPendingMessages,
-    approveMessage,
-    rejectMessage,
-    getThreadMessages,
-    getParentNotifications
+export {
+    approveMessage, getParentNotifications, getPendingMessages, getThreadMessages, loginAllUsers, rejectMessage
 };
+
