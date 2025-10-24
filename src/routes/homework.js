@@ -232,6 +232,20 @@ router.get('/',
                     // If no assignments found, return empty result
                     query = query.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
                 }
+
+                // If teacher is trying to access specific class, validate they have access to it
+                if (req.query.class_division_id) {
+                    const hasAccessToClass = teacherAssignments && teacherAssignments.some(assignment =>
+                        assignment.class_division_id === req.query.class_division_id
+                    );
+
+                    if (!hasAccessToClass) {
+                        return res.status(403).json({
+                            status: 'error',
+                            message: 'Not authorized to access this class division'
+                        });
+                    }
+                }
             } else if (req.user.role === 'parent') {
                 // Parents see homework for their children's classes
 
