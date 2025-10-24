@@ -1497,16 +1497,16 @@ router.get('/teacher/announcements',
                     });
                 }
             } else {
-                // Default: teachers see teacher-wide and class/subject targeted announcements only
-                visibilityConditions = [
-                    'target_roles.cs.{teacher}'
-                ];
+                // Default: teachers see only announcements targeted to their assigned classes or school-wide announcements
+                visibilityConditions = [];
                 if (teacherClassDivisions.length > 0) {
                     // Only show announcements that are targeted to teacher's assigned classes
                     visibilityConditions.push(`target_classes.cs.{${teacherClassDivisions.join(',')}}`);
+                    // Also show school-wide announcements (no specific class targeting)
+                    visibilityConditions.push(`target_classes.eq.{}`);
                 } else {
-                    // If teacher has no class assignments, only show teacher role announcements
-                    visibilityConditions = ['target_roles.cs.{teacher}'];
+                    // If teacher has no class assignments, only show school-wide announcements
+                    visibilityConditions.push(`target_classes.eq.{}`);
                 }
                 if (subject_filter === 'true' && teacherSubjects.length > 0) {
                     visibilityConditions.push(`target_subjects.ov.{${teacherSubjects.join(',')}}`);
