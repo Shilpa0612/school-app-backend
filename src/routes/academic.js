@@ -1713,9 +1713,9 @@ router.put('/class-divisions/:class_division_id/assignments/:assignment_id/reass
                 });
             }
 
-            // Check if the new teacher already has an assignment for this subject in this class
-            // (only if we're changing the teacher)
+            // Handle teacher reassignment properly
             if (existingAssignment.teacher_id !== teacher_id) {
+                // Check if the new teacher already has an assignment for this subject in this class
                 const { data: conflictingAssignment, error: conflictError } = await adminSupabase
                     .from('class_teacher_assignments')
                     .select('id')
@@ -1727,17 +1727,87 @@ router.put('/class-divisions/:class_division_id/assignments/:assignment_id/reass
                     .maybeSingle();
 
                 if (conflictingAssignment) {
-                    // Delete the conflicting assignment to avoid constraint violation
-                    const { error: deleteError } = await adminSupabase
+                    // Mark the conflicting assignment as inactive instead of deleting
+                    const { error: deactivateError } = await adminSupabase
                         .from('class_teacher_assignments')
-                        .delete()
+                        .update({
+                            is_active: false,
+                            updated_at: new Date().toISOString()
+                        })
                         .eq('id', conflictingAssignment.id);
 
-                    if (deleteError) {
-                        logger.error('Error deleting conflicting assignment:', deleteError);
-                        throw deleteError;
+                    if (deactivateError) {
+                        logger.error('Error deactivating conflicting assignment:', deactivateError);
+                        throw deactivateError;
                     }
                 }
+
+                // CRITICAL FIX: Mark the old teacher's assignment as inactive
+                // This ensures the old teacher loses access to the class
+                const { error: deactivateOldAssignmentError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .update({
+                        is_active: false,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', assignment_id);
+
+                if (deactivateOldAssignmentError) {
+                    logger.error('Error deactivating old assignment:', deactivateOldAssignmentError);
+                    throw deactivateOldAssignmentError;
+                }
+
+                // Create a new assignment for the new teacher
+                const { data: newAssignment, error: createError } = await adminSupabase
+                    .from('class_teacher_assignments')
+                    .insert([{
+                        class_division_id,
+                        teacher_id,
+                        assignment_type: assignment_type || existingAssignment.assignment_type,
+                        subject: subject || existingAssignment.subject,
+                        is_primary: is_primary !== undefined ? is_primary : existingAssignment.is_primary,
+                        assigned_by: req.user.id,
+                        is_active: true
+                    }])
+                    .select(`
+                        *,
+                        teacher:teacher_id (
+                            id,
+                            full_name,
+                            phone_number,
+                            email
+                        )
+                    `)
+                    .single();
+
+                if (createError) {
+                    logger.error('Error creating new assignment:', createError);
+                    throw createError;
+                }
+
+                // If this is a primary class teacher assignment, also update the legacy teacher_id field
+                if (newAssignment.assignment_type === 'class_teacher' && newAssignment.is_primary) {
+                    const { error: updateClassDivisionError } = await adminSupabase
+                        .from('class_divisions')
+                        .update({ teacher_id: newAssignment.teacher_id })
+                        .eq('id', class_division_id);
+
+                    if (updateClassDivisionError) {
+                        logger.warn('Warning: Failed to update legacy teacher_id field:', updateClassDivisionError);
+                        // Don't fail the whole operation, just log the warning
+                    }
+                }
+
+                res.status(200).json({
+                    status: 'success',
+                    data: {
+                        assignment: newAssignment,
+                        action: 'reassigned',
+                        previous_teacher: existingAssignment.teacher.full_name,
+                        message: `Teacher reassigned from ${existingAssignment.teacher.full_name} to ${newTeacher.full_name}. Old assignment deactivated.`
+                    }
+                });
+                return;
             }
 
             // Update the assignment

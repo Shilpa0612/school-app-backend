@@ -234,7 +234,26 @@ router.get('/',
                 }
             } else if (req.user.role === 'parent') {
                 // Parents see homework for their children's classes
-                const { data: childrenClasses } = await adminSupabase
+
+                // If student_id is provided, validate that the student belongs to this parent
+                if (req.query.student_id) {
+                    const { data: studentCheck, error: studentError } = await adminSupabase
+                        .from('parent_student_mappings')
+                        .select('student_id')
+                        .eq('parent_id', req.user.id)
+                        .eq('student_id', req.query.student_id)
+                        .single();
+
+                    if (studentError || !studentCheck) {
+                        return res.status(403).json({
+                            status: 'error',
+                            message: 'Access denied to this student'
+                        });
+                    }
+                }
+
+                // Get children's classes with proper filtering
+                let childrenQuery = adminSupabase
                     .from('parent_student_mappings')
                     .select(`
                         students:students_master (
@@ -245,6 +264,13 @@ router.get('/',
                         )
                     `)
                     .eq('parent_id', req.user.id);
+
+                // If student_id is provided, filter to only that student
+                if (req.query.student_id) {
+                    childrenQuery = childrenQuery.eq('student_id', req.query.student_id);
+                }
+
+                const { data: childrenClasses } = await childrenQuery;
 
                 if (childrenClasses && childrenClasses.length > 0) {
                     const classIds = childrenClasses
@@ -338,8 +364,10 @@ router.get('/',
                     countQuery = countQuery.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
                 }
             } else if (req.user.role === 'parent') {
-                // For parents, we need to apply the same class filtering logic
-                const { data: childrenClasses } = await adminSupabase
+                // For parents, we need to apply the same class filtering logic as the main query
+
+                // Get children's classes with proper filtering (same logic as main query)
+                let childrenQuery = adminSupabase
                     .from('parent_student_mappings')
                     .select(`
                         students:students_master (
@@ -350,6 +378,13 @@ router.get('/',
                         )
                     `)
                     .eq('parent_id', req.user.id);
+
+                // If student_id is provided, filter to only that student
+                if (req.query.student_id) {
+                    childrenQuery = childrenQuery.eq('student_id', req.query.student_id);
+                }
+
+                const { data: childrenClasses } = await childrenQuery;
 
                 if (childrenClasses && childrenClasses.length > 0) {
                     const classIds = childrenClasses
