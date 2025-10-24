@@ -1,6 +1,8 @@
 import express from 'express';
 import { adminSupabase, supabase } from '../config/supabase.js';
 import { authenticate } from '../middleware/auth.js';
+import notificationService from '../services/notificationService.js';
+import websocketService from '../services/websocketService.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -49,6 +51,211 @@ async function needsApproval(senderId, threadId) {
     } catch (error) {
         logger.error('Error in needsApproval check:', error);
         return false;
+    }
+}
+
+// ========== NOTIFICATION HELPER FUNCTIONS ==========
+
+/**
+ * Send notifications to parent when a message is approved
+ */
+async function sendChatMessageApprovalNotifications(approvedMessage, threadParticipants) {
+    try {
+        console.log('💬 sendChatMessageApprovalNotifications called for message:', approvedMessage.id);
+
+        // Get parent participants from the thread
+        const parentParticipants = threadParticipants.filter(p => p.user?.role === 'parent');
+
+        if (parentParticipants.length === 0) {
+            console.log('⏭️ No parent participants found, skipping notifications');
+            return;
+        }
+
+        console.log(`📊 Found ${parentParticipants.length} parent participants for message approval notification`);
+
+        // Send notifications to each parent
+        const notificationPromises = parentParticipants.map(async (participant) => {
+            const parentId = participant.user_id;
+            const parentName = participant.user?.full_name || 'Parent';
+
+            console.log(`📨 Sending message approval notification to parent ${parentId}`);
+
+            // Get student information for this parent
+            const { data: parentStudents, error: parentError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select(`
+                    student_id,
+                    student:students!parent_student_mappings_student_id_fkey(
+                        full_name,
+                        admission_number
+                    )
+                `)
+                .eq('parent_id', parentId)
+                .limit(1); // Get first student for notification
+
+            if (parentError || !parentStudents || parentStudents.length === 0) {
+                console.error(`❌ Error fetching student for parent ${parentId}:`, parentError);
+                return { success: false, error: parentError };
+            }
+
+            const student = parentStudents[0].student;
+            const studentId = parentStudents[0].student_id;
+
+            const result = await notificationService.sendParentNotification({
+                parentId: parentId,
+                studentId: studentId,
+                type: notificationService.notificationTypes.MESSAGE,
+                title: `New Message from ${approvedMessage.sender.full_name}`,
+                message: approvedMessage.content,
+                data: {
+                    message_id: approvedMessage.id,
+                    thread_id: approvedMessage.thread_id,
+                    sender_name: approvedMessage.sender.full_name,
+                    sender_role: approvedMessage.sender.role,
+                    message_type: approvedMessage.message_type,
+                    approved_by: approvedMessage.approver?.full_name || 'Principal',
+                    approved_at: approvedMessage.approved_at,
+                    student_name: student.full_name,
+                    student_admission_number: student.admission_number
+                },
+                priority: notificationService.priorityLevels.HIGH,
+                relatedId: approvedMessage.id
+            });
+
+            console.log(`✅ Message approval notification result for parent ${parentId}:`, result.success ? 'SUCCESS' : 'FAILED');
+            return result;
+        });
+
+        // Send all notifications in parallel (non-blocking)
+        setTimeout(() => {
+            Promise.all(notificationPromises).then(results => {
+                const successCount = results.filter(r => r.success).length;
+                console.log(`✅ Sent message approval notifications to ${successCount}/${parentParticipants.length} parents`);
+            }).catch(error => {
+                console.error('❌ Error in message approval notification sending:', error);
+            });
+        }, 100); // Small delay to ensure message is fully processed
+
+    } catch (error) {
+        console.error('Error in sendChatMessageApprovalNotifications:', error);
+    }
+}
+
+/**
+ * Send notification to teacher when their message is rejected
+ */
+async function sendChatMessageRejectionNotification(rejectedMessage) {
+    try {
+        console.log('💬 sendChatMessageRejectionNotification called for message:', rejectedMessage.id);
+
+        const teacherId = rejectedMessage.sender_id;
+        const teacherName = rejectedMessage.sender?.full_name || 'Teacher';
+
+        console.log(`📨 Sending message rejection notification to teacher ${teacherId}`);
+
+        // Send notification to teacher via WebSocket if connected
+        const isConnected = websocketService.isUserConnected(teacherId);
+
+        if (isConnected) {
+            websocketService.sendMessageToUser(teacherId, {
+                type: 'message_rejected',
+                data: {
+                    message: rejectedMessage,
+                    rejection_reason: rejectedMessage.rejection_reason,
+                    rejected_by: rejectedMessage.approver?.full_name || 'Principal',
+                    rejected_at: rejectedMessage.approved_at
+                }
+            });
+            console.log(`📤 Sent rejection notification to teacher ${teacherId} via WebSocket`);
+        } else {
+            console.log(`⏭️ Teacher ${teacherId} not connected, skipping WebSocket notification`);
+        }
+
+        // Also create a notification record for the teacher
+        try {
+            const { data: notification, error } = await adminSupabase
+                .from('parent_notifications')
+                .insert({
+                    parent_id: teacherId, // Using teacher as recipient
+                    student_id: null, // No specific student for teacher notifications
+                    type: 'system',
+                    title: 'Message Rejected',
+                    message: `Your message was rejected: ${rejectedMessage.rejection_reason}`,
+                    data: JSON.stringify({
+                        message_id: rejectedMessage.id,
+                        thread_id: rejectedMessage.thread_id,
+                        rejection_reason: rejectedMessage.rejection_reason,
+                        rejected_by: rejectedMessage.approver?.full_name || 'Principal',
+                        rejected_at: rejectedMessage.approved_at
+                    }),
+                    priority: 'high',
+                    related_id: rejectedMessage.id,
+                    is_read: false,
+                    created_at: new Date().toISOString()
+                })
+                .select()
+                .single();
+
+            if (error) {
+                console.error('❌ Error creating rejection notification record:', error);
+            } else {
+                console.log(`✅ Created rejection notification record for teacher ${teacherId}`);
+            }
+        } catch (notificationError) {
+            console.error('❌ Error creating rejection notification:', notificationError);
+        }
+
+    } catch (error) {
+        console.error('Error in sendChatMessageRejectionNotification:', error);
+    }
+}
+
+/**
+ * Broadcast approved message to thread participants via WebSocket
+ */
+async function broadcastApprovedMessage(approvedMessage, threadId) {
+    try {
+        console.log('📡 Broadcasting approved message to thread participants:', threadId);
+
+        // Get all participants in the thread
+        const { data: participants, error: participantsError } = await adminSupabase
+            .from('chat_participants')
+            .select(`
+                user_id,
+                user:users!chat_participants_user_id_fkey(id, full_name, role)
+            `)
+            .eq('thread_id', threadId);
+
+        if (participantsError || !participants) {
+            console.error('❌ Error fetching thread participants for broadcast:', participantsError);
+            return;
+        }
+
+        console.log(`📊 Found ${participants.length} participants to broadcast to`);
+
+        // Broadcast to all participants
+        participants.forEach(participant => {
+            const userId = participant.user_id;
+            const isConnected = websocketService.isUserConnected(userId);
+
+            if (isConnected) {
+                websocketService.sendMessageToUser(userId, {
+                    type: 'message_approved',
+                    data: {
+                        message: approvedMessage,
+                        thread_id: threadId,
+                        approved_at: approvedMessage.approved_at,
+                        approver: approvedMessage.approver
+                    }
+                });
+                console.log(`📤 Broadcasted approved message to user ${userId}`);
+            } else {
+                console.log(`⏭️ User ${userId} not connected, skipping broadcast`);
+            }
+        });
+
+    } catch (error) {
+        console.error('Error broadcasting approved message:', error);
     }
 }
 
@@ -2877,6 +3084,29 @@ router.post('/messages/:message_id/approve', authenticate, async (req, res) => {
 
         logger.info(`Message ${message_id} approved by ${req.user.full_name} (${req.user.role})`);
 
+        // Send notifications to parent and broadcast to participants
+        try {
+            // Get thread participants for notifications
+            const { data: threadParticipants, error: participantsError } = await adminSupabase
+                .from('chat_participants')
+                .select(`
+                    user_id,
+                    user:users!chat_participants_user_id_fkey(id, full_name, role)
+                `)
+                .eq('thread_id', approvedMessage.thread_id);
+
+            if (!participantsError && threadParticipants) {
+                // Send notifications to parents
+                sendChatMessageApprovalNotifications(approvedMessage, threadParticipants);
+
+                // Broadcast approved message to all participants
+                broadcastApprovedMessage(approvedMessage, approvedMessage.thread_id);
+            }
+        } catch (notificationError) {
+            logger.error('Error sending approval notifications:', notificationError);
+            // Don't fail the approval if notifications fail
+        }
+
         res.json({
             status: 'success',
             message: 'Message approved successfully',
@@ -2968,6 +3198,14 @@ router.post('/messages/:message_id/reject', authenticate, async (req, res) => {
         }
 
         logger.info(`Message ${message_id} rejected by ${req.user.full_name} (${req.user.role}). Reason: ${rejection_reason}`);
+
+        // Send notification to teacher about rejection
+        try {
+            sendChatMessageRejectionNotification(rejectedMessage);
+        } catch (notificationError) {
+            logger.error('Error sending rejection notification:', notificationError);
+            // Don't fail the rejection if notifications fail
+        }
 
         res.json({
             status: 'success',
