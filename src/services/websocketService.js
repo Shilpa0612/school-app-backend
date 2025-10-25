@@ -773,48 +773,61 @@ class WebSocketService {
                 .single();
 
             if (participantError || !participant) {
-                // Check if thread exists
-                const { data: thread, error: threadError } = await adminSupabase
-                    .from('chat_threads')
-                    .select('id, created_by')
-                    .eq('id', thread_id)
+                // Get user role to check if they're admin/principal
+                const { data: user, error: userError } = await adminSupabase
+                    .from('users')
+                    .select('role')
+                    .eq('id', userId)
                     .single();
 
-                if (threadError || !thread) {
-                    this.sendMessageToUser(userId, {
-                        type: 'error',
-                        message: 'Thread not found'
-                    });
-                    return;
-                }
+                // Admin/Principal can access thread for monitoring without being added as participant
+                if (user && ['admin', 'principal'].includes(user.role)) {
+                    logger.info(`Admin/Principal ${userId} accessing thread ${thread_id} for monitoring`);
+                    // Allow them to continue without adding as participant
+                } else {
+                    // For regular users, check if thread exists and add them
+                    const { data: thread, error: threadError } = await adminSupabase
+                        .from('chat_threads')
+                        .select('id, created_by')
+                        .eq('id', thread_id)
+                        .single();
 
-                // Try to add user as participant (for direct chats or if user is thread creator)
-                try {
-                    const { error: addParticipantError } = await adminSupabase
-                        .from('chat_participants')
-                        .insert({
-                            thread_id: thread_id,
-                            user_id: userId,
-                            role: userId === thread.created_by ? 'admin' : 'member'
+                    if (threadError || !thread) {
+                        this.sendMessageToUser(userId, {
+                            type: 'error',
+                            message: 'Thread not found'
                         });
+                        return;
+                    }
 
-                    if (addParticipantError) {
-                        logger.error('Error adding user as participant:', addParticipantError);
+                    // Try to add user as participant (for direct chats or if user is thread creator)
+                    try {
+                        const { error: addParticipantError } = await adminSupabase
+                            .from('chat_participants')
+                            .insert({
+                                thread_id: thread_id,
+                                user_id: userId,
+                                role: userId === thread.created_by ? 'admin' : 'member'
+                            });
+
+                        if (addParticipantError) {
+                            logger.error('Error adding user as participant:', addParticipantError);
+                            this.sendMessageToUser(userId, {
+                                type: 'error',
+                                message: 'Access denied to this thread'
+                            });
+                            return;
+                        }
+
+                        logger.info(`Added user ${userId} as participant to thread ${thread_id}`);
+                    } catch (error) {
+                        logger.error('Error adding participant:', error);
                         this.sendMessageToUser(userId, {
                             type: 'error',
                             message: 'Access denied to this thread'
                         });
                         return;
                     }
-
-                    logger.info(`Added user ${userId} as participant to thread ${thread_id}`);
-                } catch (error) {
-                    logger.error('Error adding participant:', error);
-                    this.sendMessageToUser(userId, {
-                        type: 'error',
-                        message: 'Access denied to this thread'
-                    });
-                    return;
                 }
             }
 

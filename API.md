@@ -61,7 +61,7 @@ https://school-app-backend-d143b785b631.herokuapp.com/
 
 ### **Chat System**
 
-- `PUT /api/chat/messages/:id` - Update chat message (Sender only, within 5 minutes)
+- `PUT /api/chat/messages/:id` - Update chat message (Sender only, can edit pending/rejected messages)
 
 ### **Lists Management**
 
@@ -4342,7 +4342,9 @@ PUT /api/chat/messages/:id
 **Notes:**
 
 - Available for message sender only
-- Can only edit messages within 5 minutes of creation
+- Can only edit `pending` or `rejected` messages (cannot edit `approved` messages)
+- **Important**: When editing a rejected message, it will automatically reset to `pending` status and require re-approval before being sent to the recipient
+- **No time limit**: Rejected messages can be edited anytime, as they need correction and re-approval
 
 **Response:**
 
@@ -4368,7 +4370,7 @@ DELETE /api/chat/messages/:id
 **Notes:**
 
 - Available for message sender only
-- Can only delete messages within 5 minutes of creation
+- Can delete any message you sent (regardless of approval status or time)
 
 **Response:**
 

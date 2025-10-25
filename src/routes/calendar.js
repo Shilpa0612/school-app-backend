@@ -996,6 +996,14 @@ router.get('/events/teacher',
             const assignedClasses = teacherAssignments || [];
             const classDivisionIds = assignedClasses?.map(assignment => assignment.class_division_id) || [];
 
+            // Debug logging for teacher assignments
+            console.log('🔍 Teacher Events Debug:', {
+                teacher_id: req.user.id,
+                teacher_assignments_count: assignedClasses.length,
+                class_division_ids: classDivisionIds,
+                assignments: assignedClasses
+            });
+
             const debugInfo = debug === 'true' ? {
                 teacher_id: req.user.id,
                 use_ist: use_ist === 'true',
@@ -1004,7 +1012,9 @@ router.get('/events/teacher',
                 event_category: event_category || null,
                 event_type: event_type || null,
                 class_division_id: class_division_id || null,
-                assigned_class_division_ids: classDivisionIds
+                assigned_class_division_ids: classDivisionIds,
+                teacher_assignments_raw: teacherAssignments,
+                assignments_error: assignmentsError
             } : null;
 
             // If teacher has no assigned classes, only show school-wide events
@@ -1230,6 +1240,13 @@ router.get('/events/teacher',
 
             let { data, error } = await query;
             if (debugInfo) debugInfo.rpc_or_query_count_initial = Array.isArray(data) ? data.length : (data ? 1 : 0);
+
+            // Debug logging for events query
+            console.log('📅 Events Query Debug:', {
+                query_conditions: conditions,
+                events_found: Array.isArray(data) ? data.length : 0,
+                events_data: data?.slice(0, 3) // Show first 3 events for debugging
+            });
 
             // Ensure school-wide events are always included for IST path
             if (use_ist === 'true') {
