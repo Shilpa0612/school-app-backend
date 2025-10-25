@@ -1185,6 +1185,13 @@ router.get('/events/teacher',
                 }
 
                 query = query.order('event_date', { ascending: true });
+
+                // Debug logging for query conditions
+                console.log('📅 Query Conditions (IST):', {
+                    conditions: conditions,
+                    class_division_ids: classDivisionIds,
+                    use_ist: use_ist === 'true'
+                });
             } else {
                 // Use regular query with teacher-specific filtering
                 query = adminSupabase
@@ -1236,6 +1243,13 @@ router.get('/events/teacher',
                 }
 
                 query = query.order('event_date', { ascending: true });
+
+                // Debug logging for query conditions
+                console.log('📅 Query Conditions (Regular):', {
+                    conditions: conditions,
+                    class_division_ids: classDivisionIds,
+                    use_ist: use_ist === 'true'
+                });
             }
 
             let { data, error } = await query;
@@ -1243,7 +1257,6 @@ router.get('/events/teacher',
 
             // Debug logging for events query
             console.log('📅 Events Query Debug:', {
-                query_conditions: conditions,
                 events_found: Array.isArray(data) ? data.length : 0,
                 events_data: data?.slice(0, 3) // Show first 3 events for debugging
             });
