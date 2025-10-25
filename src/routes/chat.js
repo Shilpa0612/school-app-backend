@@ -85,7 +85,7 @@ async function sendChatMessageApprovalNotifications(approvedMessage, threadParti
                 .from('parent_student_mappings')
                 .select(`
                     student_id,
-                    student:students!parent_student_mappings_student_id_fkey(
+                    student:students_master!parent_student_mappings_student_id_fkey(
                         full_name,
                         admission_number
                     )
@@ -173,33 +173,46 @@ async function sendChatMessageRejectionNotification(rejectedMessage) {
 
         // Also create a notification record for the teacher
         try {
-            const { data: notification, error } = await adminSupabase
-                .from('parent_notifications')
-                .insert({
-                    parent_id: teacherId, // Using teacher as recipient
-                    student_id: null, // No specific student for teacher notifications
-                    type: 'system',
-                    title: 'Message Rejected',
-                    message: `Your message was rejected: ${rejectedMessage.rejection_reason}`,
-                    data: JSON.stringify({
-                        message_id: rejectedMessage.id,
-                        thread_id: rejectedMessage.thread_id,
-                        rejection_reason: rejectedMessage.rejection_reason,
-                        rejected_by: rejectedMessage.approver?.full_name || 'Principal',
-                        rejected_at: rejectedMessage.approved_at
-                    }),
-                    priority: 'high',
-                    related_id: rejectedMessage.id,
-                    is_read: false,
-                    created_at: new Date().toISOString()
-                })
-                .select()
-                .single();
+            // Get a student ID for the teacher (for notification record)
+            const { data: teacherStudents, error: studentError } = await adminSupabase
+                .from('parent_student_mappings')
+                .select('student_id')
+                .eq('parent_id', teacherId)
+                .limit(1);
 
-            if (error) {
-                console.error('❌ Error creating rejection notification record:', error);
+            const studentId = teacherStudents && teacherStudents.length > 0 ? teacherStudents[0].student_id : null;
+
+            if (studentId) {
+                const { data: notification, error } = await adminSupabase
+                    .from('parent_notifications')
+                    .insert({
+                        parent_id: teacherId, // Using teacher as recipient
+                        student_id: studentId, // Use first student for teacher notifications
+                        type: 'system',
+                        title: 'Message Rejected',
+                        message: `Your message was rejected: ${rejectedMessage.rejection_reason}`,
+                        data: JSON.stringify({
+                            message_id: rejectedMessage.id,
+                            thread_id: rejectedMessage.thread_id,
+                            rejection_reason: rejectedMessage.rejection_reason,
+                            rejected_by: rejectedMessage.approver?.full_name || 'Principal',
+                            rejected_at: rejectedMessage.approved_at
+                        }),
+                        priority: 'high',
+                        related_id: rejectedMessage.id,
+                        is_read: false,
+                        created_at: new Date().toISOString()
+                    })
+                    .select()
+                    .single();
+
+                if (error) {
+                    console.error('❌ Error creating rejection notification record:', error);
+                } else {
+                    console.log(`✅ Created rejection notification record for teacher ${teacherId}`);
+                }
             } else {
-                console.log(`✅ Created rejection notification record for teacher ${teacherId}`);
+                console.log(`⚠️ No student mapping found for teacher ${teacherId}, skipping notification record`);
             }
         } catch (notificationError) {
             console.error('❌ Error creating rejection notification:', notificationError);
@@ -1377,19 +1390,30 @@ router.get('/messages', authenticate, async (req, res) => {
             });
         }
 
-        // Verify user is participant in thread
-        const { data: participant, error: participantError } = await adminSupabase
-            .from('chat_participants')
-            .select('*')
-            .eq('thread_id', thread_id)
-            .eq('user_id', req.user.id)
-            .single();
+        // Debug: Log user role and ID
+        console.log(`🔍 User accessing thread: ${req.user.full_name} (${req.user.role}) - ID: ${req.user.id}`);
 
-        if (participantError || !participant) {
-            return res.status(403).json({
-                status: 'error',
-                message: 'Access denied to this thread'
-            });
+        // Verify user is participant in thread (or admin/principal)
+        if (!['admin', 'principal'].includes(req.user.role)) {
+            console.log(`🔍 User ${req.user.full_name} is not admin/principal, checking participant status`);
+            const { data: participant, error: participantError } = await adminSupabase
+                .from('chat_participants')
+                .select('*')
+                .eq('thread_id', thread_id)
+                .eq('user_id', req.user.id)
+                .single();
+
+            if (participantError || !participant) {
+                console.log(`❌ Access denied for user ${req.user.full_name} - not a participant`);
+                return res.status(403).json({
+                    status: 'error',
+                    message: 'Access denied to this thread'
+                });
+            }
+            console.log(`✅ User ${req.user.full_name} is a participant in thread`);
+        } else {
+            // For admin/principal, log the access for monitoring
+            console.log(`✅ Admin/Principal ${req.user.full_name} accessing thread ${thread_id} for monitoring`);
         }
 
         // Get participants list with role and id
@@ -1649,7 +1673,7 @@ router.post('/messages', authenticate, async (req, res) => {
     }
 });
 
-// Update message (only sender can update)
+// Update message (only sender can update, and only if rejected)
 router.put('/messages/:id', authenticate, async (req, res) => {
     try {
         const { id } = req.params;
@@ -1691,10 +1715,30 @@ router.put('/messages/:id', authenticate, async (req, res) => {
             });
         }
 
+        // Check if message can be updated (only rejected messages can be edited)
+        if (message.approval_status === 'approved') {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Cannot edit approved messages'
+            });
+        }
+
+        // Prepare update data
+        const updateData = { content };
+
+        // If message was rejected, reset approval status to pending for re-approval
+        if (message.approval_status === 'rejected') {
+            updateData.approval_status = 'pending';
+            updateData.approved_by = null;
+            updateData.approved_at = null;
+            updateData.rejection_reason = null;
+            console.log(`🔄 Message ${id} edited and reset to pending for re-approval`);
+        }
+
         // Update message
         const { data: updatedMessage, error: updateError } = await adminSupabase
             .from('chat_messages')
-            .update({ content })
+            .update(updateData)
             .eq('id', id)
             .select(`
                 *,
