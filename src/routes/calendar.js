@@ -1226,8 +1226,8 @@ router.get('/events/teacher',
                     index === self.findIndex(e => e.id === event.id)
                 );
 
-                data = uniqueEvents.sort((a, b) => new Date(a.event_date) - new Date(b.event_date));
-                error = null;
+                let data = uniqueEvents.sort((a, b) => new Date(a.event_date) - new Date(b.event_date));
+                let error = null;
 
                 // Apply filters to the combined data
                 if (start_date) {
@@ -1353,8 +1353,8 @@ router.get('/events/teacher',
                     index === self.findIndex(e => e.id === event.id)
                 );
 
-                data = uniqueEvents.sort((a, b) => new Date(a.event_date) - new Date(b.event_date));
-                error = null;
+                let data = uniqueEvents.sort((a, b) => new Date(a.event_date) - new Date(b.event_date));
+                let error = null;
 
                 // Apply filters to the combined data
                 if (start_date) {
