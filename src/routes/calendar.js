@@ -1158,11 +1158,11 @@ router.get('/events/teacher',
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
                     // Multi-class events - check if any of the teacher's classes are in the class_division_ids array
                     for (const classId of classDivisionIds) {
-                        conditions.push(`class_division_ids.@>.{${classId}}`);
+                        conditions.push(`class_division_ids.cs.[${classId}]`);
                     }
                     // Also check class_divisions array
                     for (const classId of classDivisionIds) {
-                        conditions.push(`class_divisions.@>.{${classId}}`);
+                        conditions.push(`class_divisions.cs.[${classId}]`);
                     }
                 }
                 query = query.or(conditions.join(','));
@@ -1223,11 +1223,11 @@ router.get('/events/teacher',
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
                     // Multi-class events - check if any of the teacher's classes are in the class_division_ids array
                     for (const classId of classDivisionIds) {
-                        conditions.push(`class_division_ids.@>.{${classId}}`);
+                        conditions.push(`class_division_ids.cs.[${classId}]`);
                     }
                     // Also check class_divisions array
                     for (const classId of classDivisionIds) {
-                        conditions.push(`class_divisions.@>.{${classId}}`);
+                        conditions.push(`class_divisions.cs.[${classId}]`);
                     }
                 }
                 query = query.or(conditions.join(','));
