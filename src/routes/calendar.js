@@ -1001,7 +1001,9 @@ router.get('/events/teacher',
                 teacher_id: req.user.id,
                 teacher_assignments_count: assignedClasses.length,
                 class_division_ids: classDivisionIds,
-                assignments: assignedClasses
+                assignments: assignedClasses,
+                class_division_ids_length: classDivisionIds.length,
+                class_division_ids_content: classDivisionIds
             });
 
             const debugInfo = debug === 'true' ? {
@@ -1190,7 +1192,9 @@ router.get('/events/teacher',
                 console.log('📅 Query Conditions (IST):', {
                     conditions: conditions,
                     class_division_ids: classDivisionIds,
-                    use_ist: use_ist === 'true'
+                    class_division_ids_length: classDivisionIds.length,
+                    use_ist: use_ist === 'true',
+                    final_or_condition: conditions.join(',')
                 });
             } else {
                 // Use regular query with teacher-specific filtering
@@ -1248,7 +1252,9 @@ router.get('/events/teacher',
                 console.log('📅 Query Conditions (Regular):', {
                     conditions: conditions,
                     class_division_ids: classDivisionIds,
-                    use_ist: use_ist === 'true'
+                    class_division_ids_length: classDivisionIds.length,
+                    use_ist: use_ist === 'true',
+                    final_or_condition: conditions.join(',')
                 });
             }
 
@@ -1258,7 +1264,10 @@ router.get('/events/teacher',
             // Debug logging for events query
             console.log('📅 Events Query Debug:', {
                 events_found: Array.isArray(data) ? data.length : 0,
-                events_data: data?.slice(0, 3) // Show first 3 events for debugging
+                events_data: data?.slice(0, 3), // Show first 3 events for debugging
+                all_event_types: data?.map(e => e.event_type) || [],
+                all_class_division_ids: data?.map(e => e.class_division_id) || [],
+                class_specific_events: data?.filter(e => e.event_type === 'class_specific') || []
             });
 
             // Ensure school-wide events are always included for IST path
