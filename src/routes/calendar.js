@@ -1151,34 +1151,96 @@ router.get('/events/teacher',
                         )
                     `);
 
-                // Build the OR condition for teacher's assigned classes + school-wide events
-                const conditions = ['event_type.eq.school_wide'];
+                // Try a different approach - use individual queries instead of complex OR conditions
+                let allEvents = [];
+
+                // Get school-wide events
+                const schoolWideQuery = adminSupabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by (id, full_name, role),
+                        class:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `)
+                    .eq('event_type', 'school_wide');
+
+                const { data: schoolWideEvents, error: schoolWideError } = await schoolWideQuery;
+                if (!schoolWideError && schoolWideEvents) {
+                    allEvents = [...allEvents, ...schoolWideEvents];
+                }
+
+                // Get single class events
                 if (classDivisionIds.length > 0) {
-                    // Single class events
-                    conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
-                    // Multi-class events - check if any of the teacher's classes are in the class_division_ids array
-                    for (const classId of classDivisionIds) {
-                        conditions.push(`class_division_ids.cs.[${classId}]`);
+                    const singleClassQuery = adminSupabase
+                        .from('calendar_events')
+                        .select(`
+                            *,
+                            creator:created_by (id, full_name, role),
+                            class:class_division_id (
+                                id,
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name)
+                            )
+                        `)
+                        .in('class_division_id', classDivisionIds);
+
+                    const { data: singleClassEvents, error: singleClassError } = await singleClassQuery;
+                    if (!singleClassError && singleClassEvents) {
+                        allEvents = [...allEvents, ...singleClassEvents];
                     }
-                    // Also check class_divisions array
+
+                    // Get multi-class events by checking each class individually
                     for (const classId of classDivisionIds) {
-                        conditions.push(`class_divisions.cs.[${classId}]`);
+                        const multiClassQuery = adminSupabase
+                            .from('calendar_events')
+                            .select(`
+                                *,
+                                creator:created_by (id, full_name, role),
+                                class:class_division_id (
+                                    id,
+                                    division,
+                                    academic_year:academic_year_id (year_name),
+                                    class_level:class_level_id (name)
+                                )
+                            `)
+                            .contains('class_division_ids', [classId]);
+
+                        const { data: multiClassEvents, error: multiClassError } = await multiClassQuery;
+                        if (!multiClassError && multiClassEvents) {
+                            // Avoid duplicates
+                            const existingIds = new Set(allEvents.map(e => e.id));
+                            const newEvents = multiClassEvents.filter(e => !existingIds.has(e.id));
+                            allEvents = [...allEvents, ...newEvents];
+                        }
                     }
                 }
-                query = query.or(conditions.join(','));
 
-                // Apply filters
+                // Remove duplicates and sort
+                const uniqueEvents = allEvents.filter((event, index, self) =>
+                    index === self.findIndex(e => e.id === event.id)
+                );
+
+                data = uniqueEvents.sort((a, b) => new Date(a.event_date) - new Date(b.event_date));
+                error = null;
+
+                // Apply filters to the combined data
                 if (start_date) {
-                    query = query.gte('event_date', start_date);
+                    data = data.filter(event => new Date(event.event_date) >= new Date(start_date));
                 }
                 if (end_date) {
-                    query = query.lte('event_date', end_date);
+                    data = data.filter(event => new Date(event.event_date) <= new Date(end_date));
                 }
                 if (event_category) {
-                    query = query.eq('event_category', event_category);
+                    data = data.filter(event => event.event_category === event_category);
                 }
                 if (event_type) {
-                    query = query.eq('event_type', event_type);
+                    data = data.filter(event => event.event_type === event_type);
                 }
                 if (class_division_id) {
                     // Verify teacher is assigned to this specific class
@@ -1188,18 +1250,18 @@ router.get('/events/teacher',
                             message: 'You are not assigned to this class'
                         });
                     }
-                    query = query.eq('class_division_id', class_division_id);
+                    data = data.filter(event =>
+                        event.class_division_id === class_division_id ||
+                        (event.class_division_ids && event.class_division_ids.includes(class_division_id))
+                    );
                 }
 
-                query = query.order('event_date', { ascending: true });
-
-                // Debug logging for query conditions
-                console.log('📅 Query Conditions (IST):', {
-                    conditions: conditions,
+                // Debug logging for new approach
+                console.log('📅 New Query Approach (IST):', {
                     class_division_ids: classDivisionIds,
                     class_division_ids_length: classDivisionIds.length,
                     use_ist: use_ist === 'true',
-                    final_or_condition: conditions.join(',')
+                    approach: 'individual_queries'
                 });
             } else {
                 // Use regular query with teacher-specific filtering
@@ -1216,34 +1278,96 @@ router.get('/events/teacher',
                         )
                     `);
 
-                // Build the OR condition for teacher's assigned classes + school-wide events
-                const conditions = ['event_type.eq.school_wide'];
+                // Try a different approach - use individual queries instead of complex OR conditions
+                let allEvents = [];
+
+                // Get school-wide events
+                const schoolWideQuery = adminSupabase
+                    .from('calendar_events')
+                    .select(`
+                        *,
+                        creator:created_by (id, full_name, role),
+                        class:class_division_id (
+                            id,
+                            division,
+                            academic_year:academic_year_id (year_name),
+                            class_level:class_level_id (name)
+                        )
+                    `)
+                    .eq('event_type', 'school_wide');
+
+                const { data: schoolWideEvents, error: schoolWideError } = await schoolWideQuery;
+                if (!schoolWideError && schoolWideEvents) {
+                    allEvents = [...allEvents, ...schoolWideEvents];
+                }
+
+                // Get single class events
                 if (classDivisionIds.length > 0) {
-                    // Single class events
-                    conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
-                    // Multi-class events - check if any of the teacher's classes are in the class_division_ids array
-                    for (const classId of classDivisionIds) {
-                        conditions.push(`class_division_ids.cs.[${classId}]`);
+                    const singleClassQuery = adminSupabase
+                        .from('calendar_events')
+                        .select(`
+                            *,
+                            creator:created_by (id, full_name, role),
+                            class:class_division_id (
+                                id,
+                                division,
+                                academic_year:academic_year_id (year_name),
+                                class_level:class_level_id (name)
+                            )
+                        `)
+                        .in('class_division_id', classDivisionIds);
+
+                    const { data: singleClassEvents, error: singleClassError } = await singleClassQuery;
+                    if (!singleClassError && singleClassEvents) {
+                        allEvents = [...allEvents, ...singleClassEvents];
                     }
-                    // Also check class_divisions array
+
+                    // Get multi-class events by checking each class individually
                     for (const classId of classDivisionIds) {
-                        conditions.push(`class_divisions.cs.[${classId}]`);
+                        const multiClassQuery = adminSupabase
+                            .from('calendar_events')
+                            .select(`
+                                *,
+                                creator:created_by (id, full_name, role),
+                                class:class_division_id (
+                                    id,
+                                    division,
+                                    academic_year:academic_year_id (year_name),
+                                    class_level:class_level_id (name)
+                                )
+                            `)
+                            .contains('class_division_ids', [classId]);
+
+                        const { data: multiClassEvents, error: multiClassError } = await multiClassQuery;
+                        if (!multiClassError && multiClassEvents) {
+                            // Avoid duplicates
+                            const existingIds = new Set(allEvents.map(e => e.id));
+                            const newEvents = multiClassEvents.filter(e => !existingIds.has(e.id));
+                            allEvents = [...allEvents, ...newEvents];
+                        }
                     }
                 }
-                query = query.or(conditions.join(','));
 
-                // Apply filters
+                // Remove duplicates and sort
+                const uniqueEvents = allEvents.filter((event, index, self) =>
+                    index === self.findIndex(e => e.id === event.id)
+                );
+
+                data = uniqueEvents.sort((a, b) => new Date(a.event_date) - new Date(b.event_date));
+                error = null;
+
+                // Apply filters to the combined data
                 if (start_date) {
-                    query = query.gte('event_date', start_date);
+                    data = data.filter(event => new Date(event.event_date) >= new Date(start_date));
                 }
                 if (end_date) {
-                    query = query.lte('event_date', end_date);
+                    data = data.filter(event => new Date(event.event_date) <= new Date(end_date));
                 }
                 if (event_category) {
-                    query = query.eq('event_category', event_category);
+                    data = data.filter(event => event.event_category === event_category);
                 }
                 if (event_type) {
-                    query = query.eq('event_type', event_type);
+                    data = data.filter(event => event.event_type === event_type);
                 }
                 if (class_division_id) {
                     // Verify teacher is assigned to this specific class
@@ -1253,10 +1377,11 @@ router.get('/events/teacher',
                             message: 'You are not assigned to this class'
                         });
                     }
-                    query = query.eq('class_division_id', class_division_id);
+                    data = data.filter(event =>
+                        event.class_division_id === class_division_id ||
+                        (event.class_division_ids && event.class_division_ids.includes(class_division_id))
+                    );
                 }
-
-                query = query.order('event_date', { ascending: true });
 
                 // Debug logging for query conditions
                 console.log('📅 Query Conditions (Regular):', {
