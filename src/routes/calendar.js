@@ -1156,9 +1156,14 @@ router.get('/events/teacher',
                 if (classDivisionIds.length > 0) {
                     // Single class events
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
-                    // Multi-class events - overlap with any of the teacher's classes (both columns)
-                    conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
-                    conditions.push(`class_divisions.ov.{${classDivisionIds.join(',')}}`);
+                    // Multi-class events - check if any of the teacher's classes are in the class_division_ids array
+                    for (const classId of classDivisionIds) {
+                        conditions.push(`class_division_ids.cs.{${classId}}`);
+                    }
+                    // Also check class_divisions array
+                    for (const classId of classDivisionIds) {
+                        conditions.push(`class_divisions.cs.{${classId}}`);
+                    }
                 }
                 query = query.or(conditions.join(','));
 
@@ -1216,9 +1221,14 @@ router.get('/events/teacher',
                 if (classDivisionIds.length > 0) {
                     // Single class events
                     conditions.push(`class_division_id.in.(${classDivisionIds.join(',')})`);
-                    // Multi-class events - overlap with any of the teacher's classes (both columns)
-                    conditions.push(`class_division_ids.ov.{${classDivisionIds.join(',')}}`);
-                    conditions.push(`class_divisions.ov.{${classDivisionIds.join(',')}}`);
+                    // Multi-class events - check if any of the teacher's classes are in the class_division_ids array
+                    for (const classId of classDivisionIds) {
+                        conditions.push(`class_division_ids.cs.{${classId}}`);
+                    }
+                    // Also check class_divisions array
+                    for (const classId of classDivisionIds) {
+                        conditions.push(`class_divisions.cs.{${classId}}`);
+                    }
                 }
                 query = query.or(conditions.join(','));
 
