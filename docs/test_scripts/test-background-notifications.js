@@ -6,8 +6,8 @@
  */
 
 import dotenv from 'dotenv';
-import { adminSupabase } from './src/config/supabase.js';
-import { EnhancedNotificationService } from './src/services/enhancedNotificationService.js';
+import { adminSupabase } from '../../src/config/supabase.js';
+import { EnhancedNotificationService } from '../../src/services/enhancedNotificationService.js';
 
 dotenv.config();
 

@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
-import { adminSupabase } from './src/config/supabase.js';
-import pushNotificationService from './src/services/pushNotificationService.js';
+import { adminSupabase } from '../../src/config/supabase.js';
+import pushNotificationService from '../../src/services/pushNotificationService.js';
 
 dotenv.config();
 

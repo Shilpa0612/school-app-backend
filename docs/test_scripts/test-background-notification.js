@@ -6,7 +6,7 @@
  */
 
 import dotenv from 'dotenv';
-import { adminSupabase } from './src/config/supabase.js';
+import { adminSupabase } from '../../src/config/supabase.js';
 
 dotenv.config();
 

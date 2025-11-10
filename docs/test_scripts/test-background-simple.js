@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import backgroundNotificationService from './src/services/backgroundNotificationService.js';
+import backgroundNotificationService from '../../src/services/backgroundNotificationService.js';
 
 dotenv.config();
 

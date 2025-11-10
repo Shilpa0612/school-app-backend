@@ -95,7 +95,7 @@ try {
 // Test 4: Test Push Notification Service
 console.log('\n4. Testing Push Notification Service...');
 try {
-    const pushService = require('./src/services/pushNotificationService.js');
+    const pushService = require('../../src/services/pushNotificationService.js');
     console.log('   ✅ Push Notification Service loaded successfully');
 } catch (error) {
     console.log('   ❌ Push Notification Service not found');

@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import pushNotificationService from './src/services/pushNotificationService.js';
+import pushNotificationService from '../../src/services/pushNotificationService.js';
 
 dotenv.config();
 
