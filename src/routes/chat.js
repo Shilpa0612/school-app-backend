@@ -379,6 +379,21 @@ async function getUnreadCountForThread(threadId, userId) {
 // Helper function to mark all messages in thread as read
 async function markThreadAsRead(threadId, userId) {
     try {
+        // First, verify that the user is actually a participant
+        // This prevents principals/admins from being added as participants when viewing threads for approval
+        const { data: participant, error: participantError } = await adminSupabase
+            .from('chat_participants')
+            .select('user_id')
+            .eq('thread_id', threadId)
+            .eq('user_id', userId)
+            .single();
+
+        // If user is not a participant, don't mark anything as read
+        // This prevents principals/admins from being added when viewing for approval
+        if (participantError || !participant) {
+            return { success: false, count: 0 };
+        }
+
         // Get all unread messages in thread (approved only, not sent by user)
         const { data: messages, error } = await adminSupabase
             .from('chat_messages')
@@ -393,7 +408,7 @@ async function markThreadAsRead(threadId, userId) {
         }
 
         if (!messages || messages.length === 0) {
-            // Update last_read_at anyway
+            // Update last_read_at anyway (user is confirmed to be a participant)
             await adminSupabase
                 .from('chat_participants')
                 .update({ last_read_at: new Date().toISOString() })
@@ -1512,18 +1527,29 @@ router.get('/messages', authenticate, async (req, res) => {
             });
         }
 
+        // Check if user is actually a participant (not for principals/admins viewing for approval)
+        // Regular users (teachers/parents) must be participants to access, so they'll always be in the list
+        // Principals/admins can view without being participants, so check if they're actually in the list
+        const userIsParticipant = participants.some(p => p.user_id === req.user.id);
+
         // Mark messages as read automatically when fetching
         // This happens in the background and shouldn't block the response
-        markThreadAsRead(thread_id, req.user.id).catch(err => {
-            logger.error('Error auto-marking messages as read:', err);
-        });
+        // Only mark as read if user is actually a participant
+        if (userIsParticipant) {
+            markThreadAsRead(thread_id, req.user.id).catch(err => {
+                logger.error('Error auto-marking messages as read:', err);
+            });
+        }
 
         // Update last read timestamp for backward compatibility
-        await adminSupabase
-            .from('chat_participants')
-            .update({ last_read_at: new Date().toISOString() })
-            .eq('thread_id', thread_id)
-            .eq('user_id', req.user.id);
+        // Only update if user is actually a participant
+        if (userIsParticipant) {
+            await adminSupabase
+                .from('chat_participants')
+                .update({ last_read_at: new Date().toISOString() })
+                .eq('thread_id', thread_id)
+                .eq('user_id', req.user.id);
+        }
 
         // Get total count from chat_messages table with same filter
         let countQuery = adminSupabase
@@ -2583,12 +2609,24 @@ router.get('/threads/:thread_id/messages', authenticate, async (req, res) => {
         }
 
         // Update last read timestamp for current user
+        // Only update if user is actually a participant (not for principals/admins viewing for approval)
         try {
-            await adminSupabase
+            // Check if user is a participant before updating
+            const { data: participantCheck } = await adminSupabase
                 .from('chat_participants')
-                .update({ last_read_at: new Date().toISOString() })
+                .select('user_id')
                 .eq('thread_id', thread_id)
-                .eq('user_id', req.user.id);
+                .eq('user_id', req.user.id)
+                .single();
+
+            // Only update if user is actually a participant
+            if (participantCheck) {
+                await adminSupabase
+                    .from('chat_participants')
+                    .update({ last_read_at: new Date().toISOString() })
+                    .eq('thread_id', thread_id)
+                    .eq('user_id', req.user.id);
+            }
         } catch (updateError) {
             logger.warn('Failed to update last read timestamp:', updateError.message);
             // Don't fail the request for this
