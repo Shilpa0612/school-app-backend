@@ -3166,25 +3166,56 @@ router.post('/messages/:message_id/approve', authenticate, async (req, res) => {
 
         logger.info(`Message ${message_id} approved by ${req.user.full_name} (${req.user.role})`);
 
+        // CRITICAL: Remove approver from participants if they were incorrectly added
+        // This prevents principals/admins from being in participants when they only approved
+        try {
+            const { data: approverParticipant, error: checkError } = await adminSupabase
+                .from('chat_participants')
+                .select('user_id')
+                .eq('thread_id', approvedMessage.thread_id)
+                .eq('user_id', req.user.id)
+                .single();
+
+            if (!checkError && approverParticipant) {
+                logger.warn(`⚠️ Approver ${req.user.full_name} (${req.user.role}) found in participants - removing them`);
+                
+                const { error: deleteError } = await adminSupabase
+                    .from('chat_participants')
+                    .delete()
+                    .eq('thread_id', approvedMessage.thread_id)
+                    .eq('user_id', req.user.id);
+
+                if (deleteError) {
+                    logger.error(`❌ Failed to remove approver from participants:`, deleteError);
+                } else {
+                    logger.info(`✅ Removed approver ${req.user.full_name} from participants list`);
+                }
+            }
+        } catch (checkError) {
+            // If approver is not in participants (expected), this is fine
+            logger.info(`✅ Approver ${req.user.full_name} (${req.user.role}) is correctly NOT a participant`);
+        }
+
         // Send notifications to parent and broadcast to participants
         try {
             logger.info('🔔 Starting notification process for approved message...');
 
-            // Get thread participants for notifications
+            // Get thread participants for notifications (exclude the approver)
             const { data: threadParticipants, error: participantsError } = await adminSupabase
                 .from('chat_participants')
                 .select(`
                     user_id,
                     user:users!chat_participants_user_id_fkey(id, full_name, role)
                 `)
-                .eq('thread_id', approvedMessage.thread_id);
+                .eq('thread_id', approvedMessage.thread_id)
+                .neq('user_id', req.user.id); // Explicitly exclude the approver
 
             if (participantsError) {
                 logger.error('❌ Error fetching thread participants:', participantsError);
-            } else if (threadParticipants) {
-                logger.info(`📊 Found ${threadParticipants.length} thread participants`);
+            } else if (threadParticipants && threadParticipants.length > 0) {
+                logger.info(`📊 Found ${threadParticipants.length} thread participants (approver excluded)`);
 
-                // Send notifications to parents
+                // Send notifications to parents (only to actual participants, not approver)
                 logger.info('📨 Calling sendChatMessageApprovalNotifications...');
                 await sendChatMessageApprovalNotifications(approvedMessage, threadParticipants);
 
