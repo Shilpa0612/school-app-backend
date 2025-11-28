@@ -860,19 +860,47 @@ router.get('/my-announcements',
                 ].filter(Boolean);
             }
 
-            // Build combined OR with role and class conditions to avoid overriding .or
+            // Build combined OR with role and class conditions
+            // Logic: 
+            // - School-wide: target_roles is empty OR target_classes is empty
+            // - Class-specific: target_classes must overlap with user's allowed classes
+            // - Role-specific: target_roles must contain user's role (or be empty for school-wide)
+            
             const roleClause = `target_roles.cs.{${userRole}}`;
             const emptyRoleClause = 'target_roles.eq.{}';
-            const classClause = (allowedClassIds.length > 0)
-                ? `or(target_classes.ov.{${allowedClassIds.join(',')}},target_classes.eq.{})`
-                : 'target_classes.eq.{}';
-
+            
             if (userRole === 'teacher') {
-                // Teachers: only class-targeted (overlap) or school-wide
-                query = query.or(`${classClause}`);
+                // Teachers: Show announcements where:
+                // 1. target_classes overlaps with teacher's assigned classes, OR
+                // 2. target_classes is empty (school-wide)
+                if (allowedClassIds.length > 0) {
+                    query = query.or(`target_classes.ov.{${allowedClassIds.join(',')}},target_classes.eq.{}`);
+                } else {
+                    // Teacher has no class assignments, only show school-wide
+                    query = query.eq('target_classes', []);
+                }
+            } else if (userRole === 'parent') {
+                // Parents: Show announcements where:
+                // 1. target_roles contains 'parent' AND target_classes overlaps with parent's children's classes (class-specific for parents)
+                // 2. target_roles contains 'parent' AND target_classes is empty (school-wide for parents)
+                // 3. target_roles is empty AND target_classes overlaps with parent's children's classes (class-specific, all roles)
+                // 4. target_roles is empty AND target_classes is empty (school-wide, all roles)
+                if (allowedClassIds.length > 0) {
+                    // Parent has children in specific classes
+                    const classSpecificWithRole = `and(${roleClause},target_classes.ov.{${allowedClassIds.join(',')}})`;
+                    const classSpecificNoRole = `and(${emptyRoleClause},target_classes.ov.{${allowedClassIds.join(',')}})`;
+                    const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                    const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                    query = query.or(`${classSpecificWithRole},${classSpecificNoRole},${schoolWideWithRole},${schoolWideNoRole}`);
+                } else {
+                    // Parent has no children assigned, only show school-wide
+                    const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                    const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                    query = query.or(`${schoolWideWithRole},${schoolWideNoRole}`);
+                }
             } else {
-                // Parents must match role (or empty) AND class (or school-wide)
-                query = query.or(`and(${roleClause},${classClause}),and(${emptyRoleClause},${classClause})`);
+                // Admin/Principal: Show all approved announcements (no filtering needed)
+                // Already filtered by status and is_published above
             }
 
             // Apply additional filters
@@ -913,15 +941,27 @@ router.get('/my-announcements',
                 .eq('status', 'approved')
                 .eq('is_published', true);
 
-            const countClassClause = (allowedClassIds.length > 0)
-                ? `or(target_classes.ov.{${allowedClassIds.join(',')}},target_classes.eq.{})`
-                : 'target_classes.eq.{}';
+            // Apply same filtering logic as main query
             if (userRole === 'teacher') {
-                // Teachers: only class-targeted (overlap) or school-wide
-                countQueryBuilder = countQueryBuilder.or(`${countClassClause}`);
-            } else {
-                countQueryBuilder = countQueryBuilder.or(`and(${roleClause},${countClassClause}),and(${emptyRoleClause},${countClassClause})`);
+                if (allowedClassIds.length > 0) {
+                    countQueryBuilder = countQueryBuilder.or(`target_classes.ov.{${allowedClassIds.join(',')}},target_classes.eq.{}`);
+                } else {
+                    countQueryBuilder = countQueryBuilder.eq('target_classes', []);
+                }
+            } else if (userRole === 'parent') {
+                if (allowedClassIds.length > 0) {
+                    const classSpecificWithRole = `and(${roleClause},target_classes.ov.{${allowedClassIds.join(',')}})`;
+                    const classSpecificNoRole = `and(${emptyRoleClause},target_classes.ov.{${allowedClassIds.join(',')}})`;
+                    const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                    const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                    countQueryBuilder = countQueryBuilder.or(`${classSpecificWithRole},${classSpecificNoRole},${schoolWideWithRole},${schoolWideNoRole}`);
+                } else {
+                    const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                    const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                    countQueryBuilder = countQueryBuilder.or(`${schoolWideWithRole},${schoolWideNoRole}`);
+                }
             }
+            // Admin/Principal: no additional filtering needed
 
             // Apply the same extra filters to count query
             if (announcement_type) countQueryBuilder = countQueryBuilder.eq('announcement_type', announcement_type);
@@ -1500,8 +1540,8 @@ router.get('/teacher/announcements',
                 // Default: teachers see only announcements targeted to their assigned classes or school-wide announcements
                 visibilityConditions = [];
                 if (teacherClassDivisions.length > 0) {
-                    // Only show announcements that are targeted to teacher's assigned classes
-                    visibilityConditions.push(`target_classes.cs.{${teacherClassDivisions.join(',')}}`);
+                    // Show announcements where target_classes overlaps with teacher's assigned classes
+                    visibilityConditions.push(`target_classes.ov.{${teacherClassDivisions.join(',')}}`);
                     // Also show school-wide announcements (no specific class targeting)
                     visibilityConditions.push(`target_classes.eq.{}`);
                 } else {
@@ -1880,17 +1920,24 @@ router.get('/parent/children',
             }
 
             // Build the OR condition for announcements relevant to parent's children
+            // Must check both target_roles (should contain 'parent' or be empty for school-wide)
+            // AND target_classes (should overlap with child's classes or be empty for school-wide)
+            const roleClause = `target_roles.cs.{parent}`;
+            const emptyRoleClause = 'target_roles.eq.{}';
+            
             if (classDivisionIds.length > 0) {
-                // Include only school-wide announcements and class-specific announcements for the child's classes
-                const conditions = [
-                    `target_classes.ov.{${classDivisionIds.join(',')}}`,
-                    'target_classes.eq.{}'
-                ];
-
-                query = query.or(conditions.join(','));
+                // Parent has children in specific classes
+                // Show: (role contains parent AND classes overlap) OR (role empty AND classes overlap) OR (role contains parent AND classes empty) OR (role empty AND classes empty)
+                const classSpecificWithRole = `and(${roleClause},target_classes.ov.{${classDivisionIds.join(',')}})`;
+                const classSpecificNoRole = `and(${emptyRoleClause},target_classes.ov.{${classDivisionIds.join(',')}})`;
+                const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                query = query.or(`${classSpecificWithRole},${classSpecificNoRole},${schoolWideWithRole},${schoolWideNoRole}`);
             } else {
-                // If no children, only show school-wide announcements
-                query = query.eq('target_classes', '{}');
+                // If no children, only show school-wide announcements targeted to parents
+                const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                query = query.or(`${schoolWideWithRole},${schoolWideNoRole}`);
             }
 
             // Get total count with same filters
@@ -1906,14 +1953,17 @@ router.get('/parent/children',
             if (start_date) countQuery = countQuery.gte('publish_at', start_date);
             if (end_date) countQuery = countQuery.lte('publish_at', end_date);
 
+            // Apply same filtering logic as main query
             if (classDivisionIds.length > 0) {
-                const conditions = [
-                    `target_classes.ov.{${classDivisionIds.join(',')}}`,
-                    'target_classes.eq.{}'
-                ];
-                countQuery = countQuery.or(conditions.join(','));
+                const classSpecificWithRole = `and(${roleClause},target_classes.ov.{${classDivisionIds.join(',')}})`;
+                const classSpecificNoRole = `and(${emptyRoleClause},target_classes.ov.{${classDivisionIds.join(',')}})`;
+                const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                countQuery = countQuery.or(`${classSpecificWithRole},${classSpecificNoRole},${schoolWideWithRole},${schoolWideNoRole}`);
             } else {
-                countQuery = countQuery.eq('target_classes', '{}');
+                const schoolWideWithRole = `and(${roleClause},target_classes.eq.{})`;
+                const schoolWideNoRole = `and(${emptyRoleClause},target_classes.eq.{})`;
+                countQuery = countQuery.or(`${schoolWideWithRole},${schoolWideNoRole}`);
             }
 
             const { count: totalCount, error: countError } = await countQuery;

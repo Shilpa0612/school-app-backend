@@ -267,32 +267,53 @@ router.get('/',
                 }
 
                 // Get children's classes with proper filtering
+                // Use the same structure as /api/users/children endpoint for consistency
                 let childrenQuery = adminSupabase
                     .from('parent_student_mappings')
                     .select(`
-                        students:students_master (
-                            id
-                        ),
-                        student_academic_records (
-                            class_division_id
+                        student_id,
+                        students:students_master!inner (
+                            id,
+                            student_academic_records!inner (
+                                id,
+                                class_division_id,
+                                status
+                            )
                         )
                     `)
-                    .eq('parent_id', req.user.id);
+                    .eq('parent_id', req.user.id)
+                    .eq('students.student_academic_records.status', 'ongoing');
 
                 // If student_id is provided, filter to only that student
                 if (req.query.student_id) {
                     childrenQuery = childrenQuery.eq('student_id', req.query.student_id);
                 }
 
-                const { data: childrenClasses } = await childrenQuery;
+                const { data: childrenClasses, error: childrenError } = await childrenQuery;
+
+                if (childrenError) {
+                    logger.error('Error fetching children classes for homework:', childrenError);
+                    // Continue with empty result if query fails
+                }
 
                 if (childrenClasses && childrenClasses.length > 0) {
-                    const classIds = childrenClasses
-                        .filter(mapping => mapping.student_academic_records && mapping.student_academic_records.length > 0)
-                        .map(mapping => mapping.student_academic_records[0].class_division_id);
+                    // Extract class_division_id from nested structure
+                    const classIds = [];
+                    childrenClasses.forEach(mapping => {
+                        if (mapping.students && mapping.students.student_academic_records) {
+                            mapping.students.student_academic_records.forEach(record => {
+                                if (record.class_division_id && record.status === 'ongoing') {
+                                    classIds.push(record.class_division_id);
+                                }
+                            });
+                        }
+                    });
 
-                    if (classIds.length > 0) {
-                        query = query.in('class_division_id', classIds);
+                    // Remove duplicates
+                    const uniqueClassIds = [...new Set(classIds)];
+
+                    if (uniqueClassIds.length > 0) {
+                        query = query.in('class_division_id', uniqueClassIds);
                     } else {
                         // If parent has no children with proper class assignments, return empty result
                         query = query.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
@@ -385,34 +406,53 @@ router.get('/',
                 }
             } else if (req.user.role === 'parent') {
                 // For parents, we need to apply the same class filtering logic as the main query
-
-                // Get children's classes with proper filtering (same logic as main query)
+                // Use the same structure as /api/users/children endpoint for consistency
                 let childrenQuery = adminSupabase
                     .from('parent_student_mappings')
                     .select(`
-                        students:students_master (
-                            id
-                        ),
-                        student_academic_records (
-                            class_division_id
+                        student_id,
+                        students:students_master!inner (
+                            id,
+                            student_academic_records!inner (
+                                id,
+                                class_division_id,
+                                status
+                            )
                         )
                     `)
-                    .eq('parent_id', req.user.id);
+                    .eq('parent_id', req.user.id)
+                    .eq('students.student_academic_records.status', 'ongoing');
 
                 // If student_id is provided, filter to only that student
                 if (req.query.student_id) {
                     childrenQuery = childrenQuery.eq('student_id', req.query.student_id);
                 }
 
-                const { data: childrenClasses } = await childrenQuery;
+                const { data: childrenClasses, error: childrenError } = await childrenQuery;
+
+                if (childrenError) {
+                    logger.error('Error fetching children classes for homework count:', childrenError);
+                    // Continue with empty result if query fails
+                }
 
                 if (childrenClasses && childrenClasses.length > 0) {
-                    const classIds = childrenClasses
-                        .filter(mapping => mapping.student_academic_records && mapping.student_academic_records.length > 0)
-                        .map(mapping => mapping.student_academic_records[0].class_division_id);
+                    // Extract class_division_id from nested structure
+                    const classIds = [];
+                    childrenClasses.forEach(mapping => {
+                        if (mapping.students && mapping.students.student_academic_records) {
+                            mapping.students.student_academic_records.forEach(record => {
+                                if (record.class_division_id && record.status === 'ongoing') {
+                                    classIds.push(record.class_division_id);
+                                }
+                            });
+                        }
+                    });
 
-                    if (classIds.length > 0) {
-                        countQuery = countQuery.in('class_division_id', classIds);
+                    // Remove duplicates
+                    const uniqueClassIds = [...new Set(classIds)];
+
+                    if (uniqueClassIds.length > 0) {
+                        countQuery = countQuery.in('class_division_id', uniqueClassIds);
                     } else {
                         // If parent has no children with proper class assignments, return empty result
                         countQuery = countQuery.eq('id', '00000000-0000-0000-0000-000000000000'); // Impossible UUID
