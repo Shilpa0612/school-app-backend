@@ -3,7 +3,7 @@ import express from 'express';
 import { body, validationResult } from 'express-validator';
 import jwt from 'jsonwebtoken';
 import { adminSupabase, monitoredSupabase, queryOptimizer } from '../config/supabase.js';
-import { authenticate } from '../middleware/auth.js';
+import { authenticate, authorize } from '../middleware/auth.js';
 import { logger } from '../utils/logger.js';
 
 const router = express.Router();
@@ -857,16 +857,31 @@ router.post('/login', async (req, res, next) => {
 });
 
 // Update password endpoint
+// Admins/Principals can update any user's password without current password
+// Regular users can only update their own password (requires current password)
 router.put('/update-password', authenticate, async (req, res) => {
     try {
-        const { current_password, new_password } = req.body;
-        const userId = req.user.id;
+        const { user_id, current_password, new_password } = req.body;
+        const currentUserId = req.user.id;
+        const isAdmin = ['admin', 'principal'].includes(req.user.role);
 
-        // Validate input
-        if (!current_password || !new_password) {
+        logger.info('Password update request:', {
+            requester_id: currentUserId,
+            requester_role: req.user.role,
+            target_user_id: user_id,
+            is_admin: isAdmin,
+            has_current_password: !!current_password,
+            has_new_password: !!new_password
+        });
+
+        // Determine which user's password to update
+        const targetUserId = isAdmin && user_id ? user_id : currentUserId;
+
+        // Validate new password is provided
+        if (!new_password) {
             return res.status(400).json({
                 status: 'error',
-                message: 'Current password and new password are required'
+                message: 'New password is required'
             });
         }
 
@@ -878,22 +893,70 @@ router.put('/update-password', authenticate, async (req, res) => {
             });
         }
 
-        // Get current user data
-        const { data: user, error: userError } = await adminSupabase
+        // Get target user data
+        const { data: targetUser, error: userError } = await adminSupabase
             .from('users')
-            .select('id, password_hash, is_registered')
-            .eq('id', userId)
+            .select('id, password_hash, is_registered, role')
+            .eq('id', targetUserId)
             .single();
 
-        if (userError || !user) {
+        if (userError || !targetUser) {
             return res.status(404).json({
                 status: 'error',
                 message: 'User not found'
             });
         }
 
+        // If admin/principal updating another user's password, skip current password check
+        if (isAdmin && targetUserId !== currentUserId) {
+            // Admin can update password without knowing current password
+            // Hash new password
+            const bcrypt = await import('bcrypt');
+            const salt = await bcrypt.default.genSalt(10);
+            const hashedNewPassword = await bcrypt.default.hash(new_password, salt);
+
+            // Update password in database
+            const { error: updateError } = await adminSupabase
+                .from('users')
+                .update({
+                    password_hash: hashedNewPassword,
+                    is_registered: true,
+                    initial_password: null // Clear initial password if it exists
+                })
+                .eq('id', targetUserId);
+
+            if (updateError) {
+                logger.error('Error updating password:', updateError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to update password'
+                });
+            }
+
+            return res.json({
+                status: 'success',
+                message: 'Password updated successfully'
+            });
+        }
+
+        // Regular user updating their own password - require current password
+        if (targetUserId !== currentUserId) {
+            return res.status(403).json({
+                status: 'error',
+                message: 'You can only update your own password'
+            });
+        }
+
+        // Validate current password is provided for self-update
+        if (!current_password) {
+            return res.status(400).json({
+                status: 'error',
+                message: 'Current password is required to update your password'
+            });
+        }
+
         // Check if user is registered (has password)
-        if (!user.is_registered || !user.password_hash) {
+        if (!targetUser.is_registered || !targetUser.password_hash) {
             return res.status(400).json({
                 status: 'error',
                 message: 'User must be registered to change password'
@@ -902,7 +965,7 @@ router.put('/update-password', authenticate, async (req, res) => {
 
         // Verify current password
         const bcrypt = await import('bcrypt');
-        const isValidCurrentPassword = await bcrypt.default.compare(current_password, user.password_hash);
+        const isValidCurrentPassword = await bcrypt.default.compare(current_password, targetUser.password_hash);
 
         if (!isValidCurrentPassword) {
             return res.status(401).json({
@@ -919,10 +982,9 @@ router.put('/update-password', authenticate, async (req, res) => {
         const { error: updateError } = await adminSupabase
             .from('users')
             .update({
-                password_hash: hashedNewPassword,
-                updated_at: new Date().toISOString()
+                password_hash: hashedNewPassword
             })
-            .eq('id', userId);
+            .eq('id', targetUserId);
 
         if (updateError) {
             logger.error('Error updating password:', updateError);
@@ -945,6 +1007,149 @@ router.put('/update-password', authenticate, async (req, res) => {
         });
     }
 });
+
+// Bulk update passwords endpoint (Admin/Principal only)
+router.put('/bulk-update-passwords',
+    authenticate,
+    authorize(['admin', 'principal']),
+    [
+        body('users').isArray({ min: 1, max: 200 }).withMessage('Users must be an array with 1-200 items'),
+        body('users.*.user_id').isUUID().withMessage('Each user must have a valid user_id'),
+        body('users.*.new_password').isLength({ min: 6 }).withMessage('Each password must be at least 6 characters long')
+    ],
+    async (req, res) => {
+        try {
+            const errors = validationResult(req);
+            if (!errors.isEmpty()) {
+                return res.status(400).json({
+                    status: 'error',
+                    errors: errors.array()
+                });
+            }
+
+            const { users } = req.body;
+
+            // Validate no duplicate user_ids
+            const userIds = users.map(u => u.user_id);
+            const uniqueUserIds = new Set(userIds);
+            if (userIds.length !== uniqueUserIds.size) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: 'Duplicate user_ids found in the request'
+                });
+            }
+
+            // Verify all users exist
+            const { data: existingUsers, error: fetchError } = await adminSupabase
+                .from('users')
+                .select('id, role, full_name')
+                .in('id', userIds);
+
+            if (fetchError) {
+                logger.error('Error fetching users:', fetchError);
+                return res.status(500).json({
+                    status: 'error',
+                    message: 'Failed to verify users'
+                });
+            }
+
+            const existingUserIds = existingUsers ? existingUsers.map(u => u.id) : [];
+            const missingUserIds = userIds.filter(id => !existingUserIds.includes(id));
+
+            if (missingUserIds.length > 0) {
+                return res.status(400).json({
+                    status: 'error',
+                    message: `Users not found: ${missingUserIds.join(', ')}`
+                });
+            }
+
+            // Hash all passwords
+            const bcrypt = await import('bcrypt');
+            const passwordUpdates = await Promise.all(
+                users.map(async (user) => {
+                    const salt = await bcrypt.default.genSalt(10);
+                    const hashedPassword = await bcrypt.default.hash(user.new_password, salt);
+                    return {
+                        user_id: user.user_id,
+                        password_hash: hashedPassword
+                    };
+                })
+            );
+
+            // Update all passwords in parallel
+            const updatePromises = passwordUpdates.map(({ user_id, password_hash }) =>
+                adminSupabase
+                    .from('users')
+                    .update({
+                        password_hash: password_hash,
+                        is_registered: true,
+                        initial_password: null // Clear initial password if it exists
+                    })
+                    .eq('id', user_id)
+            );
+
+            const updateResults = await Promise.allSettled(updatePromises);
+
+            // Process results
+            const results = [];
+            let successCount = 0;
+            let failureCount = 0;
+
+            updateResults.forEach((result, index) => {
+                const user = users[index];
+                if (result.status === 'fulfilled' && !result.value.error) {
+                    results.push({
+                        user_id: user.user_id,
+                        status: 'success'
+                    });
+                    successCount++;
+                } else {
+                    const errorMessage = result.status === 'rejected' 
+                        ? result.reason.message 
+                        : result.value.error?.message || 'Unknown error';
+                    results.push({
+                        user_id: user.user_id,
+                        status: 'error',
+                        error: errorMessage
+                    });
+                    failureCount++;
+                    
+                    logger.error(`Failed to update password for user ${user.user_id}:`, errorMessage);
+                }
+            });
+
+            if (failureCount > 0) {
+                return res.status(207).json({
+                    status: 'partial_success',
+                    message: `Updated ${successCount} passwords, ${failureCount} failed`,
+                    data: {
+                        updated: successCount,
+                        failed: failureCount,
+                        results: results
+                    }
+                });
+            }
+
+            res.json({
+                status: 'success',
+                message: `Successfully updated passwords for ${successCount} users`,
+                data: {
+                    updated: successCount,
+                    failed: failureCount,
+                    results: results
+                }
+            });
+
+        } catch (error) {
+            logger.error('Error in bulk update passwords:', error);
+            res.status(500).json({
+                status: 'error',
+                message: 'Internal server error',
+                error: error.message
+            });
+        }
+    }
+);
 
 // OPTIMIZATION: Performance monitoring endpoint for scale testing
 router.get('/performance-stats', async (req, res) => {

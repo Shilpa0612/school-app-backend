@@ -240,7 +240,234 @@ POST /auth/login
 
 **Response:** User object with JWT token
 
+#### Update Password
+
+```http
+PUT /auth/update-password
+```
+
+**Body (For Admin/Principal to update any user's password):**
+
+```json
+{
+  "user_id": "target-user-uuid",
+  "new_password": "newpassword123"
+}
+```
+
+**Body (For Regular user to update their own password):**
+
+```json
+{
+  "current_password": "oldpassword",
+  "new_password": "newpassword123"
+}
+```
+
+**Notes:**
+
+- **Admin/Principal**: Can update any user's password without knowing the current password
+  - Must provide `user_id` to update another user's password
+  - If `user_id` is omitted, updates their own password (requires current password)
+- **Regular Users**: Can only update their own password
+  - Must provide `current_password` and `new_password`
+  - Cannot update other users' passwords
+- New password must be at least 6 characters long
+- Requires authentication (Bearer token)
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Password updated successfully"
+}
+```
+
+**Error Responses:**
+
+```json
+{
+  "status": "error",
+  "message": "Current password is incorrect"
+}
+```
+
+```json
+{
+  "status": "error",
+  "message": "You can only update your own password"
+}
+```
+
+#### Bulk Update Passwords
+
+```http
+PUT /auth/bulk-update-passwords
+```
+
+**Authentication:** Admin/Principal only
+
+**Body:**
+
+```json
+{
+  "users": [
+    {
+      "user_id": "user-uuid-1",
+      "new_password": "password123"
+    },
+    {
+      "user_id": "user-uuid-2",
+      "new_password": "password456"
+    },
+    {
+      "user_id": "user-uuid-3",
+      "new_password": "password789"
+    }
+  ]
+}
+```
+
+**Notes:**
+
+- Available for Admin and Principal only
+- Can update passwords for any type of user (parent, teacher, admin, principal, staff)
+- Each password must be at least 6 characters long
+- Maximum 200 users per request
+- Updates are atomic - if any user is invalid, the entire operation fails
+- Automatically sets `is_registered: true` and clears `initial_password` for updated users
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Successfully updated passwords for 3 users",
+  "data": {
+    "updated": 3,
+    "failed": 0,
+    "results": [
+      {
+        "user_id": "user-uuid-1",
+        "status": "success"
+      },
+      {
+        "user_id": "user-uuid-2",
+        "status": "success"
+      },
+      {
+        "user_id": "user-uuid-3",
+        "status": "success"
+      }
+    ]
+  }
+}
+```
+
+**Error Response:**
+
+```json
+{
+  "status": "error",
+  "message": "Failed to update passwords",
+  "data": {
+    "updated": 1,
+    "failed": 2,
+    "results": [
+      {
+        "user_id": "user-uuid-1",
+        "status": "success"
+      },
+      {
+        "user_id": "user-uuid-2",
+        "status": "error",
+        "error": "User not found"
+      },
+      {
+        "user_id": "user-uuid-3",
+        "status": "error",
+        "error": "Password must be at least 6 characters long"
+      }
+    ]
+  }
+}
+```
+
 ### User Management
+
+#### Get All Users
+
+```http
+GET /api/users
+```
+
+**Authentication:** Admin/Principal only
+
+**Query Parameters:**
+
+- `page` (optional): Page number (default: 1)
+- `limit` (optional): Items per page (default: 20)
+- `role` (optional): Filter by role (parent, teacher, admin, principal)
+- `search` (optional): Search by name, phone number, or email
+
+**Example Requests:**
+
+```http
+GET /api/users
+GET /api/users?page=1&limit=50
+GET /api/users?role=teacher
+GET /api/users?search=john
+GET /api/users?role=parent&search=123&page=2&limit=10
+```
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "data": {
+    "users": [
+      {
+        "id": "uuid",
+        "full_name": "John Doe",
+        "role": "parent",
+        "phone_number": "1234567890",
+        "email": "john@example.com",
+        "preferred_language": "english",
+        "last_login": "2024-01-15T10:00:00Z",
+        "created_at": "2024-01-01T10:00:00Z"
+      },
+      {
+        "id": "uuid",
+        "full_name": "Jane Smith",
+        "role": "teacher",
+        "phone_number": "9876543210",
+        "email": "jane@example.com",
+        "preferred_language": "hindi",
+        "last_login": "2024-01-15T09:00:00Z",
+        "created_at": "2024-01-02T10:00:00Z"
+      }
+    ],
+    "pagination": {
+      "page": 1,
+      "limit": 20,
+      "total": 150,
+      "total_pages": 8,
+      "has_next": true,
+      "has_prev": false
+    }
+  }
+}
+```
+
+**Notes:**
+
+- Returns paginated list of all users
+- Admin and Principal roles only
+- Users are ordered by `created_at` descending (newest first)
+- Search is case-insensitive and matches across name, phone, and email
+- Password hashes and sensitive data are excluded from response
 
 #### Get User Profile
 
