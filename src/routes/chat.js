@@ -478,6 +478,7 @@ async function resolveDuplicateThreads(participantIds, threadType) {
         });
 
         // Find ALL threads with these participants (including duplicates)
+        // Exclude merged and deleted threads - only check active threads
         const { data: allThreads, error } = await adminSupabase
             .from('chat_threads')
             .select(`
@@ -490,7 +491,9 @@ async function resolveDuplicateThreads(participantIds, threadType) {
                 status,
                 participants:chat_participants(user_id)
             `)
-            .eq('thread_type', threadType);
+            .eq('thread_type', threadType)
+            .neq('status', 'merged')
+            .neq('status', 'deleted');
 
         if (error) {
             logger.error('Error finding threads for duplicate resolution:', error);
@@ -498,8 +501,19 @@ async function resolveDuplicateThreads(participantIds, threadType) {
         }
 
         // Find threads with exact participant match
+        // Only consider threads with status 'active' (already filtered above, but double-check)
         const matchingThreads = [];
         for (const thread of allThreads || []) {
+            // Skip threads that are merged or deleted (safety check)
+            if (thread.status === 'merged' || thread.status === 'deleted') {
+                continue;
+            }
+            
+            // Ensure thread has participants
+            if (!thread.participants || thread.participants.length === 0) {
+                continue;
+            }
+            
             const threadParticipantIds = thread.participants.map(p => p.user_id).sort();
             const requestedParticipantIds = [...participantIds].sort();
 
@@ -1339,6 +1353,40 @@ router.post('/threads', authenticate, async (req, res) => {
                 data: existingThread
             });
         } else {
+            // Final check before creating new thread (prevent race condition)
+            // This double-check ensures no duplicate was created between the first check and now
+            const finalCheck = await findExistingThread(participants, thread_type);
+            if (finalCheck) {
+                logger.info('Found existing thread in final check, reusing it:', finalCheck);
+                // Add current user as participant if not already there
+                const { error: participantError } = await adminSupabase
+                    .from('chat_participants')
+                    .upsert({ 
+                        thread_id: finalCheck.id, 
+                        user_id: req.user.id, 
+                        role: 'member' 
+                    }, {
+                        onConflict: 'thread_id,user_id',
+                        ignoreDuplicates: true
+                    });
+
+                if (participantError) {
+                    logger.error('Error adding participant to existing thread:', participantError);
+                    return res.status(500).json({
+                        status: 'error',
+                        message: 'Failed to add participant to existing thread'
+                    });
+                }
+
+                return res.status(201).json({
+                    status: 'success',
+                    data: {
+                        ...finalCheck,
+                        is_existing_thread: true
+                    }
+                });
+            }
+
             // Create new thread
             const { data: thread, error: threadError } = await adminSupabase
                 .from('chat_threads')
