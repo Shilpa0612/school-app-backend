@@ -2759,6 +2759,7 @@ router.get('/principal/chats',
                 class_division_id,
                 chat_type = 'all', // 'direct', 'group', 'all'
                 includes_me = 'all', // 'yes', 'no', 'all'
+                approval_status = 'all', // 'pending', 'approved', 'rejected', 'all'
                 page = 1,
                 limit = 20
             } = req.query;
@@ -2814,6 +2815,101 @@ router.get('/principal/chats',
                 query = query.eq('thread_type', chat_type);
             }
 
+            // Optimize: Apply approval_status filter at database level
+            let approvalFilteredThreadIds = null;
+            if (approval_status !== 'all') {
+                const { data: approvalThreads, error: approvalErr } = await adminSupabase
+                    .from('chat_messages')
+                    .select('thread_id')
+                    .eq('approval_status', approval_status);
+
+                if (approvalErr) {
+                    console.error('Error fetching threads by approval status:', approvalErr);
+                    return res.status(500).json({ 
+                        status: 'error', 
+                        message: 'Failed to apply approval status filter' 
+                    });
+                }
+
+                approvalFilteredThreadIds = Array.from(new Set((approvalThreads || []).map(m => m.thread_id)));
+
+                if (approvalFilteredThreadIds.length === 0) {
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            threads: [],
+                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
+                            pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                            summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                        }
+                    });
+                }
+            }
+
+            // Optimize: Apply includes_me filter at database level
+            let principalParticipantThreadIds = null;
+            if (includes_me !== 'all') {
+                const { data: principalThreads, error: principalErr } = await adminSupabase
+                    .from('chat_participants')
+                    .select('thread_id')
+                    .eq('user_id', principalId);
+
+                if (principalErr) {
+                    console.error('Error fetching principal participant threads:', principalErr);
+                    return res.status(500).json({ 
+                        status: 'error', 
+                        message: 'Failed to apply principal participation filter' 
+                    });
+                }
+
+                principalParticipantThreadIds = Array.from(new Set((principalThreads || []).map(p => p.thread_id)));
+
+                if (includes_me === 'yes' && principalParticipantThreadIds.length === 0) {
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            threads: [],
+                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
+                            pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                            summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                        }
+                    });
+                }
+            }
+
+            // Combine all thread ID filters efficiently
+            let combinedThreadIds = null;
+            const threadIdFilters = [];
+            if (approvalFilteredThreadIds) threadIdFilters.push(approvalFilteredThreadIds);
+            if (principalParticipantThreadIds && includes_me === 'yes') {
+                threadIdFilters.push(principalParticipantThreadIds);
+            }
+
+            // If we have multiple filters, find intersection
+            if (threadIdFilters.length > 0) {
+                if (threadIdFilters.length === 1) {
+                    combinedThreadIds = threadIdFilters[0];
+                } else {
+                    // Find intersection of all filters
+                    const sets = threadIdFilters.map(arr => new Set(arr));
+                    combinedThreadIds = threadIdFilters[0].filter(id => 
+                        sets.every(set => set.has(id))
+                    );
+                }
+
+                if (combinedThreadIds.length === 0) {
+                    return res.json({
+                        status: 'success',
+                        data: {
+                            threads: [],
+                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
+                            pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                            summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                        }
+                    });
+                }
+            }
+
             // If class_division_id is provided, pre-compute relevant user IDs (teachers, parents, students)
             let relevantUserIds = null;
             if (class_division_id) {
@@ -2861,7 +2957,7 @@ router.get('/principal/chats',
                         status: 'success',
                         data: {
                             threads: [],
-                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, page: parseInt(page), limit: parseInt(limit) },
+                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
                             pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
                             summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
                         }
@@ -2880,24 +2976,101 @@ router.get('/principal/chats',
                     return res.status(500).json({ status: 'error', message: 'Failed to apply class filter' });
                 }
 
-                const filteredThreadIds = Array.from(new Set((participantThreads || []).map(pt => pt.thread_id)));
+                const divisionFilteredThreadIds = Array.from(new Set((participantThreads || []).map(pt => pt.thread_id)));
 
-                if (filteredThreadIds.length === 0) {
+                if (divisionFilteredThreadIds.length === 0) {
                     return res.json({
                         status: 'success',
                         data: {
                             threads: [],
-                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, page: parseInt(page), limit: parseInt(limit) },
+                            filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
                             pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
                             summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
                         }
                     });
                 }
 
-                query = query.in('id', filteredThreadIds);
+                // Combine with existing thread ID filters
+                if (combinedThreadIds) {
+                    const divisionSet = new Set(divisionFilteredThreadIds);
+                    combinedThreadIds = combinedThreadIds.filter(id => divisionSet.has(id));
+                    if (combinedThreadIds.length === 0) {
+                        return res.json({
+                            status: 'success',
+                            data: {
+                                threads: [],
+                                filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
+                                pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                                summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                            }
+                        });
+                    }
+                } else {
+                    combinedThreadIds = divisionFilteredThreadIds;
+                }
 
                 // Attach for count filtering below
-                req._filteredThreadIds = filteredThreadIds;
+                req._filteredThreadIds = combinedThreadIds;
+            } else if (combinedThreadIds) {
+                // Apply combined filters even without class_division_id
+                req._filteredThreadIds = combinedThreadIds;
+            }
+
+            // Handle 'includes_me=no' filter (exclude threads where principal is participant)
+            if (includes_me === 'no' && principalParticipantThreadIds && principalParticipantThreadIds.length > 0) {
+                // Exclude principal's threads from combined filters
+                if (combinedThreadIds) {
+                    const principalSet = new Set(principalParticipantThreadIds);
+                    combinedThreadIds = combinedThreadIds.filter(id => !principalSet.has(id));
+                    if (combinedThreadIds.length === 0) {
+                        return res.json({
+                            status: 'success',
+                            data: {
+                                threads: [],
+                                filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
+                                pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                                summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                            }
+                        });
+                    }
+                    req._filteredThreadIds = combinedThreadIds;
+                } else {
+                    // If no other thread ID filters, we need to get all thread IDs first
+                    // then exclude principal's threads
+                    const { data: allThreads, error: allThreadsErr } = await adminSupabase
+                        .from('chat_threads')
+                        .select('id');
+                    
+                    if (allThreadsErr) {
+                        console.error('Error fetching all threads for exclusion:', allThreadsErr);
+                        return res.status(500).json({ 
+                            status: 'error', 
+                            message: 'Failed to apply exclusion filter' 
+                        });
+                    }
+                    
+                    const allThreadIds = (allThreads || []).map(t => t.id);
+                    const principalSet = new Set(principalParticipantThreadIds);
+                    combinedThreadIds = allThreadIds.filter(id => !principalSet.has(id));
+                    
+                    if (combinedThreadIds.length === 0) {
+                        return res.json({
+                            status: 'success',
+                            data: {
+                                threads: [],
+                                filters: { start_date, end_date, class_division_id, chat_type, includes_me, approval_status, page: parseInt(page), limit: parseInt(limit) },
+                                pagination: { page: parseInt(page), limit: parseInt(limit), total: 0, total_pages: 0, has_next: false, has_prev: page > 1 },
+                                summary: { total_threads: 0, direct_chats: 0, group_chats: 0, includes_principal: 0, excludes_principal: 0, total_messages: 0, average_messages_per_thread: 0, participant_stats: { total_unique: 0, teachers: 0, parents: 0, students: 0, admins: 0 } }
+                            }
+                        });
+                    }
+                    req._filteredThreadIds = combinedThreadIds;
+                }
+            }
+
+            // Apply all thread ID filters to the main query
+            if (combinedThreadIds && combinedThreadIds.length > 0) {
+                query = query.in('id', combinedThreadIds);
             }
 
             // Get total count for pagination (apply filters if any)
@@ -2905,7 +3078,7 @@ router.get('/principal/chats',
             if (chat_type !== 'all') countBase = countBase.eq('thread_type', chat_type);
             if (start_date) countBase = countBase.gte('created_at', new Date(start_date).toISOString());
             if (end_date) countBase = countBase.lte('created_at', new Date(end_date).toISOString());
-            if (class_division_id && Array.isArray(req._filteredThreadIds) && req._filteredThreadIds.length > 0) {
+            if (Array.isArray(req._filteredThreadIds) && req._filteredThreadIds.length > 0) {
                 countBase = countBase.in('id', req._filteredThreadIds);
             }
             const { count: totalCount, error: countError } = await countBase;
@@ -2935,13 +3108,8 @@ router.get('/principal/chats',
                             p => p.user_id === principalId
                         );
 
-                        // Apply "includes me" filter
-                        if (includes_me === 'yes' && !isPrincipalParticipant) {
-                            return null;
-                        }
-                        if (includes_me === 'no' && isPrincipalParticipant) {
-                            return null;
-                        }
+                        // Note: includes_me filter is now applied at database level for optimization
+                        // This check is kept for consistency and badge calculation
 
                         // Get message count
                         const { count: messageCount, error: countError } = await adminSupabase
@@ -3135,6 +3303,7 @@ router.get('/principal/chats',
                         class_division_id,
                         chat_type,
                         includes_me,
+                        approval_status,
                         page: parseInt(page),
                         limit: parseInt(limit)
                     },
