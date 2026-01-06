@@ -104,6 +104,17 @@ server.listen(PORT, () => {
             logger.error('Failed to initialize attendance notification service:', error);
         }
     })();
+
+    // Initialize Supabase keep-alive service
+    (async () => {
+        try {
+            const { default: supabaseKeepAliveService } = await import('./services/supabaseKeepAliveService.js');
+            supabaseKeepAliveService.start();
+            logger.info('Supabase keep-alive service initialized successfully');
+        } catch (error) {
+            logger.error('Failed to initialize Supabase keep-alive service:', error);
+        }
+    })();
 }).on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
         logger.error(`Port ${PORT} is already in use. Please kill the existing process or use a different port.`);
